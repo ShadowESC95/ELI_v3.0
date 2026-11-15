@@ -32,7 +32,8 @@ shown is refreshed at most every half minute.
     books(room) ELI's books (eli/world/books.py) as things of kind "book", as many as `room` bytes of the
                 message hold, the newest of each room first, the text of as many as still fit whole
     evidence()  what ELI's actions did and how often its figures proved right, week by week, for the
-                Evidence Wall's scoreboard and charts (action_outcomes.report, epistemics.measured)
+                Evidence Wall's scoreboard and charts (action_outcomes.report, epistemics.measured), and
+                "wall": what its wall of sheets pins up, one entry for one fact, what matters most first
     thoughts()  what is on ELI's mind now, in its records' own words, for a body to let rise from ELI
     coming_up() what is on the user's agenda in the next day and a half: events, reminders, alarms
     free()      whether ELI is free to make something of its own now (eli/world/urges.py)
@@ -132,33 +133,127 @@ def _goals() -> List[Dict[str, Any]]:
     return out
 
 
+# ── one record for one fact ────────────────────────────────────────────────────────────────────────
+
+# What a word ends in when it is the same word in another form ("name", "named"; "work", "works").
+_ENDINGS = ("ing", "es", "ed", "en", "s", "d", "n", "e")
+# The short forms a word carries on its end ("you're", "user's"): no words of the fact's own.
+_CONTRACTED = re.compile(r"(?<=\w)['’](?:re|s|m|ve|ll|d)\b")
+# What turns a statement into its denial: two records that differ in it are never one fact.
+_DENIES = re.compile(r"\b(?:not|no|never|none|nor|without|cannot)\b|n['’]t\b", re.I)
+# The words every record about the user shares, which say nothing of what the fact is (beside the
+# pronouns scoring.STOPWORDS already leaves out).
+_OF_THE_USER = frozenset({"user", "has", "have", "had", "he", "she", "him", "his", "her"})
+
+
+def _stem(word: str) -> str:
+    for ending in _ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 2:
+            word = word[:-len(ending)]
+            break
+    return word[:-1] if word.endswith("e") and len(word) > 2 else word
+
+
+def _says(text: Any) -> Tuple[frozenset, bool]:
+    """What a record says, apart from how it was worded: the words that carry it (without the quote a
+    profile fact keeps beside its label, the short forms on a word's end, and the words every record
+    about the user has), each in one form, and whether it denies."""
+    from eli.cognition.scoring import STOPWORDS
+    from eli.runtime.profile_extractor import split_evidence
+    label = split_evidence(_plain(text))[0]
+    # a figure is a word of the fact however short ("season 2" is not "season 3"); a lone letter is not
+    words = frozenset(t if t.isdigit() else _stem(t) for t in re.findall(r"[a-z0-9]+", _CONTRACTED.sub("", label).lower())
+                      if t not in STOPWORDS and t not in _OF_THE_USER and (t.isdigit() or len(t) > 1))
+    return words, bool(_DENIES.search(label))
+
+
+def same_fact(a: Any, b: Any) -> bool:
+    """Whether two records tell one fact: one says nothing the other does not (every word that carries
+    it is in the other), and neither denies what the other states. No share of words is asked for: a
+    record that adds one word of its own is a record of its own."""
+    (said_a, denies_a), (said_b, denies_b) = _says(a), _says(b)
+    if not said_a or not said_b or denies_a != denies_b:
+        return False
+    return said_a <= said_b or said_b <= said_a
+
+
+def one_per_fact(rows: List[Dict[str, Any]], said: Any, strength: Any) -> List[Tuple[Dict[str, Any], List[Dict[str, Any]]]]:
+    """Records gathered so each fact is told once: [(the strongest record of a fact (`strength`, a sort
+    key), the others that tell it)], in the order the strongest stood in `rows`. `said` gives a record's
+    words. Records are one fact when same_fact joins them, directly or through another."""
+    told = [_says(said(r)) for r in rows]
+    group = list(range(len(rows)))
+
+    def root(i: int) -> int:
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+
+    for i in range(len(rows)):
+        for j in range(i):
+            (a, da), (b, db) = told[i], told[j]
+            if a and b and da == db and (a <= b or b <= a):
+                group[root(i)] = root(j)
+    members: Dict[int, List[int]] = {}
+    for i in range(len(rows)):
+        members.setdefault(root(i), []).append(i)
+    out = []
+    for ids in members.values():
+        best = max(ids, key=lambda i: (strength(rows[i]), len(told[i][0])))    # of equals, the one that says most
+        out.append((best, [i for i in ids if i != best]))
+    out.sort(key=lambda pair: pair[0])
+    return [(rows[best], [rows[i] for i in rest]) for best, rest in out]
+
+
 def _claims() -> List[Dict[str, Any]]:
+    """What ELI holds about the user, one sheet for one fact: a fact the store keeps in several wordings
+    (a profile fact read again in other words, under another relation) is the strongest of them (the
+    best chance, the most often confirmed, then the one that says most), which carries the others ("also") and
+    the records every one of them rests on."""
     from eli.memory.claims import basis, chance, describe, origin_words
     from eli.memory.memory import get_memory
-    from eli.world.building import MAX_PER_ROOM
+    from eli.world.books import _cut
+    from eli.world.building import MAX_PER_ROOM, NAME_MAX
     memory = get_memory()
     rows = [r for r in memory.claims_current() or [] if isinstance(r, dict) and str(r.get("value", "")).strip()]
     rows.sort(key=lambda r: (float(r.get("recorded_at") or 0.0), float(r.get("confidence") or 0.0)), reverse=True)
-    out = []
-    for row in rows[:MAX_PER_ROOM]:
-        key = f"claim_{row.get('id')}"
-        contested = bool(row.get("contested"))
+
+    def sure_of(row: Dict[str, Any]) -> float:
         # the chance the claim is right (its sureness calibrated on what became of such claims), on the sheet
         try:
-            sure = max(0.0, min(1.0, float(chance(row).p)))
+            return max(0.0, min(1.0, float(chance(row).p)))
         except (OSError, ValueError, ImportError):
-            sure = max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+            return max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+
+    sures = {id(r): sure_of(r) for r in rows}
+    facts = one_per_fact(rows, lambda r: r.get("value"),
+                         lambda r: (sures[id(r)], int(r.get("confirmations") or 1)))
+    out = []
+    for row, others in facts[:MAX_PER_ROOM]:
+        key = f"claim_{row.get('id')}"
+        sure = sures[id(row)]
+        contested = bool(row.get("contested")) or any(bool(o.get("contested")) for o in others)
+        sources, seen = [], set()
+        for told in [row] + others:
+            for source in _claim_sources(memory, told, origin_words(told.get("origin"))):
+                if source["id"] not in seen:
+                    seen.add(source["id"])
+                    sources.append(source)
         out.append({
-            "id": key, "name": f"{str(row.get('relation', '')).replace('_', ' ')}: {row.get('value')}"[:48],
+            "id": key, "name": _cut(f"{str(row.get('relation', '')).replace('_', ' ')}: {row.get('value')}", NAME_MAX),
             "kind": "claim", "room": "evidence_wall", "x": 0.0, "y": 0.0, "importance": sure,
-            "meaning": describe(row)[:200], "made_by": "claims",
+            "meaning": _cut(describe(row), 200), "made_by": "claims",
             "claim": {"relation": str(row.get("relation") or ""), "value": str(row.get("value") or ""),
                       "chance": round(sure, 4), "sure": float(row.get("confidence") or 0.0),
                       "since": row.get("valid_from"), "until": row.get("valid_to"), "learned": row.get("recorded_at"),
                       "origin": str(row.get("origin") or ""), "basis": basis(row),
                       "confirmations": int(row.get("confirmations") or 1), "contested": contested,
                       "status": str(row.get("status") or ""),
-                      "sources": _claim_sources(memory, row, origin_words(row.get("origin")))},
+                      "sources": sources,
+                      # the other wordings of this fact, folded into this sheet
+                      "also": [{"id": f"claim_{o.get('id')}", "relation": str(o.get("relation") or ""),
+                                "value": str(o.get("value") or ""), "learned": o.get("recorded_at")} for o in others]},
             "form": {"shape": "board", "colour": "#f5b942" if contested else "#d9e4f2", "size": 0.6,
                      "glow": round(0.3 + 0.6 * sure, 2), "pos": _spot(key, 0.9, 2.1)},
         })
@@ -494,14 +589,19 @@ def thought_lines(thought: Dict[str, Any]) -> List[str]:
 
 def _thought_notes() -> List[Dict[str, Any]]:
     """ELI's thoughts lately as sheets in the rooms they belong to, the newest NOTES_PER_ROOM of
-    each room, each with its lines and the thought's own measures (kind, chance, decision, status,
+    each room (one for a record thought of in several turns, thoughts.about), each with its lines and the thought's own measures (kind, chance, decision, status,
     outcome) for a body that draws them by kind."""
-    from eli.cognition.thoughts import recent, room_of
+    from eli.cognition.thoughts import about, recent, room_of
     counted: Dict[str, int] = {}
+    hung = set()
     out: List[Dict[str, Any]] = []
     for thought in recent(THOUGHTS):
         kind = str(thought.get("kind") or "")
         room = str(thought.get("room") or room_of(kind))
+        of = about(thought)
+        if of and (room, of) in hung:
+            continue                 # the same record thought of again in another turn: its newest sheet hangs
+        hung.add((room, of))
         if counted.get(room, 0) >= NOTES_PER_ROOM:
             continue
         counted[room] = counted.get(room, 0) + 1
@@ -538,7 +638,8 @@ def _figure(value: Any) -> Optional[float]:
 def _action_row(row: Dict[str, Any]) -> Dict[str, Any]:
     from eli.runtime.action_outcomes import cause_words, plain
     causes = sorted((row.get("causes") or {}).items(), key=lambda kv: -kv[1])
-    return {"action": str(row["action"]), "name": plain(row["action"]), "n": int(row["n"]), "ok": int(row["ok"]),
+    return {"id": f"action_{row['action']}", "action": str(row["action"]), "name": plain(row["action"]),
+            "n": int(row["n"]), "ok": int(row["ok"]),
             "p": _figure(row.get("p")),
             "causes": [{"cause": str(c), "words": cause_words(c), "n": int(k)} for c, k in causes],
             "worst_target": str(row.get("worst_target") or ""), "last": float(row.get("last") or 0.0),
@@ -567,7 +668,7 @@ def evidence(now: float | None = None) -> Dict[str, Any]:
         log.debug("what ELI's actions did was not read", exc_info=True)
     try:
         from eli.cognition.epistemics import measured
-        out["accuracy"] = [{"kind": r["kind"], "words": r["words"], "n": int(r["n"]), "right": _figure(r["right"]),
+        out["accuracy"] = [{"id": f"accuracy_{r['kind']}", "kind": r["kind"], "words": r["words"], "n": int(r["n"]), "right": _figure(r["right"]),
                             "ece": _figure(r["ece"]) if r.get("ece") is not None else None,
                             "weeks": [{"from": float(w["from"]), "n": int(w["n"]),
                                        "right": _figure(w["right"]) if w.get("right") is not None else None}
@@ -575,7 +676,119 @@ def evidence(now: float | None = None) -> Dict[str, Any]:
                            for r in measured()]
     except Exception:  # noqa: BLE001
         log.debug("how often ELI was right was not read", exc_info=True)
+    try:
+        out["wall"] = _wall(out)
+    except Exception:  # noqa: BLE001
+        log.debug("what the Evidence Wall pins up was not gathered", exc_info=True)
     _evidence_cache = (clock, out)
+    return out
+
+
+def _settled_actions(rows: List[Dict[str, Any]], learned: set) -> List[Dict[str, Any]]:
+    """The actions whose record says something: shown to work less often than the rest, or shown to
+    work no less often (epistemics.compare, the test every gate and lesson of ELI's is judged by), and
+    those a lesson was learned about. An action run too few times to show either says nothing yet and
+    stays on the scoreboard alone. Those shown worse first, the most failures first; then the rest,
+    the most runs first."""
+    from eli.cognition.epistemics import compare
+    ok_all, n_all = sum(r["ok"] for r in rows), sum(r["n"] for r in rows)
+    worse, rest = [], []
+    for row in rows:
+        verdict = compare((row["ok"], row["n"]), (ok_all - row["ok"], n_all - row["n"]))
+        if verdict is True:
+            worse.append(row)
+        elif verdict is False or row["action"] in learned:
+            rest.append(row)
+    worse.sort(key=lambda r: r["ok"] - r["n"])
+    rest.sort(key=lambda r: (r["action"] not in learned, -r["n"]))
+    return worse + rest
+
+
+def _wall(found: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What the Evidence Wall pins up, what matters most first, one entry for one fact: [{"ref": the id
+    of a record in this message (a belief, a question, an action's or a kind of figure's row, a lesson's
+    case file, a record a belief rests on), "kind", "also": the ids of the records that tell the same
+    thing and are folded into it (a belief's other wordings, the thoughts ELI had of it)}].
+
+    What is in dispute comes first: each question, then the beliefs it is about and the contested ones.
+    Then every kind of evidence in turn, the strongest of each first, so no kind crowds out another
+    (as _shelf_order takes each room's books in turn): beliefs by their chance, then the latest learned;
+    the actions whose record says something (_settled_actions); lessons, those in force first, by how
+    often they helped; the kinds of figure with settled outcomes, the most settled first; the records
+    the beliefs rest on. A thought is not a record of its own here: it is evidence of the record it is
+    of (thoughts.about: a belief a reply rested on, a lesson taken, a figure of a kind that is measured)
+    and is folded into that; a thought of nothing on the wall hangs in its own room. Nothing is cut at a
+    count: what is left out is what repeats another record or settles nothing."""
+    from eli.cognition.thoughts import about, recent
+    objects = items()
+    claims = [o for o in objects if o.get("kind") == "claim" and o.get("room") == "evidence_wall"]
+    conflicts = [o for o in objects if o.get("kind") == "conflict"]
+    try:
+        from eli.runtime import lessons as kept_lessons
+        lessons = [dict(r) for r in kept_lessons.listed()]
+    except Exception:  # noqa: BLE001 - no lessons read: none on the wall
+        log.debug("the lessons were not read for the wall", exc_info=True)
+        lessons = []
+    lessons.sort(key=lambda r: (str(r.get("status")) != "active",
+                                -(int(r.get("helped") or 0) + 1.0) / (int(r.get("checks") or 0) + 2.0),
+                                -float(r.get("created_at") or 0.0)))
+    learned = {str(r.get("applies_to") or "") for r in lessons}
+    actions = _settled_actions(list((found.get("actions") or {}).get("rows") or []), learned)
+    accuracy = sorted((r for r in found.get("accuracy") or [] if r.get("n") and r.get("right") is not None),
+                      key=lambda r: -int(r["n"]))
+
+    # where a thought folds in: the record it is of
+    folded: Dict[str, List[str]] = {}
+    claim_of = {c["id"]: c["id"] for c in claims}
+    for c in claims:
+        for other in c["claim"].get("also") or []:
+            claim_of[str(other["id"])] = c["id"]
+    by_kind = {r["kind"]: r["id"] for r in accuracy}
+    lesson_ids = {f"lesson:{int(r['id'])}": f"book_lesson_{int(r['id'])}" for r in lessons}
+    action_ids = {f"action:{r['action']}": r["id"] for r in actions}
+    try:
+        had = recent(THOUGHTS)
+    except Exception:  # noqa: BLE001
+        had = []
+    for thought in had:
+        of = about(thought)
+        home = (claim_of.get(of.replace("claim:", "claim_", 1)) if of.startswith("claim:") else None) \
+            or lesson_ids.get(of) or action_ids.get(str(thought.get("subject") or "")) \
+            or by_kind.get(str(thought.get("kind") or ""))
+        if home:
+            folded.setdefault(home, []).append(f"thought_{thought['id']}")
+
+    def entry(ref: str, kind: str, also: Optional[List[str]] = None) -> Dict[str, Any]:
+        return {"ref": ref, "kind": kind, "also": list(also or []) + folded.get(ref, [])}
+
+    def of_claim(c: Dict[str, Any]) -> Dict[str, Any]:
+        return entry(c["id"], "claim", [str(o["id"]) for o in c["claim"].get("also") or []])
+
+    out: List[Dict[str, Any]] = []
+    asked = set()
+    for conflict in conflicts:
+        out.append(entry(conflict["id"], "conflict"))
+        asked.add(str(conflict.get("relation") or ""))
+    disputed = [c for c in claims if c["claim"].get("contested") or c["claim"].get("status") == "disputed"
+                or c["claim"].get("relation") in asked]
+    held = [c for c in claims if c not in disputed]
+    order = lambda c: (-float(c["claim"].get("chance") or 0.0), -float(c["claim"].get("learned") or 0.0))  # noqa: E731
+    out.extend(of_claim(c) for c in sorted(disputed, key=order))
+    sources, seen = [], set()
+    for c in sorted(disputed, key=order) + sorted(held, key=order):
+        for source in c["claim"].get("sources") or []:
+            if source["id"] not in seen:
+                seen.add(source["id"])
+                sources.append(entry(source["id"], "source"))
+    turns = [[of_claim(c) for c in sorted(held, key=order)],
+             [entry(r["id"], "action") for r in actions],
+             [entry(f"book_lesson_{int(r['id'])}", "lesson") for r in lessons],
+             [entry(r["id"], "accuracy") for r in accuracy],
+             sources]
+    while any(turns):
+        for kind in turns:
+            if kind:
+                out.append(kind.pop(0))
     return out
 
 

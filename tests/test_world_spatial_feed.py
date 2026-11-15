@@ -223,7 +223,8 @@ def test_what_eli_believes_is_on_the_evidence_wall_and_what_disagrees_is_in_the_
                     "origin": "user_said", "basis": claims.basis(row), "confirmations": 1, "contested": True,
                     "status": "current",
                     "sources": [{"id": "memory_11", "kind": "memory", "text": "I moved to Harbour Town last spring.",
-                                 "when": 1_780_050_000.0, "origin": "you said so"}]}, "a belief with what it rests on"
+                                 "when": 1_780_050_000.0, "origin": "you said so"}],
+                    "also": []}, "a belief with what it rests on"
     assert beliefs[1]["claim"]["sources"] == [] and beliefs[1]["claim"]["contested"] is False, "a claim with no source rests on none"
     [conflict] = [o for o in shown_now if o["kind"] == "conflict"]
     assert conflict["room"] == "anomaly_room" and conflict["name"] == "Lives in?" and conflict["relation"] == "lives_in"
@@ -976,6 +977,114 @@ def test_the_evidence_wall_is_told_how_each_action_and_each_kind_of_figure_went_
     filled = [w for w in answers["weeks"] if w["n"]]
     assert sum(w["n"] for w in filled) == 4 and all(w["right"] in (0.0, 1.0) for w in filled)
     assert all(w["right"] is None for w in answers["weeks"] if not w["n"]), "a week with nothing settled says nothing"
+
+
+def _seed_a_wall_that_repeats_itself(records):
+    """Records shaped like a real wall's: one fact kept in several wordings and under several relations,
+    the same belief thought of turn after turn, a routine reading in every turn, and actions run once."""
+    from eli.cognition import epistemics, thoughts
+    from eli.memory import claims
+    from eli.runtime import lessons
+    now = __import__("time").time()
+    conn = records.memory._claims_conn()
+    who = records.memory._claim_subject()
+    told = [("identity.name", "Name is Rowan."), ("identity.fact", "You're Rowan"), ("identity.fact", "User is named Rowan."),
+            ("preference.commands", 'User prefers written steps for repairs. Said: "give me the steps"'),
+            ("preference.style", 'User prefers written steps for repairs. Said: "write it out for me"'),
+            ("identity.fact", "Watches season 2 of Tide Lines."), ("identity.fact", "Watches season 3 of Tide Lines."),
+            ("identity.fact", "Keeps bees."), ("identity.fact", "Does not keep bees any more."),
+            ("identity.fact", "User keeps bees. They also grow pears on the south wall.")]
+    ids = {}
+    for n, (relation, value) in enumerate(told):
+        ids[value] = claims.record(conn, relation, value, origin="user_passing", single_valued=False, subject=who,
+                                   now=now - (20 - n) * DAY)
+    claims.record(conn, "lives_in", "Harbour Town", origin="user_said", now=now - 9 * DAY, subject=who)
+    claims.record(conn, "lives_in", "Upper Ridge", origin="eli_said", now=now - 2 * DAY, subject=who)
+    conn.commit()
+    conn.close()
+    for turn in range(3):
+        rid = f"req-{turn}"
+        thoughts.record("claim", "identity.fact: Keeps bees.", chance=0.6, decision="shown", subject="Keeps bees.",
+                        request_id=rid, ref=epistemics.claim_request_id(ids["Keeps bees."], rid), now=now - turn * 60)
+        thoughts.record("route", "read as chat", chance=0.9, decision="taken", subject=f"sentence {turn}",
+                        request_id=rid, ref=f"route:{rid}", now=now - turn * 60)
+        thoughts.record("recall", "the pears were early this year", chance=0.5, decision="shown", subject=f"sentence {turn}",
+                        request_id=rid, ref=f"recall:{rid}:31", now=now - turn * 60)
+    for i in range(20):
+        records.ran("PLAY_TUNE", i < 8, now - (1 + i % 5) * DAY - i * 60, said=f"tune {i}", args={"query": f"tune {i}"})
+        records.ran("SET_VOLUME", True, now - (1 + i % 5) * DAY - i * 60, said=f"volume {i}", args={"level": i})
+        records.figure(epistemics.ROUTE, f"route:r{i}", 0.9, i != 0, now - (1 + i % 5) * DAY)
+    records.ran("TELL_TIME", True, now - DAY)
+    records.ran("OPEN_APP", False, now - DAY, said="Notes is not installed", args={"name": "Notes"})
+    lesson = lessons.propose("OPEN_APP", "the app is not installed", ["Notes failed"], "open the site instead", now=now - DAY)
+    thoughts.record("lesson", "open the site instead", decision="taken", subject="action:OPEN_APP", ref=f"lesson:{int(lesson)}",
+                    now=now - DAY)
+    return ids, int(lesson)
+
+
+def test_the_evidence_wall_is_sent_one_record_for_one_fact_what_matters_first_and_nothing_that_settles_nothing(monkeypatch, records):
+    ids, lesson = _seed_a_wall_that_repeats_itself(records)
+    msg = _knowledge_message(monkeypatch, records)
+    beliefs = {o["id"]: o["claim"] for o in msg["objects"] if o["kind"] == "claim"}
+    values = sorted(c["value"] for c in beliefs.values())
+    # one sheet for one fact, however often and under whatever relation the store keeps it
+    assert sum("Rowan" in v for v in values) == 1, values
+    assert sum("written steps" in v for v in values) == 1, values
+    named = next(c for c in beliefs.values() if "Rowan" in c["value"])
+    assert len(named["also"]) == 2 and all("Rowan" in a["value"] and a["id"].startswith("claim_") for a in named["also"])
+    # the fuller record of a fact is the one kept, and carries the one it says again
+    kept = next(c for c in beliefs.values() if "pears" in c["value"])
+    assert [a["value"] for a in kept["also"]] == ["Keeps bees."]
+    # what differs by a figure, or denies, is a fact of its own
+    assert sum("Tide Lines" in v for v in values) == 2 and "Does not keep bees any more." in values
+    wall = msg["evidence"]["wall"]
+    refs = [e["ref"] for e in wall]
+    assert len(refs) == len(set(refs)), "no record is pinned up twice"
+    rows = {r["id"]: r for r in msg["evidence"]["actions"]["rows"]}
+    figures = {r["id"]: r for r in msg["evidence"]["accuracy"]}
+    objects = {o["id"] for o in msg["objects"]}
+    for e in wall:
+        assert e["ref"] in objects or e["ref"] in rows or e["ref"] in figures, f"{e} is a record of this message"
+    assert {e["kind"] for e in wall} == {"conflict", "claim", "action", "lesson", "accuracy"}, "no thought is a sheet of its own"
+    # what is in dispute first: the question, then the beliefs it is about
+    assert wall[0]["kind"] == "conflict" and beliefs[wall[1]["ref"]]["relation"] == "lives_in"
+    # then each kind of evidence in turn, so the nearest sheets are not all of one kind
+    after = [e["kind"] for e in wall[2:6]]
+    assert after == ["claim", "action", "lesson", "accuracy"], after
+    # an action whose record says something is on the wall; one run once that worked is on the scoreboard alone
+    on_wall = [e["ref"] for e in wall if e["kind"] == "action"]
+    assert on_wall[0] == "action_PLAY_TUNE", "the one shown worse than the rest first"
+    assert "action_OPEN_APP" in on_wall, "an action a lesson was learned about"
+    assert "action_TELL_TIME" not in on_wall and "action_TELL_TIME" in rows
+    # a thought is evidence of the record it is of, folded into it
+    folded = {e["ref"]: e["also"] for e in wall}
+    bees = next(i for i, c in beliefs.items() if "pears" in c["value"])
+    assert f"claim_{ids['Keeps bees.']}" in folded[bees]
+    assert sum(a.startswith("thought_") for a in folded[bees]) == 3, "the three turns a reply rested on it"
+    assert sum(a.startswith("thought_") for a in folded["accuracy_route"]) == 3, "each reading is one of the figures measured"
+    assert sum(a.startswith("thought_") for a in folded[f"book_lesson_{lesson}"]) == 1
+    recalled = {f"thought_{t['id']}" for t in msg["thoughts"] if t["kind"] == "recall"}
+    assert len(recalled) == 3 and not recalled & {a for e in wall for a in e["also"]}, \
+        "a memory shown to a reply is no evidence of anything on the wall while none is settled"
+    # and the same record thought of in three turns hangs as one sheet in its room
+    notes = [o for o in msg["objects"] if o["kind"] == "thought"]
+    assert sum(o["room"] == "evidence_wall" for o in notes) == 1
+    assert sum(o["room"] == "memory_archive" for o in notes) == 1, "one memory recalled in three turns is one sheet"
+
+
+def test_a_name_too_long_for_its_label_ends_at_a_word_and_says_it_goes_on(monkeypatch, records):
+    from eli.memory import claims
+    conn = records.memory._claims_conn()
+    value = "Prefers every reply to begin with the conclusion and to leave the reasoning for afterwards."
+    claims.record(conn, "preference.session", value, origin="user_said", subject=records.memory._claim_subject())
+    conn.commit()
+    conn.close()
+    [belief] = [o for o in _knowledge_message(monkeypatch, records)["objects"] if o["kind"] == "claim"]
+    assert belief["claim"]["value"] == value, "the record itself is whole"
+    assert belief["name"].endswith("…") and (belief["name"][:-1] + " ") in f"preference.session: {value} "[:60] + " " or \
+        f"preference.session: {value}".startswith(belief["name"][:-1])
+    cut = belief["name"][:-1]
+    assert f"preference.session: {value}"[len(cut)] == " ", "cut between words, never inside one"
 
 
 def test_elis_books_fill_what_the_rest_of_the_message_leaves_and_the_rest_are_read_whole_by_id(monkeypatch, records):

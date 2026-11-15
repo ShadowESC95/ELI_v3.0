@@ -199,3 +199,13 @@ def test_a_surprise_is_kept_under_the_turn_it_was_had_in_and_settled_by_the_next
     turn("r-4", lambda: engine._settle_pending(None, "", pending, "no wait, also tell me the weather", model,
                                                revising=disputes))
     assert of("surprise:r-4:answer") == [("settled", "undone")]
+
+
+def test_a_thought_is_of_the_same_record_in_whichever_turn_it_was_had():
+    from eli.cognition.thoughts import about
+    assert about({"ref": "claim:7:req-1", "request_id": "req-1"}) == about({"ref": "claim:7:req-2", "request_id": "req-2"}) == "claim:7"
+    assert about({"ref": "recall:req-1:45", "request_id": "req-1"}) == "recall:45"
+    assert about({"ref": "lesson:3", "request_id": ""}) == "lesson:3"
+    assert about({"ref": "route:req-1", "request_id": "req-1"}) == "", "a reading is of its own turn and nothing else"
+    assert about({"ref": "", "request_id": "req-1"}) == ""
+

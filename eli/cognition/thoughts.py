@@ -17,6 +17,7 @@ any package that reads ELI's world.
     recent(limit, kinds, room, user_id)    the latest, newest first, as dicts with their words
     by_id(id)                              one thought, by its row id
     words(thought)                         one line in words
+    about(thought)                         the record a thought is of, the same for every turn it was had in
     room_of(kind)                          the room of the house a kind belongs in
 
 The kinds and their rooms:
@@ -372,6 +373,18 @@ def words(thought: Dict[str, Any]) -> str:
     return ". ".join(p[0].upper() + p[1:] if p else p for p in parts) + "."
 
 
+def about(thought: Dict[str, Any]) -> str:
+    """The record a thought is of, the same whichever turn it was had in: its ref without the turn's own
+    id ("claim:7:req-1" and "claim:7:req-2" are both "claim:7"; "recall:req-1:45" is "recall:45"). A thought
+    with no ref, or whose ref is only its turn ("route:req-1"), is of nothing but itself: "" then."""
+    ref = str(thought.get("ref") or "")
+    turn = str(thought.get("request_id") or "")
+    if not ref:
+        return ""
+    parts = [part for part in ref.split(":") if part != turn] if turn else ref.split(":")
+    return ":".join(parts) if len(parts) > 1 else ""
+
+
 def for_feed(limit: int = 40, *, user_id: Optional[str] = None, db_path=None) -> List[Dict[str, Any]]:
     """The latest thoughts of one reader (recent's `user_id`) as a body draws them: id, kind, room,
     what, why, chance, decision, reason, status, outcome, when (unix time), words, and what the thought
@@ -389,5 +402,5 @@ def for_feed(limit: int = 40, *, user_id: Optional[str] = None, db_path=None) ->
     return out
 
 
-__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "SHARED_KINDS", "by_id", "for_feed", "recent", "record",
+__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "SHARED_KINDS", "about", "by_id", "for_feed", "recent", "record",
            "room_of", "settle", "settle_prefix", "words"]
