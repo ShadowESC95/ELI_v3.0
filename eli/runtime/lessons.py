@@ -150,7 +150,9 @@ def propose(applies_to: str, trigger: str, evidence: List[str], proposed_change:
             scope: Optional[List[str]] = None, baseline: Optional[tuple] = None,
             siblings: Optional[List[str]] = None) -> Optional[int]:
     """Record a lesson. The same trigger again adds evidence instead of a second lesson. `baseline` is
-    (rate, runs) of the action before the lesson, what the lesson is judged against."""
+    (rate, runs) of the action before the lesson, what the lesson is judged against. A lesson is kept
+    whole: its texts were cut to a length, mid-word, and one kept cut short before is the same lesson
+    as the whole one it begins when it stops inside a word (taken over and made whole, not kept beside it)."""
     if not applies_to or not trigger or not proposed_change:
         return None
     conn, own = _own(conn)
@@ -158,6 +160,16 @@ def propose(applies_to: str, trigger: str, evidence: List[str], proposed_change:
         now = float(now if now is not None else time.time())
         key = _key(applies_to, trigger)
         row = conn.execute("SELECT id, evidence, status FROM lessons WHERE lesson_key = ?", (key,)).fetchone()
+        if not row:
+            said = trigger.strip()
+            row = next((r[:3] for r in conn.execute(
+                "SELECT id, evidence, status, trigger_text FROM lessons WHERE applies_to = ? AND kind = ? "
+                "AND status = 'active'", (applies_to.upper(), ACTION)).fetchall()
+                if r[3] and len(r[3]) < len(said) and said.startswith(str(r[3]))
+                and str(r[3])[-1].isalnum() and said[len(r[3])].isalnum()), None)      # it stops inside a word
+            if row:
+                conn.execute("UPDATE lessons SET lesson_key = ?, trigger_text = ?, proposed_change = ? WHERE id = ?",
+                             (key, said, proposed_change, row[0]))
         if row:
             if row[2] != "active":
                 return None
@@ -170,8 +182,8 @@ def propose(applies_to: str, trigger: str, evidence: List[str], proposed_change:
             "INSERT INTO lessons (lesson_key, applies_to, trigger_text, evidence, hypothesis, proposed_change, "
             "predicted_outcome, created_at, expires_at, category, scope, baseline_rate, baseline_n, siblings, kind, unit) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (key, applies_to.upper(), trigger[:300], json.dumps(list(evidence)[-6:]), hypothesis[:400],
-             proposed_change[:400], predicted_outcome[:300], now, now + float(ttl_days) * 86400.0, category,
+            (key, applies_to.upper(), trigger.strip(), json.dumps(list(evidence)[-6:]), hypothesis,
+             proposed_change, predicted_outcome, now, now + float(ttl_days) * 86400.0, category,
              json.dumps(list(scope or [])), baseline[0] if baseline else None, baseline[1] if baseline else 0,
              json.dumps(list(siblings or [])), ACTION, applies_to.upper()))
         conn.commit()
@@ -216,6 +228,19 @@ _LISTED = ("id", "applies_to", "trigger_text", "evidence", "hypothesis", "propos
            "retired_reason", "category", "kind", "unit", "lever", "state", "judged_at")
 
 
+def _evidence_as_read(item: Any) -> str:
+    """A piece of a lesson's evidence in words: one kept as raw figures before is read out as such."""
+    text = str(item)
+    if text.startswith("{"):
+        try:
+            figures = json.loads(text)
+            if isinstance(figures, dict) and "right" in figures and "n" in figures:
+                return _settled_in_words({"peer_right": 0, "peer_n": 0, **figures})
+        except (ValueError, TypeError):
+            pass
+    return text
+
+
 def listed(*, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
     """Every lesson on record, active and retired, newest first, each with its evidence as a list: the
     record ELI's rooms keep of what it learned (eli/world/books.py)."""
@@ -230,7 +255,7 @@ def listed(*, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]
     for r in rows:
         item = dict(zip(_LISTED, r))
         try:
-            item["evidence"] = [str(e) for e in json.loads(item.get("evidence") or "[]")]
+            item["evidence"] = [_evidence_as_read(e) for e in json.loads(item.get("evidence") or "[]")]
         except (TypeError, ValueError):
             item["evidence"] = []
         out.append(item)
@@ -411,6 +436,7 @@ def from_failure_clusters(*, days: float = 14.0, min_count: int = 3, now: Option
             grouped[(action, text)] = grouped.get((action, text), 0) + int(count or 1)
     rows = [(t, a, n, 0) for (a, t), n in sorted(grouped.items(), key=lambda kv: -kv[1])[:10] if n >= int(min_count)]
     for text, action, count, _unused in rows:
+        said = next((line.strip() for line in text.splitlines() if line.strip()), text)   # what failed, whole
         try:
             from eli.runtime.failure_taxonomy import classify_category
             category = classify_category(text, action)
@@ -433,8 +459,8 @@ def from_failure_clusters(*, days: float = 14.0, min_count: int = 3, now: Option
             log.debug("baseline unavailable", exc_info=True)
         where = f" when called with {', '.join(scope)}" if scope else ""
         lid = propose(
-            action, f"{action} failed with: {text[:120]}", [f"{count} occurrences in the last {int(days)} days"],
-            f"Before running {action}{where}, check the cause of: {text[:120]}",
+            action, f"{action} failed with: {said}", [f"{count} occurrences in the last {int(days)} days"],
+            f"Before running {action}{where}, check the cause of: {said}",
             hypothesis=(f"A {category or 'recurring'} fault" + (f" that shows up only {where.strip()}" if scope else " that shows up regardless of arguments")
                         + f", so a precondition of {action} is not being met."),
             predicted_outcome=f"{action} succeeds more often than its {base[0]:.0%} before this lesson." if base
@@ -589,7 +615,7 @@ def open_lever(kind: str, unit: str, lever_name: str, *, evidence: Dict[str, Any
                 "expires_at, status, category, kind, unit, lever, lever_args, evidence_z, before_json, state) "
                 "VALUES (?,?,?,?,?,?,?,'active','lever',?,?,?,?,?,?,?)",
                 (f"lever:{kind}:{unit}:{now:.6f}", str(unit)[:300],
-                 f"{kind} {unit} shown worse than its peers", json.dumps([json.dumps(before)]), words, now,
+                 f"{kind} {unit} shown worse than its peers", json.dumps([_settled_in_words(before)]), words, now,
                  now + window, kind, unit, lever_name, json.dumps(dict(args or {})), float(evidence.get("z") or 0.0),
                  json.dumps(before), OPEN))
         except sqlite3.IntegrityError:
@@ -608,13 +634,19 @@ def open_lever(kind: str, unit: str, lever_name: str, *, evidence: Dict[str, Any
     return lid
 
 
+def _settled_in_words(before: Dict[str, float]) -> str:
+    """What flagged a part, as it is read: how many of its settled figures came out right, and its
+    peers' rate. A lesson's evidence was kept as the raw figures and shown that way."""
+    peers = before["peer_right"] / before["peer_n"] if before.get("peer_n") else None
+    return (f"{int(before['right'])} of {int(before['n'])} settled right"
+            + (f" against {peers:.0%} for the rest" if peers is not None else ""))
+
+
 def _open_repair_goal(lesson_id: int, kind: str, unit: str, before: Dict[str, float]) -> str:
     """One goal for a failing part, with its evidence, waiting for the owner's yes (proposal only)."""
     try:
         from eli.planning.goal_store import upsert_goal
-        n, right = before["n"], before["right"]
-        peers = before["peer_right"] / before["peer_n"] if before["peer_n"] else None
-        evidence = f"{int(right)} of {int(n)} settled right" + (f" against {peers:.0%} for the rest" if peers is not None else "")
+        evidence = _settled_in_words(before)
         goal = upsert_goal({"title": f"Repair {kind} {unit}", "objective": f"{kind} {unit}: {evidence}",
                             "enabled": False, "autonomy_mode": "proposal_only", "status": "proposed",
                             "tags": ["repair", "lesson"], "success_criteria": ["no longer shown worse than its peers"],

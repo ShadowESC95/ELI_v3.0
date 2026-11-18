@@ -29,6 +29,30 @@ def test_the_same_trigger_adds_evidence_not_a_second_lesson(conn):
     assert len(json.loads(conn.execute("select evidence from lessons").fetchone()[0])) == 2
 
 
+def test_a_lesson_is_kept_whole_and_one_kept_cut_short_before_is_made_whole_not_doubled(conn):
+    """The failure's words were cut at a fixed length, mid-word, in the trigger and in what to do, and
+    the lesson's own texts cut again when kept. The whole lesson takes over the cut one it begins."""
+    long = "the capture service did not answer on the session bus within the time the desktop portal allows, " * 3
+    whole = f"SCREENSHOT failed with: {long.strip()}"
+    lessons.propose("SCREENSHOT", whole[:137], ["3 occurrences"], f"Before running SCREENSHOT, check the cause of: {long[:116]}",
+                    now=1000.0, conn=conn)
+    lid = lessons.propose("SCREENSHOT", whole, ["seen again"], f"Before running SCREENSHOT, check the cause of: {long.strip()}",
+                          now=1001.0, conn=conn)
+    rows = conn.execute("select id, trigger_text, proposed_change, evidence from lessons").fetchall()
+    assert len(rows) == 1 and rows[0][0] == lid
+    assert rows[0][1] == whole and rows[0][2].endswith(long.strip()) and len(json.loads(rows[0][3])) == 2
+    assert lessons.propose("SCREENSHOT", whole, ["and again"], "x", now=1002.0, conn=conn) == lid
+    # a trigger that goes on from another's last word is a lesson of its own
+    assert lessons.propose("SCREENSHOT", whole + " again", ["once"], "y", now=1003.0, conn=conn) != lid
+
+
+def test_a_levers_evidence_is_kept_and_read_in_words(conn):
+    figures = {"right": 4.0, "n": 20.0, "peer_right": 54.0, "peer_n": 60.0}
+    assert lessons._settled_in_words(figures) == "4 of 20 settled right against 90% for the rest"
+    assert lessons._evidence_as_read(json.dumps(figures)) == "4 of 20 settled right against 90% for the rest"
+    assert lessons._evidence_as_read("3 occurrences in the last 14 days") == "3 occurrences in the last 14 days"
+
+
 def test_only_active_unexpired_lessons_for_the_action_apply(conn):
     _make(conn, now=1000.0, ttl_days=1)
     assert lessons.applicable("screenshot", now=1500.0, conn=conn)
@@ -88,6 +112,7 @@ def test_failure_clusters_become_lessons(tmp_path, monkeypatch):
     assert len(made) == 1
     rows = sqlite3.connect(db).execute("select applies_to, proposed_change from lessons").fetchall()
     assert len(rows) == 1 and rows[0][0] == "SCREENSHOT" and "no display" in rows[0][1]
+    assert rows[0][1].endswith("check the cause of: no display")
 
 
 def test_a_lesson_is_checked_only_on_runs_it_was_shown_for(tmp_path, monkeypatch):
@@ -236,6 +261,8 @@ def test_a_rule_measured_worse_than_the_parser_is_flagged_and_handed_to_it(store
     assert engine._handed_to_parser("open firefox", intent, "app.wake_prefix_contract") is intent, "no lever there"
     [lesson] = lessons.report()
     assert lesson["state"] == "open" and lesson["evidence"]["n"] == 20
+    [kept] = [l for l in lessons.listed() if l["id"] == lesson["id"]]
+    assert kept["evidence"] == ["4 of 20 settled right against 90% for the rest"]
     from eli.cognition import thoughts as th
     assert th.recent(5, kinds=["lesson"])[0]["decision"] == "taken"
 
