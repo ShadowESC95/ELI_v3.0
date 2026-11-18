@@ -147,6 +147,18 @@ def test_empty_and_none_sections_write_nothing(cur):
     assert _patterns(cur) == []
 
 
+def test_a_section_with_nothing_in_it_is_read_as_empty_in_any_wording():
+    """"None specified" was not one of the listed phrases, so it was kept as what the user prefers and
+    hung on the Evidence Wall as a belief. A section is empty by what it says, not by a list."""
+    for text in ("None specified", "None specified.", "- None", "No specific preferences were mentioned",
+                 "Nothing new this session", "No decisions made", "No open threads", "not applicable",
+                 "None identified in this conversation", "No significant decisions", "N/A"):
+        assert not PE._summary_section_meaningful(text), text
+    for text in ("No dairy", "Not a fan of early starts", "None of the bread recipes with rye",
+                 "Prefers short answers", "Nothing but tea after six", "no sugar in coffee"):
+        assert PE._summary_section_meaningful(text), text
+
+
 def test_fragments_too_short_to_be_facts_are_skipped(cur):
     assert PE._route_facts_to_patterns(cur, "- ok\n- yes\n- 42\n") == 0
 
@@ -308,6 +320,18 @@ def test_the_sessions_preference_replaced_closes_its_claim(cur):
     for prefs in ("Likes short answers.", "Wants the steps written out."):
         PE._route_summary_to_profile(cur, f"SUMMARY: a session.\nUSER PREFERENCES: {prefs}\n")
     assert _claims_now(cur) == [("preference.session", "Wants the steps written out.")]
+
+
+def test_an_empty_section_kept_as_a_preference_before_is_taken_out_at_the_next_summary(cur):
+    """"None specified" was stored as the session's preference and its claim. A later summary whose
+    section is empty too left it standing: the summariser's pass takes out a kept reading that says
+    nothing, and an empty section writes none."""
+    cur.execute("INSERT INTO user_patterns (pattern_type, pattern_data, timestamp, ts, corroboration, provenance) "
+                "VALUES ('preference.session', 'None specified', 1, 1, 1, 'inferred')")
+    PE._link_pattern_to_claim(cur, "preference.session", "None specified", "inferred", 1.0)
+    assert _claims_now(cur) == [("preference.session", "None specified")]
+    PE._route_summary_to_profile(cur, "SUMMARY: a session.\nUSER PREFERENCES: None specified\n")
+    assert _patterns(cur) == [] and _claims_now(cur) == []
 
 
 def test_a_summary_fact_the_users_own_words_do_not_carry_is_not_kept(cur):

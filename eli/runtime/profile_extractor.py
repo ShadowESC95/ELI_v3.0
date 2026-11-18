@@ -254,6 +254,11 @@ def retire_unfounded_readings(cur: sqlite3.Cursor, *, reweigh: bool = False) -> 
                     "FROM user_patterns p LEFT JOIN memory_claims c ON c.id = p.claim_id "
                     "WHERE COALESCE(p.provenance, '') = 'inferred' "
                     "AND (c.id IS NULL OR lower(c.relation) = lower(p.pattern_type))").fetchall():
+                if not _summary_section_meaningful(split_evidence(str(data or ""))[0]):
+                    # kept before an empty section was read as empty ("None specified"): no fact at all
+                    _claims.retire(cur, str(ptype), subject=_claims.user_subject(who), value=str(data or ""), now=now)
+                    _retire(row_id, ptype, str(data or ""), who, str(data or ""), "", "it says nothing about you")
+                    continue
                 found = [c for c in _claims.extract_about(split_evidence(str(data or ""))[0]) if not c["retire"]]
                 if not found:
                     continue
@@ -1524,13 +1529,38 @@ def _states_a_claim(line: str) -> bool:
         return False
 
 
+# A section the summary had nothing to put in says so in many wordings ("None specified", "No specific
+# preferences were mentioned", "Nothing new this session"): it opens with a word of absence and every
+# other word is the heading's own, a word of reporting, or carries no content. A list of whole phrases
+# missed each new wording, and "None specified" was kept as what the user prefers.
+_ABSENCE = frozenset({"none", "nothing", "nil", "no", "not", "n", "na"})
+_REPORTING = frozenset({
+    "specified", "identified", "expressed", "made", "mentioned", "stated", "noted", "given", "provided",
+    "discussed", "recorded", "known", "found", "raised", "shared", "applicable", "available", "there",
+    "significant", "particular", "specific", "explicit", "clear", "new", "current", "this", "that",
+    "session", "conversation", "chat", "here", "yet", "so", "far", "during", "identifiable",
+})
+
+
+def _heading_words() -> frozenset:
+    """The words of the summary's own section names, singular and plural (_SUMMARY_SECTION_RE)."""
+    words = set()
+    for name in re.findall(r"[A-Z]+(?:\\s\+[A-Z]+)?", _SUMMARY_SECTION_RE.pattern.split(")")[0]):
+        for word in re.findall(r"[A-Z]+", name.replace("\\s", " ")):
+            word = word.lower()
+            words.update({word, word.rstrip("s"), word.rstrip("s") + "s"})
+    return frozenset(words)
+
+
 def _summary_section_meaningful(s: str) -> bool:
-    t = (s or "").strip().lower().strip(" .-•*")
-    return bool(t) and t not in (
-        "none", "n/a", "na", "none identified", "no current work", "nothing",
-        "no preferences", "none made", "no decisions", "no significant decisions",
-        "no open threads", "none expressed", "not specified",
-    )
+    from eli.cognition.scoring import STOPWORDS
+    words = re.findall(r"[a-z]+", (s or "").lower())
+    if not words:
+        return False
+    if words[0] not in _ABSENCE:
+        return True
+    empty = _ABSENCE | _REPORTING | STOPWORDS | _heading_words()
+    return any(w not in empty for w in words[1:])
 
 
 def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text: str = "",
