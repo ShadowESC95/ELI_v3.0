@@ -337,10 +337,6 @@ def set_prompt_handler(fn: Optional[Callable[[Dict[str, Any]], str]]) -> None:
     _PROMPT = fn
 
 
-def has_prompt_handler() -> bool:
-    return _PROMPT is not None
-
-
 def check(plugin_id: str, capability: str, detail: str = "",
           *, interactive: bool = True) -> Dict[str, Any]:
     """Decide whether `plugin_id` may use `capability` right now.
@@ -411,6 +407,6 @@ def require(plugin_id: str, capability: str, detail: str = "") -> None:
 __all__ = [
     "ALLOW_ALWAYS", "ALLOW_ONCE", "DENY_ONCE", "DENY_ALWAYS", "DECISIONS",
     "CAPABILITIES", "ALL_CAPABILITIES", "ENFORCED_CAPABILITIES", "describe", "risk_of",
-    "PermissionStore", "store", "set_prompt_handler", "has_prompt_handler",
+    "PermissionStore", "store", "set_prompt_handler",
     "check", "require",
 ]

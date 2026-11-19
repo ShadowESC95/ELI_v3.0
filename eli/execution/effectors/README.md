@@ -9,16 +9,15 @@ handlers, so the executor's giant `if a == "…"` chain shrinks toward a thin fa
 ```
 effectors/
   registry.py          action → handler map (the extensible dispatch layer)
-  _base.py             cross-cutting primitives: security gate, subprocess, browser-open
+  _base.py             cross-cutting primitives: Full Control state, allowlisted subprocess, browser-open
                        (leaf — imports only stdlib + logger, never the executor)
-  media.py             spotify / mpv / youtube / mpris transport + ducking + now-playing
-  apps_windows.py      launch/open apps, browser, settings; window tiling
-  files_notes.py       file open, notes, safe read/write/screenshot
-  tts_speech.py        piper synth, voice selection, ducking-aware speak
-  memory_ops.py        store/recall/search, conversation log, session history
-  inference_backends.py Ollama HTTP transport + default-model resolution
-  system_intel.py      runtime/cognition/memory/gpu status + report formatters
-  self_maintenance.py  proactive-daemon control + self-improvement log
+  media.py             spotify / mpv / youtube / mpris transport + now-playing
+  apps_windows.py      open a URL or named site, the mail app, the browser
+  files_notes.py       safe file read
+  tts_speech.py        the SPEAK action (speech is perception/tts_router's)
+  memory_ops.py        store / recall / forget / profile actions
+  system_intel.py      what a GPU reading means (gpu_use_facts)
+  self_maintenance.py  proactive-daemon control
 ```
 
 ## Adding a new action (the whole point)

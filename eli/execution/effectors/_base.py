@@ -1,7 +1,7 @@
 """Cross-cutting effector primitives shared by every effector family.
 
-Security gate (_allow_or_block/_allowed_cmds_set/_full_control), the audited
-subprocess runner (_run_argv), and browser-open (_open_in_browser). Leaf module —
+The Full Control state (_full_control), the allowlisted subprocess runner (_run),
+browser-open (_open_in_browser), artifacts and document text. Leaf module —
 imports only stdlib + the logger, never the executor, so effectors can depend on it
 without an import cycle. Extracted from executor_enhanced.py (v3 modularisation).
 """
@@ -34,157 +34,6 @@ def _open_in_browser(url: str) -> bool:
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     return False
-
-
-def _allowed_cmds_set():
-    """
-    Allowed executables for sandboxed run().
-    Accept BOTH comma-separated and whitespace-separated formats.
-    Also include both './x' and 'x' variants so normpath quirks don't brick you.
-    """
-    import os
-    import os.path
-    from pathlib import Path as _Path
-
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return None
-
-    # commas OR spaces
-    raw = raw.replace(",", " ")
-    parts = [p for p in raw.split() if p]
-
-    allowed = set()
-
-    def add(tok: str):
-        if not tok:
-            return
-        t = str(tok).strip()
-        if not t:
-            return
-
-        # keep raw
-        allowed.add(t)
-
-        # normpath form
-        try:
-            n = os.path.normpath(t)
-            allowed.add(n)
-        except Exception:
-            n = t
-
-        # add "./" and no-"./" variants
-        try:
-            if n.startswith("./"):
-                allowed.add(n[2:])
-            else:
-                allowed.add("./" + n)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    for p in parts:
-        add(p)
-
-    # Always allow venv python in common forms (belt + suspenders)
-    add("./.venv/bin/python")
-    add(".venv/bin/python")
-    try:
-        add(str((_Path(__file__).resolve().parents[2] / ".venv/bin/python").resolve()))
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    return allowed
-
-
-def _allow_or_block(argv0: str) -> bool:
-    """Allow or block executables based on sandbox rules."""
-    
-    # FULL CONTROL MODE: allow everything
-    if _full_control():
-        return True
-    
-    allowed = _allowed_cmds_set()
-    if allowed is None:
-        return True  # No restrictions
-    
-    # Wildcard allows everything
-    if "*" in allowed:
-        return True
-    
-    return argv0 in allowed
-
-
-def _run_argv(argv, timeout=30):
-    # Normalize timeouts (router sometimes sends None)
-    # None/"" => env ELI_RUN_TIMEOUT_SEC (default 120s)
-    import os as _os
-    if timeout is None or timeout == "":
-        try:
-            timeout = float(_os.environ.get("ELI_RUN_TIMEOUT_SEC", "120"))
-        except Exception:
-            timeout = 120.0
-    else:
-        try:
-            timeout = float(timeout)
-        except Exception:
-            timeout = 120.0
-
-    if not argv:
-        return {"ok": False, "error": "empty argv"}
-    if not _allow_or_block(argv[0]):
-
-        # --- ALLOW_VENV_PYTHON_V1 ---
-        # Normalize doubled venv paths and allow our own venv python binary under the allowlist sandbox.
-        try:
-            import os
-            _v = str(argv[0])
-            # collapse accidental duplication
-            _v = _v.replace("./.venv/bin/./.venv/bin/python", "./.venv/bin/python")
-            _v = _v.replace(".venv/bin/.venv/bin/python", ".venv/bin/python")
-            _v = os.path.normpath(_v)
-            # allow exactly the project venv python
-            _venv_py_rel = os.path.normpath("./.venv/bin/python")
-            _venv_py_abs = os.path.normpath(str((Path(__file__).resolve().parent.parent / ".venv/bin/python")))
-            if _v in (_venv_py_rel, _venv_py_abs) or _v.endswith("/.venv/bin/python"):
-                # overwrite the checked value if it's a simple name
-                if isinstance(argv[0], str):
-                    argv[0] = _v
-                # skip raising
-                raise SystemExit("__ELI_ALLOW_VENV_PYTHON_SKIP__")
-        except SystemExit as _e:
-            if str(_e) == "__ELI_ALLOW_VENV_PYTHON_SKIP__":
-                pass
-            else:
-                raise
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # If we didn't early-allow venv python, fall through to the original denial.
-        try:
-            _ALLOW_VENV_PYTHON
-        except NameError:
-            _ALLOW_VENV_PYTHON = False
-        if not _ALLOW_VENV_PYTHON:
-            return {"ok": False, "error": f"command not allowed: {argv[0]} (ELI_ALLOWED_CMDS)"}
-
-    try:
-        r = subprocess.run(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-        return {
-            "ok": (r.returncode == 0),
-            "returncode": r.returncode,
-            "stdout": (r.stdout or "")[-2000:],
-            "stderr": (r.stderr or "")[-2000:],
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
 
 
 # ── app/security primitives (added with apps_windows family) ──
@@ -275,20 +124,6 @@ def _run(argv: List[str], timeout: int = 15) -> Dict[str, Any]:
         }
 
 
-def _allowed_apps_set():
-    """Return set of allowed apps, or None for no restrictions."""
-    import os
-    
-    # FULL CONTROL MODE: no app restrictions
-    if _full_control():
-        return None
-    
-    raw = (os.environ.get("ELI_ALLOWED_APPS") or "").strip()
-    if not raw:
-        return None  # None => allow common safe apps
-    return {x.strip().lower() for x in raw.split(",") if x.strip()}
-
-
 def _run_ok(argv, timeout: int = 5) -> bool:
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -356,4 +191,4 @@ def _read_document_text(path):
     return DocumentReaderPlugin().read({"path": str(path)})
 
 
-__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_artifacts_dir', '_save_artifact', '_allowed_apps_set', '_DOC_READER_SUFFIXES', '_read_document_text']
+__all__ = ['_full_control', '_open_in_browser', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_artifacts_dir', '_save_artifact', '_DOC_READER_SUFFIXES', '_read_document_text']

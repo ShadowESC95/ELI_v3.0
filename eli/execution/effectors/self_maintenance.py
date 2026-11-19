@@ -1,4 +1,4 @@
-"""Self-maintenance effector — proactive-daemon control + self-improvement log.
+"""Self-maintenance effector — proactive-daemon control.
 
 Lifted from executor_enhanced.py (v3 modularisation). Persona-lock + self_test defer to a
 later slice (they need the shared _load_state/_save_state/_sha256_file helpers).
@@ -8,57 +8,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 from eli.utils.log import get_logger
 log = get_logger(__name__)
-
-
-def _self_improvement_log_report(limit: int = 5, days: int = 30) -> Dict[str, Any]:
-    try:
-        from eli.runtime.self_improvement import get_self_improvement
-        engine = get_self_improvement()
-        rows = engine.analyze_failures(limit=max(1, int(limit)), days=max(1, int(days)), min_cluster_size=1)
-    except Exception as exc:
-        msg = f"Self-improvement log unavailable: {exc}"
-        return {"ok": False, "error": str(exc), "content": msg, "response": msg}
-
-    rows = sorted(rows or [], key=lambda r: float(r.get("timestamp") or 0.0), reverse=True)
-    if not rows:
-        msg = "No failures are recorded in the self-improvement log for the selected window."
-        return {"ok": True, "failures": [], "content": msg, "response": msg}
-
-    last = rows[0]
-    ts = float(last.get("timestamp") or 0.0)
-    when = datetime.fromtimestamp(ts).isoformat(timespec="seconds") if ts else "unknown"
-    err = str(last.get("error") or "").strip() or "(empty error field)"
-    user_input = str(last.get("user_input") or "").strip()
-    count = int(last.get("occurrence_count") or 1)
-
-    lines = [
-        "Last self-improvement failure:",
-        f"- when: {when}",
-        f"- occurrences: {count}",
-        f"- exact_error: {err}",
-    ]
-    if user_input:
-        preview = user_input.replace("\n", "\\n")
-        if len(preview) > 500:
-            preview = preview[:500] + "..."
-        lines.append(f"- triggering_input_preview: {preview}")
-
-    if len(rows) > 1:
-        lines.append("")
-        lines.append("Recent failures:")
-        for idx, row in enumerate(rows[:limit], 1):
-            row_ts = float(row.get("timestamp") or 0.0)
-            row_when = datetime.fromtimestamp(row_ts).isoformat(timespec="seconds") if row_ts else "unknown"
-            row_err = str(row.get("error") or "").strip() or "(empty error field)"
-            lines.append(f"{idx}. {row_when} | x{int(row.get('occurrence_count') or 1)} | {row_err[:240]}")
-
-    msg = "\n".join(lines)
-    return {"ok": True, "failures": rows[:limit], "content": msg, "response": msg}
 
 
 def _proactive_paths():
@@ -155,7 +108,7 @@ def proactive_stop() -> Dict[str, Any]:
     msg = "Proactive daemon stopped."
     return {"ok": True, "action": "PROACTIVE_STOP", "pid": pid, "content": msg, "response": msg}
 
-__all__ = ['_self_improvement_log_report', '_proactive_paths', 'proactive_status', 'proactive_start', 'proactive_stop']
+__all__ = ['_proactive_paths', 'proactive_status', 'proactive_start', 'proactive_stop']
 
 
 # ── dispatch handlers (v3 registry) ──

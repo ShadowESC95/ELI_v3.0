@@ -22,17 +22,9 @@ def register_capability(name: str | Dict[str, Any], payload: Optional[Dict[str, 
         return dict(_REGISTRY[cap_name])
 
 
-def get_capability(name: str) -> Optional[Dict[str, Any]]:
-    with _LOCK:
-        item = _REGISTRY.get(str(name).strip())
-        return dict(item) if item is not None else None
-
-
 def list_capabilities() -> List[Dict[str, Any]]:
     with _LOCK:
         return [dict(v) for _, v in sorted(_REGISTRY.items())]
 
 
 register = register_capability
-get = get_capability
-list = list_capabilities

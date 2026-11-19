@@ -7,18 +7,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from pathlib import Path
 from typing import Any, Dict
 
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
-
-
-def browser_user_dir() -> Path:
-    from eli.core.paths import get_paths
-    base = Path(get_paths().config_dir)
-    return (base / "browser").expanduser().resolve()
 
 
 def open_app_with_timeout(argv, timeout=30):

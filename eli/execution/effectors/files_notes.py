@@ -5,16 +5,8 @@ Clean leaf lifted from executor_enhanced.py (v3 modularisation).
 from __future__ import annotations
 
 from eli.core.paths import resolve_user_repo_path
-from eli.utils.platform_compat import open_file
 from eli.utils.log import get_logger
 log = get_logger(__name__)
-
-
-def _open_file(path: str) -> None:
-    try:
-        open_file(path)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
 
 
 def _eli_safe_read_file(args=None):
@@ -66,7 +58,7 @@ def _eli_safe_read_file(args=None):
     }
 
 
-__all__ = ['_open_file', '_eli_safe_read_file']
+__all__ = ['_eli_safe_read_file']
 
 
 def _h_read_file(a, args):

@@ -48,8 +48,6 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-# Directories a child almost always needs to run at all.
-_SYSTEM_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/etc")
 
 # Deliberately conservative. RLIMIT_NPROC is per-USER, not per-process, so capping
 # it makes every clone fail with EAGAIN the moment the account is already above the

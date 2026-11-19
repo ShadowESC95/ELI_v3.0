@@ -16,14 +16,14 @@ injected `generate` callable so the whole pipeline is testable without a model.
 
 from __future__ import annotations
 
-from eli.coding.sandbox import run_code, smoke_import, RunResult, sandbox_enabled
+from eli.coding.sandbox import run_code, RunResult, sandbox_enabled
 from eli.coding.bug_memory import classify_bug, BugMemory, BugClass
 from eli.coding.verification import (
     Candidate, verify_candidate, score_candidate, synthesize_tests,
 )
 
 __all__ = [
-    "run_code", "smoke_import", "RunResult", "sandbox_enabled",
+    "run_code", "RunResult", "sandbox_enabled",
     "classify_bug", "BugMemory", "BugClass",
     "Candidate", "verify_candidate", "score_candidate", "synthesize_tests",
     "CodeAgent", "solve",

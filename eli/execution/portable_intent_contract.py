@@ -824,30 +824,3 @@ def try_route(text: str) -> Optional[dict]:
 
     return None
 
-
-def wrap_router_callable(fn):
-    if not callable(fn) or getattr(fn, "_portable_intent_contract_wrapped", False):
-        return fn
-
-    def wrapped(*args, **kwargs):
-        text = ""
-        for item in args:
-            if isinstance(item, str) and item.strip():
-                text = item
-                break
-        if not text:
-            for key in ("text", "message", "command", "prompt", "query", "utterance"):
-                value = kwargs.get(key)
-                if isinstance(value, str) and value.strip():
-                    text = value
-                    break
-
-        route = try_route(text)
-        if route is not None:
-            return route
-        return fn(*args, **kwargs)
-
-    wrapped.__name__ = getattr(fn, "__name__", "wrapped")
-    wrapped.__doc__ = getattr(fn, "__doc__", None)
-    wrapped._portable_intent_contract_wrapped = True
-    return wrapped

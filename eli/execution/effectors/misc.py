@@ -15,9 +15,7 @@ def _execute_impl(*a, **k):
     from eli.execution.executor_enhanced import _execute_impl as _f
     return _f(*a, **k)
 
-def open_file(*a, **k):
-    from eli.execution.executor_enhanced import open_file as _f
-    return _f(*a, **k)
+from eli.utils.platform_compat import open_file  # noqa: E402
 
 
 def _h_check_chronal_alignment(a, args):

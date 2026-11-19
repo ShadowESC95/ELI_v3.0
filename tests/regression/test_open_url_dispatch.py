@@ -35,7 +35,7 @@ def test_open_url_is_executor_dispatch_backed():
 
 
 def test_open_url_helper_accepts_bare_domain(monkeypatch):
-    ex = importlib.import_module("eli.execution.executor_enhanced")
+    ex = importlib.import_module("eli.execution.effectors.apps_windows")
 
     opened = {}
 
@@ -53,7 +53,7 @@ def test_open_url_helper_accepts_bare_domain(monkeypatch):
 
 
 def test_open_url_helper_blocks_unsafe_schemes():
-    ex = importlib.import_module("eli.execution.executor_enhanced")
+    ex = importlib.import_module("eli.execution.effectors.apps_windows")
 
     assert ex._eli_open_url_action("javascript:alert(1)")["ok"] is False
     assert ex._eli_open_url_action("file:///etc/passwd")["ok"] is False

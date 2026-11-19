@@ -413,5 +413,3 @@ class DocumentReaderPlugin(Plugin):
             "tables_found": len(doc.tables),
         }
 
-
-PluginClass = DocumentReaderPlugin

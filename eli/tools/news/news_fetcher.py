@@ -19,6 +19,7 @@ import json
 import re
 import sqlite3
 import time
+import html
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -30,8 +31,10 @@ from typing import Any, Dict, List, Optional
 
 def _get_db() -> Path:
     try:
-        from eli.core.paths import memory_db_path
-        return Path(memory_db_path())
+        # the one accessor news_synthesis reads its tables through: the two took the override
+        # variables in opposite order, so with both set articles and reflections split in two files
+        from eli.core.paths import user_db_path
+        return Path(user_db_path())
     except Exception:
         return Path(__file__).resolve().parents[3] / "artifacts" / "db" / "user.sqlite3"
 
@@ -99,12 +102,11 @@ def _fetch_text(url: str, timeout: int = 6) -> str:
 
 
 def _strip_html(text: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", text or "")
-    text = re.sub(r"&amp;", "&", text)
-    text = re.sub(r"&lt;", "<", text)
-    text = re.sub(r"&gt;", ">", text)
-    text = re.sub(r"&quot;", '"', text)
-    text = re.sub(r"&#\d+;", "", text)
+    """The words of a feed field. Entities are decoded first: feeds carry their markup escaped
+    ("&lt;p&gt;"), so stripping tags first left it in as literal tags, and a numeric entity is a
+    character ("it&#39;s"), not something to delete."""
+    text = html.unescape(text or "")
+    text = re.sub(r"</?[A-Za-z!][^>]*>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

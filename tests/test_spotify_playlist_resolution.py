@@ -98,7 +98,7 @@ def test_the_track_path_does_not_scrape_open_spotify(monkeypatch):
                         lambda q, timeout=10.0, launch=True: False)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_search_type_and_play",
                         lambda q, launch=True: False)
-    monkeypatch.setattr(ex, "_spotify_resolve_track_uri", no_scrape)
+    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_resolve_track_uri", no_scrape)
     monkeypatch.setattr(ex, "_spotify_running", lambda: True)
     monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: False)
     monkeypatch.setattr(ex, "_spotify_open_uri", lambda u: False)
@@ -114,7 +114,7 @@ def test_play_specific_falls_back_to_search_when_no_track_uri_resolves(monkeypat
         "eli.integrations.media.cross_platform.spotify_search_type_and_play",
         lambda q: False,
     )
-    monkeypatch.setattr(ex, "_spotify_resolve_track_uri", lambda q: None)
+    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_resolve_track_uri", lambda q: None)
     monkeypatch.setattr(ex, "_spotify_running", lambda: True)
     monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: True)
     monkeypatch.setattr(ex, "_spotify_clear_track_repeat", lambda: True)
@@ -155,7 +155,8 @@ def test_wait_playing_returns_true_when_status_flips(monkeypatch):
         lambda: next(states),
     )
     monkeypatch.setattr(ex.time, "sleep", lambda _s: None)
-    assert ex._spotify_wait_playing(timeout=2.0) is True
+    from eli.integrations.media.cross_platform import spotify_wait_playing
+    assert spotify_wait_playing(timeout=2.0) is True
 
 
 def test_next_media_uses_mpv_when_youtube_is_active(monkeypatch):

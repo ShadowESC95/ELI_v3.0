@@ -306,26 +306,3 @@ def run_code(
     return RunResult(True, True, proc.returncode, False, out, err, traceback_tail=tail,
                      note="genuine runtime crash", **base)
 
-
-def smoke_import(dotted: str, *, project_root: Path, timeout: float = 30.0) -> RunResult:
-    """Import an installed module by dotted path in a subprocess — used to verify
-    a patched module still loads. Crash on any import exception."""
-    code = (
-        "import importlib, sys\n"
-        f"importlib.import_module({dotted!r})\n"
-    )
-    from eli.plugins.subprocess_sandbox import scrub_env
-    env = scrub_env()
-    env["ELI_PATCH_SMOKE"] = "1"
-    try:
-        proc = subprocess.run([sys.executable, "-c", code], cwd=str(project_root),
-                              capture_output=True, text=True, timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return RunResult(True, True, None, True, "", "", note=f"import exceeded {timeout:.0f}s")
-    except Exception as exc:
-        return RunResult(False, False, None, False, "", "", note=f"smoke-import infra error: {exc}")
-    if proc.returncode == 0:
-        return RunResult(True, False, 0, False, proc.stdout or "", proc.stderr or "", note="imports clean")
-    tail = "\n".join((proc.stderr or "").strip().splitlines()[-8:])
-    return RunResult(True, True, proc.returncode, False, proc.stdout or "", proc.stderr or "",
-                     traceback_tail=tail, note="import failed")

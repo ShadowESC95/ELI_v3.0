@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict
 
 from eli.utils.log import get_logger
+from eli.execution.effectors._base import _open_in_browser
 from eli.execution.effectors.system_helpers import (
     open_app_with_timeout,
     open_browser,
@@ -219,7 +220,3 @@ for _action, _fn in {
     "OPEN_MEDIA_HUB": _h_open_media_hub,
 }.items():
     _register(_action, _fn)
-
-def _open_in_browser(*a, **k):
-    from eli.execution.executor_enhanced import _open_in_browser as _f
-    return _f(*a, **k)

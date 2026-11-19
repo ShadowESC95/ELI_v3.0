@@ -13,7 +13,7 @@ Usage (from executor or GUI):
     mgr.uninstall("weather")    # disable + remove files
     mgr.enable("weather")       # re-enable disabled plugin
     mgr.disable("weather")      # disable without removing
-    mgr.execute("weather", "GET_WEATHER", {"city": "Dublin"})
+    mgr.dispatch("WEATHER_GET_WEATHER", {"city": "Dublin"})   # a loaded plugin's action, by its published name
 """
 
 from __future__ import annotations
@@ -172,10 +172,6 @@ class PluginManager:
     # Registry
     # ------------------------------------------------------------------
 
-    def refresh_registry(self) -> List[Dict]:
-        """Re-read the bundled registry."""
-        self._registry_cache = _fetch_registry()
-        return self._registry_cache
 
     def list_available(self) -> List[Dict]:
         """Return all plugins from registry (cached)."""
@@ -592,45 +588,10 @@ class PluginManager:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [entry for _, entry in scored]
 
-    def get_all_actions(self) -> Dict[str, List[str]]:
-        """Return {plugin_id: [ACTION, ...]} for all loaded plugins."""
-        result: Dict[str, List[str]] = {}
-        # From loaded plugins
-        for pid, plugin in self._loaded.items():
-            actions = list(plugin.actions.keys()) if hasattr(plugin, "actions") else []
-            result[pid] = [a.upper() for a in actions]
-        # Supplement with registry data for installed but not loaded
-        for entry in self.list_available():
-            pid = entry.get("id", "")
-            if pid and pid not in result:
-                acts = entry.get("actions", [])
-                if acts:
-                    result[pid] = [a.upper() for a in acts]
-        return result
 
     # ------------------------------------------------------------------
     # Execute
     # ------------------------------------------------------------------
-
-    def execute(self, plugin_id: str, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        plugin = self._loaded.get(plugin_id)
-        if plugin is None:
-            return {"ok": False, "error": f"Plugin '{plugin_id}' not loaded"}
-        try:
-            result = plugin.execute(action.lower().replace(f"{plugin_id.upper()}_", "").lower(), args)
-            if "content" not in result:
-                result["content"] = str(result.get("response", result.get("data", "")))
-            if "response" not in result:
-                result["response"] = result["content"]
-            return result
-        except Exception as exc:
-            return {"ok": False, "error": str(exc), "content": str(exc), "response": str(exc)}
-
-    def get(self, plugin_id: str) -> Optional[Plugin]:
-        return self._loaded.get(plugin_id)
-
-    def all_loaded(self) -> Dict[str, Plugin]:
-        return dict(self._loaded)
 
 
 # ---------------------------------------------------------------------------

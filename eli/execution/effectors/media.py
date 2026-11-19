@@ -6,16 +6,13 @@ executor_enhanced.py; primitives come from eli.execution.effectors._base.
 """
 from __future__ import annotations
 
-import os
-import shlex
 import subprocess
-import threading
 import time
 from typing import Any, Dict, Optional
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-from eli.execution.effectors._base import _allow_or_block, _open_in_browser, _run_argv
+from eli.execution.effectors._base import _open_in_browser
 from eli.execution.effectors.system_helpers import volume_fallback as _volume_fallback
 # YouTube's helpers have one copy, read through the module so a test or a fix there reaches every caller.
 from eli.integrations.media import youtube_playback as _yp
@@ -26,13 +23,7 @@ def _execute_impl(*a, **k):
     from eli.execution.executor_enhanced import _execute_impl as _f
     return _f(*a, **k)
 
-# ── media state ──
-MEDIA_DUCK = str(os.environ.get("ELI_MEDIA_DUCK", "1")).strip().lower() not in ("0","false","no","off")
-MEDIA_PLAYER = (os.environ.get("ELI_MEDIA_PLAYER", "spotify") or "spotify").strip()
 _BROWSER_PLAYERS = {"firefox", "Firefox", "chromium", "Chromium", "chrome"}
-_DUCKED_MEDIA = False
-_DUCK_LOCK = threading.Lock()
-_DUCK_TIMER = None
 _MEDIA_STATE: Dict[str, Any] = {
     "source": None, "title": None, "mpv_sock": None, "mpv_headless": False,
 }
@@ -203,11 +194,6 @@ def _spotify_search(query: str, prefer: str | None = None) -> bool:
     return _cp_search(query, prefer=prefer)
 
 
-def _spotify_loop_status() -> str:
-    from eli.integrations.media.cross_platform import spotify_loop_status as _cp_loop
-    return _cp_loop()
-
-
 def _spotify_clear_track_repeat() -> bool:
     from eli.integrations.media.cross_platform import spotify_clear_track_repeat as _cp_clear
     return _cp_clear()
@@ -221,11 +207,6 @@ def _spotify_play() -> bool:
 def _spotify_is_playing() -> bool:
     from eli.integrations.media.cross_platform import spotify_is_playing as _cp_playing
     return _cp_playing()
-
-
-def _spotify_wait_playing(timeout: float = 8.0, interval: float = 0.25) -> bool:
-    from eli.integrations.media.cross_platform import spotify_wait_playing as _cp_wait
-    return _cp_wait(timeout=timeout, interval=interval)
 
 
 def _spotify_wait_running(timeout: float = 8.0) -> bool:
@@ -253,17 +234,9 @@ def _spotify_resolve_artist_uri(name: str) -> str | None:
     return _cp(name)
 
 
-
-
-def _spotify_resolve_track_uri(query: str) -> str | None:
-    from eli.integrations.media.cross_platform import spotify_resolve_track_uri as _cp
-    return _cp(query)
-
-
 def _spotify_open_liked_songs() -> bool:
     from eli.integrations.media.cross_platform import spotify_open_liked_songs as _cp
     return _cp()
-
 
 
 def _spotify_try_open_and_play(uri: str, *, label: str, kind: str) -> Dict[str, Any] | None:
@@ -300,8 +273,6 @@ def _spotify_try_open_and_play(uri: str, *, label: str, kind: str) -> Dict[str, 
     return {"ok": True, "action": "PLAY_MEDIA", "played": True,
             "kind": kind, "content": msg, "response": msg,
             "track": _track("spotify", query=label, title=track, artist=artist, confirmed=True)}
-
-
 
 
 def _spotify_is_liked_songs_request(name: str) -> bool:
@@ -1015,159 +986,6 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
             "track": _track("youtube", query=query, confirmed=False)}
 
 
-def _playerctl_run(argv):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
-    except Exception as e:
-        return 1, "", str(e)
-
-
-def _playerctl_p(*args):
-    if MEDIA_PLAYER:
-        return _playerctl_run(["playerctl", "-p", MEDIA_PLAYER, *args])
-    return _playerctl_run(["playerctl", *args])
-
-
-def _duck_media_pause():
-    # Canonical implementation lives in audio_stt (shared with wake-word ducking).
-    try:
-        from eli.perception.audio_stt import media_player_duck_pause
-        media_player_duck_pause()
-    except Exception:
-        log.debug("[MEDIA_DUCK] pause skipped", exc_info=True)
-
-
-def _duck_media_resume():
-    try:
-        from eli.perception.audio_stt import media_player_duck_resume
-        media_player_duck_resume()
-    except Exception:
-        log.debug("[MEDIA_DUCK] resume skipped", exc_info=True)
-
-
-def _duck_schedule_resume(deadline_s: float):
-    # Reset timer each time wake window is extended.
-    global _DUCK_TIMER
-    if not MEDIA_DUCK:
-        return
-    with _DUCK_LOCK:
-        if _DUCK_TIMER is not None:
-            try:
-                _DUCK_TIMER.cancel()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            _DUCK_TIMER = None
-        delay = max(0.0, float(deadline_s) - time.time())
-        t = threading.Timer(delay, _duck_media_resume)
-        t.daemon = True
-        _DUCK_TIMER = t
-        t.start()
-
-
-def _spotify_player_name():
-    # Pick a player name that actually exists (flatpak spotify usually exposes "spotify")
-    r = _run_argv(["playerctl", "-l"], timeout=30)
-    if r.get("ok") and r.get("stdout"):
-        players = [p.strip() for p in r["stdout"].splitlines() if p.strip()]
-        for p in players:
-            if "spotify" in p.lower():
-                return p
-    return "spotify"
-
-
-def _spotify_launch():
-    """
-    Launch Spotify and VERIFY it actually stays running.
-    """
-    SPOTIFY_CMD = os.environ.get("ELI_SPOTIFY_CMD", "").strip() or "spotify"
-    argv = shlex.split(SPOTIFY_CMD)
-    if not argv:
-        return {"ok": False, "error": "ELI_SPOTIFY_CMD is empty"}
-
-    if not _allow_or_block(argv[0]):
-        return {"ok": False, "error": f"command not allowed: {argv[0]} (ELI_ALLOWED_CMDS)"}
-
-    # If using Flatpak, verify the app exists/installed first.
-    appid = None
-    if len(argv) >= 3 and argv[0] == "flatpak" and argv[1] == "run":
-        appid = argv[2]
-        chk = subprocess.run(
-            ["flatpak", "info", appid],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if chk.returncode != 0:
-            return {
-                "ok": False,
-                "error": f"Flatpak app not installed or not available: {appid}",
-                "stderr": (chk.stderr or "")[-2000:],
-            }
-
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as e:
-        return {"ok": False, "error": str(e), "cmd": argv}
-
-    # Give it a moment, then verify it's actually running.
-    time.sleep(1.8)
-
-    running = False
-    evidence = {}
-
-    # Prefer flatpak ps if we're launching flatpak
-    if appid:
-        ps = subprocess.run(
-            ["flatpak", "ps"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        evidence["flatpak_ps_rc"] = ps.returncode
-        evidence["flatpak_ps_tail"] = (ps.stdout or "")[-4000:]
-        if ps.returncode == 0 and appid in (ps.stdout or ""):
-            running = True
-    else:
-        # Fallback: check playerctl list (best-effort)
-        r = _run_argv(["playerctl", "-l"], timeout=30)
-        evidence["playerctl"] = r
-        if r.get("ok") and "spotify" in (r.get("stdout","").lower()):
-            running = True
-
-    return {
-        "ok": bool(running),
-        "launched": True,
-        "running": bool(running),
-        "pid": getattr(proc, "pid", None),
-        "cmd": argv,
-        "evidence": evidence,
-    }
-
-
-def _spotify_ctl(command: str, auto_launch: bool = True):
-    """
-    command: play|pause|stop|status|next|previous|play-pause
-    """
-    player = _spotify_player_name()
-    r = _run_argv(["playerctl", "-p", player, command], timeout=30)
-
-    # If play fails because spotify isn't running/registered, optionally launch and retry
-    if (not r.get("ok")) and auto_launch and command in {"play", "play-pause"}:
-        launch = _spotify_launch()
-        time.sleep(2)
-        player = _spotify_player_name()
-        r2 = _run_argv(["playerctl", "-p", player, command], timeout=30)
-        return {"ok": r2.get("ok", False), "launch": launch, "result": r2, "player": player}
-
-    return {"ok": r.get("ok", False), "result": r, "player": player}
-
-
 # ── public transport API ──
 def stop_media(target: str | None = None) -> Dict[str, Any]:
     """Stop media. Spotify doesn't support MPRIS Stop so uses pause."""
@@ -1304,7 +1122,7 @@ def now_playing() -> Dict[str, Any]:
     msg = "Nothing is playing right now."
     return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
-__all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
+__all__ = ['_BROWSER_PLAYERS', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
 
 
 def _ensure_spotify_running() -> bool:

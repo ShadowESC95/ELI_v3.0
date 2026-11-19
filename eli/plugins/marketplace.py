@@ -270,17 +270,6 @@ def remove_registry(registry_id: str) -> Dict[str, Any]:
     return {"ok": True, "problems": []}
 
 
-def set_registry_enabled(registry_id: str, enabled: bool) -> Dict[str, Any]:
-    with _lock:
-        regs = _load_registries()
-        for r in regs:
-            if r["id"] == registry_id:
-                r["enabled"] = bool(enabled)
-                _save_registries(regs)
-                return {"ok": True, "problems": []}
-    return {"ok": False, "problems": [f"No such registry: {registry_id!r}"]}
-
-
 # ── browsing ───────────────────────────────────────────────────────────────────
 
 def _fetch_one(registry: Dict[str, Any], timeout: float = 10) -> Dict[str, Any]:
@@ -955,7 +944,7 @@ def install_mcp(listing: Dict[str, Any], *, verify: bool = True,
 
 
 __all__ = [
-    "list_registries", "add_registry", "remove_registry", "set_registry_enabled",
+    "list_registries", "add_registry", "remove_registry",
     "browse", "search", "preview_install", "install",
     "marketplace_home", "set_marketplace_home",
     "quick_install", "needs_review", "review_notes", "install_mcp",

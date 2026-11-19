@@ -2,19 +2,17 @@
 Media runtime control for ELI.
 
 Owns:
-- YouTube/mpv local playback
-- targeted youtube/mpv play/pause/stop/next/previous
-- Spotify query playback
-- NOOP response handling
+- opening Spotify and saying so only once it takes commands
+- the streaming services ELI knows by name, their apps and their sites
+- handing a targeted youtube/mpv/spotify media action to the executor's media effector
+  (eli/execution/effectors/media.py, which owns playback and transport)
 
 This module deliberately does not own STT, wake words, routing, or GUI logic.
 """
 
 
-import os
 import shutil
 import subprocess
-import time
 from typing import Any, Callable, Mapping
 
 from eli.utils.log import get_logger
@@ -38,19 +36,6 @@ def _str(x: Any) -> str:
 
 def _lower(x: Any) -> str:
     return _str(x).lower()
-
-
-def _run(argv: list[str], timeout: float = 3.0) -> tuple[bool, str, str]:
-    try:
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
-    except Exception as e:
-        return False, "", str(e)
 
 
 def _args_dict(args: Any) -> dict[str, Any]:
@@ -93,153 +78,6 @@ def _query(args: Mapping[str, Any]) -> str:
         or args.get("q")
         or ""
     )
-
-
-def _clean_youtube_query(query: str) -> str:
-    q = _str(query).lower()
-    for prefix in (
-        "play youtube ",
-        "youtube play ",
-        "play yt ",
-        "yt play ",
-        "play mpv ",
-        "mpv play ",
-        "youtube ",
-        "yt ",
-        "mpv ",
-        "play ",
-    ):
-        if q.startswith(prefix):
-            q = q[len(prefix):].strip()
-            break
-    q = q.replace(" on youtube", "").replace(" on yt", "").replace(" on mpv", "")
-    return q.strip()
-
-
-def _mpv_socket() -> str:
-    env = os.environ.get("ELI_YOUTUBE_MPV_IPC")
-    if env:
-        return env
-    try:
-        from eli.utils import platform_compat as _pc
-        if _pc.WINDOWS:
-            # mpv on Windows exposes IPC over a named pipe, not a filesystem socket.
-            return __import__("eli.core.paths", fromlist=["pipe_path"]).pipe_path("youtube_mpv")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    from eli.core.paths import temp_path
-    return str(temp_path("youtube_mpv.sock"))
-
-
-def _mpv_ipc(command: str) -> bool:
-    from eli.integrations.media.cross_platform import mpv_alive, mpv_ipc_send
-
-    sock = _mpv_socket()
-    if not mpv_alive(sock):
-        if shutil.which("playerctl"):
-            player_cmd = {
-                "pause": "pause",
-                "play": "play",
-                "resume": "play",
-                "stop": "stop",
-                "next": "next",
-                "previous": "previous",
-                "prev": "previous",
-            }.get(_lower(command))
-            if player_cmd:
-                ok, _, _ = _run(["playerctl", "-p", "mpv", player_cmd], timeout=2)
-                return ok
-        return False
-
-    payloads = {
-        "pause": {"command": ["set_property", "pause", True]},
-        "play": {"command": ["set_property", "pause", False]},
-        "resume": {"command": ["set_property", "pause", False]},
-        "stop": {"command": ["stop"]},
-        "close": {"command": ["quit"]},
-        "next": {"command": ["playlist-next", "weak"]},
-        "previous": {"command": ["playlist-prev", "weak"]},
-        "prev": {"command": ["playlist-prev", "weak"]},
-    }
-    payload = payloads.get(_lower(command))
-    if not payload:
-        return False
-    return bool(mpv_ipc_send(payload["command"], sock_path=sock))
-
-
-def _mpv_control(command: str) -> str:
-    cmd = _lower(command)
-    ipc_cmd = "play" if cmd == "resume" else cmd
-
-    if _mpv_ipc(ipc_cmd):
-        labels = {
-            "pause": "⏸ Paused — youtube/mpv",
-            "play": "▶ Playing — youtube/mpv",
-            "resume": "▶ Playing — youtube/mpv",
-            "stop": "⏹ Stopped — youtube/mpv",
-            "close": "Closed youtube/mpv",
-            "next": "⏭ Next — youtube/mpv",
-            "previous": "⏮ Previous — youtube/mpv",
-            "prev": "⏮ Previous — youtube/mpv",
-        }
-        return labels.get(cmd, f"{cmd} — youtube/mpv")
-
-    if shutil.which("playerctl"):
-        player_cmd = {
-            "pause": "pause",
-            "play": "play",
-            "resume": "play",
-            "stop": "stop",
-            "next": "next",
-            "previous": "previous",
-            "prev": "previous",
-        }.get(cmd)
-
-        if player_cmd:
-            ok, _, err = _run(["playerctl", "-p", "mpv", player_cmd], timeout=2)
-            if ok:
-                labels = {
-                    "pause": "⏸ Paused — mpv",
-                    "play": "▶ Playing — mpv",
-                    "resume": "▶ Playing — mpv",
-                    "stop": "⏹ Stopped — mpv",
-                    "next": "⏭ Next — mpv",
-                    "previous": "⏮ Previous — mpv",
-                    "prev": "⏮ Previous — mpv",
-                }
-                return labels.get(cmd, f"{cmd} — mpv")
-            return f"Could not control mpv: {err or 'playerctl failed'}"
-
-    return "Could not control youtube/mpv. Need mpv IPC socket or playerctl."
-
-
-def youtube_play(query: str) -> str:
-    q = _clean_youtube_query(query)
-    if not q:
-        return "Say what to play."
-
-    from eli.integrations.media.media_deps import missing_youtube_tools
-    _missing = missing_youtube_tools()
-    if _missing:
-        names = " and ".join(_missing)
-        return f"{names} {'is' if len(_missing) == 1 else 'are'} not installed; cannot play YouTube locally."
-
-    from eli.integrations.media.youtube_playback import attempt_youtube_mpv
-
-    sock = _mpv_socket()
-    try:
-        _mpv_ipc("close")
-        time.sleep(0.15)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    result = attempt_youtube_mpv(q, ipc_path=sock)
-    if result.get("played"):
-        return f"YouTube: playing via mpv: {q}"
-    if result.get("pending"):
-        return f"YouTube: starting {q} on mpv — still resolving."
-    err = result.get("error") or "playback failed"
-    return f"Could not play YouTube via mpv: {err}"
 
 
 def open_spotify() -> str:

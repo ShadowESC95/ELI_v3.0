@@ -17,7 +17,8 @@ ELI's own prose armed as a command for the next "yes".
 from tests._live_gui import live_gui_files, live_gui_source
 import pytest
 
-from eli.execution.router_enhanced import _pm_asks_something, route
+from eli.execution.router_enhanced import route
+from eli.execution.routing.intents.self_report import _pm_asks_something
 from eli.kernel.engine import (
     _RepeatDetected, _opens_by_echoing, _stream_holding_back_repeats,
 )

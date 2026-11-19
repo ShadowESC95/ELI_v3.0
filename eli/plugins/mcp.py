@@ -44,13 +44,6 @@ _lock = threading.RLock()
 STDIO, HTTP = "stdio", "http"
 PROTOCOL_VERSION = "2025-06-18"
 
-# Runtimes an entry can depend on, and how to prove each is present.
-_RUNTIMES = {
-    "node": (["npx", "node"], "Node.js", "https://nodejs.org"),
-    "python": (["uvx", "uv", "python3", "python"], "Python", "https://python.org"),
-    "binary": ([], "a native binary", ""),
-}
-
 
 def start_timeout(explicit: Optional[float] = None) -> float:
     """Seconds an MCP server gets to start and answer the handshake.

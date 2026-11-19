@@ -22,7 +22,9 @@ from eli.tools.news.news_fetcher import (
 def test_strip_html_tags_and_entities():
     assert _strip_html("<b>Hi</b> &amp; bye") == "Hi & bye"
     assert _strip_html("<p>a</p><p>b</p>") == "a b"
-    assert _strip_html("&lt;tag&gt; &quot;q&quot; &#39;") == '<tag> "q"'
+    # a feed's escaped markup is markup, and a numeric entity is a character
+    assert _strip_html("&lt;p&gt;it&#39;s &quot;q&quot;&lt;/p&gt; &lt;a href=&quot;x&quot;&gt;here&lt;/a&gt;") == 'it\'s "q" here'
+    assert _strip_html("a &lt; b and c &gt; d") == "a < b and c > d"
     assert _strip_html("") == ""
 
 
@@ -73,3 +75,11 @@ def test_rss_feeds_for_topic():
     phys = _rss_feeds_for_topic("physics")
     assert len(phys) <= len(all_feeds)
     assert all(f[2] in {"science", "physics"} for f in phys)
+
+
+def test_articles_and_reflections_are_kept_in_one_database(monkeypatch, tmp_path):
+    """Both override variables set: the fetcher read one and the synthesis the other."""
+    from eli.tools.news import news_fetcher, news_synthesis
+    monkeypatch.setenv("ELI_USER_DB", str(tmp_path / "user.sqlite3"))
+    monkeypatch.setenv("ELI_MEMORY_DB", str(tmp_path / "memory.sqlite3"))
+    assert news_fetcher._get_db() == news_synthesis._user_db()

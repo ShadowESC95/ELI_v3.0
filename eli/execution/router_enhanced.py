@@ -79,25 +79,6 @@ import logging as _swlog_logging
 _SWLOG = _swlog_logging.getLogger(__name__)
 
 
-# Pre-compiled regex at module level so route() pays no compile cost. Python's pattern cache holds
-# 512, but 379 inline calls still pay a lookup every time.
-_RE_MEDIA_CONTROL = re.compile(
-    r"\b(play|pause|stop|resume|next|previous|skip|mute|unmute|volume|repeat|shuffle)\b", re.I)
-_RE_OPEN_APP = re.compile(
-    r"\b(open|launch|start|run|load)\b.{1,30}\b(app|application|program|browser|terminal|ide|editor)\b",
-    re.I)
-_RE_MEMORY_QUERY = re.compile(
-    r"\b(remember|recall|memory|what do you know|stored|from memory|profile)\b", re.I)
-_RE_SELF_AWARE = re.compile(
-    r"\b(who are you|what are you|tell me about yourself|your (identity|persona|purpose|capabilities))\b",
-    re.I)
-_RE_REASONING_MODE = re.compile(r"\breasoning\s+mode", re.I)
-_RE_ALL_MODES = re.compile(
-    r"\b(all|every|each|how many|list|explain|full|describe|detail|difference|differ|compare"
-    r"|what are|tell me about|tell me all|tell me everything|what do|how do"
-    r"|modes?\s+you\s+have|modes?\s+does|all.*mode|every.*mode)\b", re.I)
-_RE_RUNTIME_AUDIT = re.compile(
-    r"\b(audit|inspect|diagnose|scan|what('s| is) wrong|broken|missing|wiring|pipeline)\b", re.I)
 # Wall-clock requests, shared by the TIME/DATE routes and the long-question guard. The guard must
 # not divert a clock question into CHAT, where the model has no clock and truthfully says it can't
 # read one, which reads as ELI denying a capability it has.
@@ -112,22 +93,6 @@ from eli.execution.routing._helpers import (  # noqa: F401  (moved there so inte
     _tone_is_negated,
 )
 
-# Meta-critique of DATE/TIME behaviour ("explain how you can tell me the date by calling that
-# function...") embeds a clock clause and used to hijack into DATE, answering the date and never the
-# planning question. Detect that class explicitly.
-
-
-_RE_SYSTEM_STATS = re.compile(
-    r"\b(cpu|ram|memory usage|disk|gpu|system stats|hardware|uptime|load)\b", re.I)
-_RE_CHAT_FILLER = re.compile(
-    r"^\s*(ok|okay|yes|no|yeah|nope|sure|thanks|thank you|got it|understood"
-    r"|alright|cool|nice|great|fine)\s*[.!?]*\s*$", re.I)
-_RE_GROUNDED_PIPELINE = re.compile(
-    r"\b(cognition pipeline|input to output|every step|memory system|db tables"
-    r"|runtime audit|diagnostic|diagnostics|full audit|fulltime audit|full.time audit"
-    r"|system audit|run.*audit|do.*audit|wanna.*audit)\b", re.I)
-_RE_URL = re.compile(r"https?://\S+|www\.\S+", re.I)
-_RE_SHELL_CMD = re.compile(r"^(sudo|bash|sh|python|pip|apt|dnf|brew|npm|git)\s", re.I)
 
 def _last_used_path() -> str | None:
     """The file or folder this conversation last named ("summarise the pdfs in that folder"). Kept
@@ -274,7 +239,6 @@ def _without_courtesy(text: str) -> str:
     if stripped == str(text or "").strip() or len(stripped.split()) < 2:
         return str(text or "")
     return stripped
-
 
 
 def _eli_weather_prepass(user_text: str):
@@ -462,16 +426,6 @@ _QUESTION_RX = re.compile(
     r"(you|i|we|it|that|this|there|they)\b",
     re.I,
 )
-# Asking WHETHER ELI can see, rather than asking it to look. Subject-first
-# ("you can see ...") and explicit confirmation openers; the modal-first request
-# form ("can you see ...") is deliberately NOT matched so it still triggers a glance.
-_SCREEN_CAPABILITY_QUESTION_RX = re.compile(
-    r"\b(?:just\s+(?:confirming|checking|making\s+sure)|"
-    r"(?<!can\s)you\s+can\s+(?:actually\s+|really\s+)?(?:see|read|view)\b|"
-    r"(?:are|so)\s+you\s+saying|"
-    r"you\s+(?:are|can)\s+able\s+to\s+see)\b",
-    re.I,
-)
 
 def _eli_outside_quotes(text: str) -> str:
     """The utterance with quoted passages removed — what the user actually asked.
@@ -497,7 +451,6 @@ def _eli_final_clause(text: str) -> str:
     opening. Splits on sentence punctuation and returns the final non-empty part."""
     parts = [p.strip() for p in re.split(r"[.!?;]+", str(text or "")) if p.strip()]
     return parts[-1] if parts else str(text or "").strip()
-
 
 
 _AG_CAL = r"(?:calendar|calender|calander|diary|agenda|schedule)"
@@ -1087,41 +1040,6 @@ def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any
     return None
 
 
-
-# Stems that make a turn a request rather than a remark. The personal-memory route is a
-# substring test over a keyword table and can't tell a question from a passing mention ("My
-# memory is fine, it is yours that we are worried about" hit PERSONAL_MEMORY_DEEP_EXPLAIN at
-# 0.99). Require that something was actually asked.
-_ASKING_STEMS = (
-    "what", "which", "how", "why", "when", "where", "who", "whose",
-    "can you", "could you", "do you", "did you", "are you", "is your",
-    "have you", "has your", "show me", "tell me", "list", "explain",
-    "describe", "check", "report", "give me", "walk me",
-)
-
-# Word-boundary anchored: a bare `in` test is the defect this guard stops ("it is yourS that we are
-# worried" contains "is your").
-_ASKING_RE = re.compile(
-    r"\b(?:" + "|".join(s.replace(" ", r"\s+") for s in _ASKING_STEMS) + r")\b",
-    re.I,
-)
-
-
-def _pm_asks_something(low: str) -> bool:
-    """True when the turn is a question or an explicit request, not a remark.
-
-    Deliberately generous — a false negative just falls through to CHAT, which
-    still answers the user; a false positive replaces their sentence with a
-    runtime dump, which is the failure being fixed.
-    """
-    t = (low or "").strip()
-    if not t:
-        return False
-    if "?" in t:
-        return True
-    return bool(_ASKING_RE.search(t))
-
-
 # Technical runtime questions: routing/_helpers._RUNTIME_STATUS_RE (one owner; the self-report
 # stage reads the same one).
 from eli.execution.routing._helpers import runtime_status_asked  # noqa: E402
@@ -1505,17 +1423,6 @@ def _route_plugin_bridge_prepass(raw: str, low: str):
 
     return None
 
-
-# === ELI non-Quick/meta-continuity routing contract v1 ===
-def _eli_meta_continuity_probe(text: str) -> bool:
-    t = (text or "").lower()
-    return any(x in t for x in (
-        "short answer", "short answers", "terribly short", "what is with",
-        "what's with", "where is your continuity", "continuity", "awareness",
-        "memory", "lobotom", "constitutional", "reasoning mode", "quick mode",
-        "fallback", "orchestration", "pipeline", "why did you", "what the fuck",
-    ))
-# === END ELI non-Quick/meta-continuity routing contract v1 ===
 
 def _eli_react_to_content_prepass(original_text: str, raw: str, low: str):
     """Force CHAT when the user asks ELI to react to / give an opinion on text
@@ -3551,92 +3458,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("OPEN_FILE_SYSTEM", {"path": "~"},
                    1.0, matched_by="alias.storage_matrix")
 
-    # 6.5) Plugin router bridge: explicit plugin-backed actions. Keep these patterns explicit and
-    # don't hijack broad language: a generic "search for X" stays browser/search routing unless the
-    # user asks for web/plugin/online search.
-
-    # Web plugin
-    _web_m = re.match(
-        r"^(?:web\s+search|search\s+the\s+web\s+for|search\s+online\s+for|online\s+search\s+for|internet\s+search\s+for)\s+(.+)$",
-        raw,
-        re.I,
-    )
-    if _web_m:
-        query = _web_m.group(1).strip()
-        if query:
-            return _mk("WEB_SEARCH", {"query": query}, 0.96, matched_by="plugin.web_search",
-                       entities={"query": query})
-
-    # TTS plugin
-    _speak_m = re.match(
-        r"^(?:speak|say|read\s+aloud|tts)\s+(.+)$",
-        raw,
-        re.I,
-    )
-    if _speak_m:
-        text_to_say = _speak_m.group(1).strip()
-        if text_to_say:
-            return _mk("SPEAK", {"text": text_to_say}, 0.96, matched_by="plugin.tts_speak",
-                       entities={"text": text_to_say})
-
-    # System stats plugin
-    if re.match(r"^(?:system\s+stats|system\s+statistics|resource\s+usage|show\s+system\s+stats)$", low):
-        return _mk("SYSTEM_STATS", {}, 0.96, matched_by="plugin.system_stats")
-
-    if re.match(r"^(?:cpu\s+usage|processor\s+usage|show\s+cpu\s+usage|how\s+busy\s+is\s+the\s+cpu)$", low):
-        return _mk("CPU_USAGE", {}, 0.96, matched_by="plugin.cpu_usage")
-
-    if re.match(r"^(?:ram\s+usage|memory\s+usage|show\s+ram\s+usage|show\s+memory\s+usage|how\s+much\s+ram\s+is\s+used)$", low):
-        return _mk("RAM_USAGE", {}, 0.96, matched_by="plugin.ram_usage")
-
-    # Pomodoro plugin
-    if re.match(r"^(?:start\s+pomodoro|begin\s+pomodoro|pomodoro\s+start)(?:\s+timer)?$", low):
-        return _mk("POMODORO_START", {}, 0.96, matched_by="plugin.pomodoro_start")
-
-    if re.match(r"^(?:stop\s+pomodoro|end\s+pomodoro|cancel\s+pomodoro|pomodoro\s+stop)$", low):
-        return _mk("POMODORO_STOP", {}, 0.96, matched_by="plugin.pomodoro_stop")
-
-    if re.match(r"^(?:pomodoro\s+status|show\s+pomodoro|pomodoro)$", low):
-        return _mk("POMODORO_STATUS", {}, 0.94, matched_by="plugin.pomodoro_status")
-
-    # Notes plugin
-    _new_note_m = re.match(
-        r"^(?:new\s+note|create\s+note|write\s+note)\s+(.+)$",
-        raw,
-        re.I,
-    )
-    if _new_note_m:
-        note_text = _new_note_m.group(1).strip()
-        if note_text:
-            return _mk("NEW_NOTE", {"text": note_text, "content": note_text}, 0.96,
-                       matched_by="plugin.notes_new", entities={"text": note_text})
-
-    _search_notes_m = re.match(
-        r"^(?:search\s+notes\s+for|find\s+note\s+about|find\s+notes\s+about|search\s+my\s+notes\s+for)\s+(.+)$",
-        raw,
-        re.I,
-    )
-    if _search_notes_m:
-        query = _search_notes_m.group(1).strip()
-        if query:
-            return _mk("SEARCH_NOTES", {"query": query}, 0.96, matched_by="plugin.notes_search",
-                       entities={"query": query})
-
-    if re.match(r"^(?:list\s+notes|show\s+notes|show\s+my\s+notes|notes\s+list)$", low):
-        return _mk("LIST_NOTES", {}, 0.96, matched_by="plugin.notes_list")
-
-    # Smart-home plugin
-    _smart_m = re.match(
-        r"^(?:smart\s+home|home\s+automation)\s+(.+)$",
-        raw,
-        re.I,
-    )
-    if _smart_m:
-        command = _smart_m.group(1).strip()
-        if command:
-            return _mk("SMART_HOME", {"command": command, "text": command}, 0.95,
-                       matched_by="plugin.smart_home", entities={"command": command})
-
 
     # ------------------------------------------------------------
     # 7) URL / BROWSER
@@ -3740,15 +3561,8 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                        matched_by="web.search", entities={"query": query})
 
     # ------------------------------------------------------------
-    # 8) SCREENSHOT / INPUT / VOLUME
+    # 8) INPUT / VOLUME (a screenshot is taken by the direct rule near the top)
     # ------------------------------------------------------------
-    if re.search(
-            r"\b(take|capture)\s+(a\s+)?(screenshot|screen\s*shot|screen\s*capture|screen)\b", raw, re.I):
-        region = "area" if re.search(
-            r"\b(area|region|selection|part)\b", raw, re.I) else "full"
-        return _mk("SCREENSHOT", {"region": region}, 0.98,
-                   matched_by="io.screenshot", entities={"region": region})
-
     # Volume: said by its noun ("vol down 10%", "volume 60%") it is read by command_parser.volume_said,
     # its one grammar; said by its verb ("turn it down", "raise the volume") by that parser's volume
     # frames. Order matters: unmute before mute.
@@ -6402,114 +6216,6 @@ def _eli_phase38_tiny_fragment_post(raw, result):
     return result
 
 
-def _eli_phase38_bottom_core_dispatch(raw, *args, **kwargs):
-    identity = _eli_phase38_identity_contract(raw)
-    if identity is not None:
-        return identity
-
-    result = _eli_phase38_open_typo_or_core_route(raw, *args, **kwargs)
-    result = _eli_phase38_media_query_cleaner_post(result)
-    result = _eli_phase38_tiny_fragment_post(raw, result)
-    return result
-
-
-def _eli_phase38_voice_portable_persona_lower_dispatch(raw, *args, **kwargs):
-    if callable(_eli_phase38_portable_try_route):
-        try:
-            portable = _eli_phase38_portable_try_route(raw)
-            if portable is not None:
-                return portable
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    voice = globals().get("_eli_voice_contract_route")
-    if callable(voice):
-        try:
-            shortcut = voice(raw)
-            if shortcut is not None:
-                return shortcut
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    persona = _eli_phase38_persona_override_contract(raw)
-    if persona is not None:
-        return persona
-
-    followup = _eli_phase38_followup_passthrough_contract(raw)
-    if followup is not None:
-        return followup
-
-    return _eli_phase38_bottom_core_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_lower_contract_dispatch(raw, *args, **kwargs):
-    lrf_pre = globals().get("_eli_lrf_pre_route")
-    if callable(lrf_pre):
-        try:
-            out = lrf_pre(raw)
-            if out is not None:
-                return out
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return _eli_phase38_voice_portable_persona_lower_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_personal_memory_guard_dispatch(raw, *args, **kwargs):
-    pm_pre = globals().get("_eli_pm_pre_route")
-    if callable(pm_pre):
-        try:
-            out = pm_pre(raw)
-            if out is not None:
-                return out
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return _eli_phase38_lower_contract_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_self_improvement_dispatch(raw, *args, **kwargs):
-    sig = globals().get("_eli_self_improvement_phrase_guard")
-    if callable(sig):
-        try:
-            guarded = sig(raw)
-            if guarded:
-                return guarded
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return _eli_phase38_personal_memory_guard_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs):
-    rcfg = globals().get("_eli_runtime_cognition_failure_guard")
-    if callable(rcfg):
-        try:
-            guarded = rcfg(raw)
-            if guarded:
-                return guarded
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return _eli_phase38_self_improvement_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_runtime_status_dispatch(raw, *args, **kwargs):
-    status_or_name = _eli_phase38_runtime_status_or_name_source_contract(raw)
-    if status_or_name is not None:
-        return status_or_name
-
-    return _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_final_memory_dispatch(raw, *args, **kwargs):
-    memory_contract = _eli_phase38_final_memory_question_contract(raw)
-    if memory_contract is not None:
-        return memory_contract
-
-    return _eli_phase38_runtime_status_dispatch(raw, *args, **kwargs)
-
-
 def _eli_phase38_personal_memory_summary_compat_post(out):
     if isinstance(out, dict) and out.get("action") == "PERSONAL_MEMORY_SUMMARY":
         out = dict(out)
@@ -6538,172 +6244,6 @@ def _eli_phase38_identity_scope_post(raw, out):
         out["meta"] = meta
 
     return out
-
-
-def _eli_phase38_profile_scope_dispatch(raw, *args, **kwargs):
-    low = _eli_profile_scope_low(raw)
-
-    if _eli_is_explicit_preference_request(low):
-        return _eli_profile_scope_result(
-            "PERSONAL_MEMORY_SUMMARY",
-            raw,
-            "preferences_detail",
-            matched_by="profile.scope_contract.preferences_detail",
-        )
-
-    if _eli_is_full_profile_dump(low):
-        return _eli_profile_scope_result(
-            "PERSONAL_MEMORY_SUMMARY",
-            raw,
-            "full_profile",
-            matched_by="profile.scope_contract.full_profile",
-        )
-
-    out = _eli_phase38_final_memory_dispatch(raw, *args, **kwargs)
-    out = _eli_phase38_personal_memory_summary_compat_post(out)
-    out = _eli_phase38_identity_scope_post(raw, out)
-
-    if isinstance(out, dict):
-        action = str(out.get("action") or "").upper()
-        if action == "PERSONAL_MEMORY_SUMMARY" and _eli_is_generic_profile_inventory(low):
-            out = dict(out)
-            out["args"] = dict(out.get("args") or {})
-            out["args"]["question"] = str(raw or "")
-            out["args"]["profile_scope"] = "inventory_only"
-
-            out["meta"] = dict(out.get("meta") or {})
-            out["meta"]["profile_scope_contract"] = "inventory_only"
-            out["meta"]["forbid_preference_detail"] = True
-            out["meta"]["forbid_project_detail"] = True
-            out["meta"]["active_user_scoped"] = True
-            return out
-
-    return out
-
-
-def _eli_phase38_memory_count_dispatch(raw, *args, **kwargs):
-    if _eli_is_memory_count_question(raw):
-        return {
-            "action": "MEMORY_STATUS",
-            "args": {
-                "question": str(raw or ""),
-                "memory_scope": "count_only",
-            },
-            "confidence": 0.995,
-            "meta": {
-                "matched_by": "memory.count.grounded_synthesis",
-                "allow_chat_without_evidence": False,
-                "requires_grounded_synthesis": True,
-                "requires_output_validation": True,
-                "quick_direct_allowed": True,
-                "forbid_unverified_generation": True,
-            },
-        }
-
-    out = _eli_phase38_profile_scope_dispatch(raw, *args, **kwargs)
-
-    if isinstance(out, dict) and str(out.get("action") or "").upper() == "MEMORY_STATUS":
-        if _eli_is_memory_count_question(raw):
-            real_args = dict(out.get("args") or {})
-            real_args["question"] = str(raw or "")
-            real_args["memory_scope"] = "count_only"
-            out["args"] = real_args
-
-            meta = dict(out.get("meta") or {})
-            meta["matched_by"] = "memory.count.grounded_synthesis.post_route"
-            meta["requires_grounded_synthesis"] = True
-            meta["requires_output_validation"] = True
-            meta["quick_direct_allowed"] = True
-            meta["forbid_unverified_generation"] = True
-            out["meta"] = meta
-
-    return out
-
-
-def _eli_phase38_recent_memory_dispatch(raw, *args, **kwargs):
-    if _eli_recent_memory_processing_question(raw):
-        return {
-            "action": "MEMORY_STATUS",
-            "args": {
-                "question": str(raw or ""),
-                "memory_scope": "recent_processing",
-            },
-            "confidence": 0.995,
-            "meta": {
-                "matched_by": "memory.recent_processing_grounded",
-                "task_family": "memory_runtime",
-                "grounded_required": True,
-                "forbid_chat_fallback": True,
-                "forbid_fake_memory_activity": True,
-                "allow_chat_without_evidence": False,
-            },
-        }
-
-    return _eli_phase38_memory_count_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_self_report_recent_updates_dispatch(raw, *args, **kwargs):
-    if _eli_self_report_recent_updates_question(raw):
-        return {
-            "action": "SELF_REPORT",
-            "args": {
-                "question": str(raw or ""),
-                "self_report_scope": "recent_updates",
-            },
-            "confidence": 0.995,
-            "meta": {
-                "matched_by": "self_report.recent_updates_grounded",
-                "task_family": "self_report_runtime",
-                "grounded_required": True,
-                "forbid_chat_fallback": True,
-                "forbid_fake_update_claims": True,
-                "allow_chat_without_evidence": False,
-            },
-        }
-
-    return _eli_phase38_recent_memory_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_gui_actual_scan_dispatch(raw, *args, **kwargs):
-    if _eli_gui_audit_actual_scan_v2(raw):
-        return {
-            "action": "GUI_RUNTIME_AUDIT",
-            "args": {
-                "question": str(raw or ""),
-                "proof_requested": True,
-                "audit_depth": "proof",
-                "require_timestamps": True,
-                "require_full_file_read_evidence": True,
-            },
-            "confidence": 0.995,
-            "meta": {
-                "matched_by": "router.gui_audit_actual_scan_proof_v2",
-                "need_grounding": True,
-                "allow_chat_without_evidence": False,
-                "task_family": "grounded_audit",
-                "forbid_chat_fallback": True,
-            },
-        }
-
-    return _eli_phase38_self_report_recent_updates_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_memory_runtime_lock_dispatch(raw, *args, **kwargs):
-    if _eli_memory_runtime_route_lock_should_trigger(raw):
-        return _eli_memory_runtime_route_lock_result(raw)
-
-    return _eli_phase38_gui_actual_scan_dispatch(raw, *args, **kwargs)
-
-
-def _eli_phase38_flattened_route(raw="", *args, **kwargs):
-    text = str(raw or "")
-
-    precedence = _eli_phase38_route_precedence_contract(text)
-    if precedence is not None:
-        return _eli_phase38_enrich_pdf_if_needed(text, precedence)
-
-    result = _eli_phase38_memory_runtime_lock_dispatch(text, *args, **kwargs)
-    return _eli_phase38_enrich_pdf_if_needed(text, result)
 
 
 log.debug("[ROUTER] router_enhanced module loaded — canonical dispatch pipeline active")

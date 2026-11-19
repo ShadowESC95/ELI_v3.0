@@ -1,7 +1,6 @@
 from __future__ import annotations
 import contextvars
 import hashlib
-import shlex
 import sqlite3
 import subprocess
 import sys
@@ -42,19 +41,7 @@ def _eli_generated_scripts_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-def _eli_attach_response_mode(result, action=None, args=None, meta=None):
-    try:
-        if isinstance(result, dict):
-            _action = action or result.get("action")
-            _args = args or result.get("args") or {}
-            _meta = dict(meta or result.get("meta") or {})
-            result.setdefault("meta", {})
-            result["meta"].setdefault("response_mode", classify_response_mode(_action, _args, _meta))
-        return result
-    except Exception:
-        return result
 
-from eli.runtime.response_policy import classify_response_mode
 from eli.core.paths import resolve_user_repo_path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -107,18 +94,6 @@ def search_memory(query="", k=5, **kwargs):
     except Exception as e:
         return {"ok": False, "error": str(e), "results": []}
 
-# --- Compatibility shim: some older code expects search_memory_compat() ---
-def search_memory_compat(query: str = "", limit: int = 10, q: str = "", k: int = 0, db_path=None):
-    """Back-compat wrapper around Memory.recall_memory()."""
-    qq = (q or query or "").strip()
-    kk = int(k or limit or 10)
-    return search_memory(query=qq, k=kk)
-
-
-def _browser_user_dir() -> Path:
-    from eli.execution.effectors.system_helpers import browser_user_dir
-    return browser_user_dir()
-
 # === CONVERSATION LOGGING (append-only) ===
 def _repo_root():
     try:
@@ -166,11 +141,6 @@ def _convlog_append(role: str, text: str, meta: dict | None = None) -> None:
 def _get_memory_path():
     from eli.core.db_paths import get_user_db_path
     return get_user_db_path()
-
-
-def _sqlite_init(conn):
-    # Canonical Memory manages schema; keep as no-op for compatibility.
-    return None
 
 
 def memory_store(text, tags=None, kind="note", source="chat", confidence=0.7, ts=None):
@@ -2427,10 +2397,8 @@ SUPPORTED_ACTIONS = _SupportedActions([
 STATE_PATH = Path(os.environ.get("ELI_STATE_FILE", str(get_paths().artifacts_dir / "state.json"))).expanduser().resolve()
 
 # Short-term conversation continuity
-MAX_HISTORY_MESSAGES = int(os.environ.get("ELI_MAX_HISTORY_MESSAGES", "32"))
 
 # Long-term memory store (simple deterministic archive, no embeddings)
-MEMORY_PATH = Path(os.environ.get("ELI_MEMORY_FILE", str(get_paths().artifacts_dir / "eli_memory_legacy.jsonl"))).expanduser().resolve()
 
 # Lock behavior: if true, refuse CHAT when verification fails
 LOCK_ENFORCED = os.environ.get("ELI_LOCK_ENFORCED", "1").strip() not in ("0", "false", "False", "no", "NO")
@@ -2451,31 +2419,6 @@ def _save_state(st: Dict[str, Any]) -> None:
         STATE_PATH.write_text(json.dumps(st, indent=2), encoding="utf-8")
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-
-
-def _state_get_history(st: Dict[str, Any]) -> List[Dict[str, str]]:
-    h = st.get("chat_history")
-    if not isinstance(h, list):
-        return []
-    out: List[Dict[str, str]] = []
-    for m in h:
-        if not isinstance(m, dict):
-            continue
-        role = m.get("role")
-        content = m.get("content")
-        if role in ("user", "assistant") and isinstance(content, str):
-            out.append({"role": role, "content": content})
-    return out
-
-
-def _state_append_history(st: Dict[str, Any], user_msg: str, assistant_msg: str) -> None:
-    h = _state_get_history(st)
-    h.append({"role": "user", "content": user_msg})
-    h.append({"role": "assistant", "content": assistant_msg})
-    if len(h) > MAX_HISTORY_MESSAGES:
-        h = h[-MAX_HISTORY_MESSAGES:]
-    st["chat_history"] = h
-    st["updated_at"] = time.time()
 
 
 # ----------------------------
@@ -2614,68 +2557,6 @@ def persona_lock_clear() -> Dict[str, Any]:
 # ----------------------------
 # Persistent long-term memory (deterministic archive)
 # ----------------------------
-
-def memory_store_legacy(text: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
-    text = (text or "").strip()
-    if not text:
-        msg = "Empty memory text."
-        return {"ok": False, "action": "MEMORY_STORE", "error": "empty_text", "content": msg, "response": msg}
-
-    rec = {
-        "ts": time.time(),
-        "text": text,
-        "tags": [t.strip() for t in (tags or []) if isinstance(t, str) and t.strip()],
-    }
-    try:
-        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with MEMORY_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        msg = "Memory stored."
-        return {"ok": True, "action": "MEMORY_STORE", "record": rec, "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to store memory."
-        return {"ok": False, "action": "MEMORY_STORE", "error": repr(e), "content": msg, "response": msg}
-
-
-def memory_recall_legacy(query: str, limit: int = 5) -> Dict[str, Any]:
-    q = (query or "").strip().lower()
-    if not q:
-        msg = "Empty recall query."
-        return {"ok": False, "action": "MEMORY_RECALL", "error": "empty_query", "content": msg, "response": msg}
-
-    hits: List[Dict[str, Any]] = []
-    try:
-        if not MEMORY_PATH.exists():
-            msg = "No memory archive yet."
-            return {"ok": True, "action": "MEMORY_RECALL", "hits": [], "content": msg, "response": msg}
-
-        with MEMORY_PATH.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                text = str(rec.get("text", "")).lower()
-                tags = " ".join(rec.get("tags") or []).lower()
-                if q in text or q in tags:
-                    hits.append(rec)
-
-        hits = hits[-max(1, int(limit)):]  # most recent matches
-        # Human readable summary
-        summary_lines = []
-        for r in reversed(hits):
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.get("ts", 0)))
-            t = str(r.get("text", "")).strip()
-            t = t if len(t) <= 180 else t[:177] + "..."
-            summary_lines.append(f"- [{ts}] {t}")
-        content = "Memory recall:\n" + ("\n".join(summary_lines) if summary_lines else "(no matches)")
-        return {"ok": True, "action": "MEMORY_RECALL", "hits": hits, "content": content, "response": content}
-    except Exception as e:
-        msg = "Memory recall failed."
-        return {"ok": False, "action": "MEMORY_RECALL", "error": repr(e), "content": msg, "response": msg}
 
 
 # ----------------------------
@@ -2866,15 +2747,6 @@ def _ollama_chat_raw(user_text: str, temperature: float = 0.7, num_predict: int 
 # Origin / identity (NO prompt hijack)
 # ----------------------------
 
-def _is_origin_question(msg: str) -> bool:
-    low = (msg or "").lower()
-    triggers = [
-        "who created you", "who made you", "who built you",
-        "who are you", "your creator", "your origin",
-        "who developed you"
-    ]
-    return any(t in low for t in triggers)
-
 
 def _state_user_name(st: Dict[str, Any] = None) -> str:
     """The name of whoever is asking, as their own profile keeps it (kernel/state.get_user_name, the
@@ -2888,71 +2760,35 @@ def _state_user_name(st: Dict[str, Any] = None) -> str:
         return ""
 
 
-def _origin_facts(st: Dict[str, Any]) -> str:
-    name = _state_user_name(st) or "the user"
-    return (
-        f"Factual note: {name} assembled/configured ELI; ELI runs locally via Ollama using base model weights. "
-        f"Don't claim any company 'created ELI' as a shipped product."
-    )
-
-
-def _needs_origin_anchor(ans: str) -> bool:
-    """
-    If origin question answer drifts into corporate-creator claims,
-    we append a short factual anchor (we do NOT rewrite the answer).
-    """
-    a = (ans or "").lower()
-    bad = [
-        "created by alibaba", "developed by alibaba",
-        "created by qwen", "developed by qwen", "alibaba cloud created"
-    ]
-    return any(x in a for x in bad)
-
-
 # ================== MEDIA CONTROL FUNCTIONS ==================
 # The media layer (Spotify/mpv/YouTube/MPRIS transport, ducking, now-playing state) lives in
 # effectors/media.py. One copy: two had drifted apart, each with its own _MEDIA_STATE.
 from eli.execution.effectors.media import (  # noqa: F401
     _ensure_spotify_running,
-    MEDIA_DUCK,
-    MEDIA_PLAYER,
     _BROWSER_PLAYERS,
-    _DUCKED_MEDIA,
-    _DUCK_LOCK,
-    _DUCK_TIMER,
     _MEDIA_STATE,
     _TARGET_ALIASES,
-    _duck_media_pause,
-    _duck_media_resume,
-    _duck_schedule_resume,
     _get_active_player,
     _mpv_alive,
     _mpv_ipc,
     _mpv_quit,
     _mpv_socket_path,
     _playerctl,
-    _playerctl_p,
-    _playerctl_run,
     _resolve_media_target,
     _set_now_playing,
     _spotify_clear_track_repeat,
-    _spotify_ctl,
     _spotify_is_liked_songs_request,
     _spotify_is_playing,
-    _spotify_launch,
     _spotify_live_meta,
-    _spotify_loop_status,
     _spotify_open_liked_songs,
     _spotify_open_uri,
     _spotify_play,
-    _spotify_player_name,
     _spotify_resolve_album_uri,
     _spotify_resolve_artist_uri,
     _spotify_resolve_playlist_uri,
     _spotify_running,
     _spotify_search,
     _spotify_try_open_and_play,
-    _spotify_wait_playing,
     _spotify_wait_running,
     _targets_mpv,
     next_media,
@@ -2965,26 +2801,6 @@ from eli.execution.effectors.media import (  # noqa: F401
     shuffle_media,
     stop_media,
 )
-
-
-# ── Browser/streaming service → MPRIS player alias map ──────────────────────
-
-
-def _open_in_browser(url: str) -> bool:
-    """Open a URL in the default browser. Returns True on success."""
-    try:
-        from eli.utils.platform_compat import open_url as _open_url
-        return bool(_open_url(url))
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return False
-
-
-
-
-# Now-playing state and mpv (YouTube) control. "Play on YouTube" launches mpv with a visible window
-# (yt-dlp); ELI_YOUTUBE_HEADLESS=1 gives audio-only. playerctl can't see mpv (no MPRIS), so
-# pause/stop/resume talk to the IPC socket.
 
 
 # ================== END MEDIA CONTROL ==================
@@ -3345,15 +3161,6 @@ def chat_stream(message: str, *, model: Optional[str] = None):
         if text:
             yield text
 
-def open_audio_settings() -> Dict[str, Any]:
-    for cmd in (["pavucontrol"], ["gnome-control-center", "sound"]):
-        r = _run(cmd, timeout=5)
-        if r.get("ok"):
-            msg = "Audio settings opened."
-            return {"ok": True, "action": "OPEN_AUDIO_SETTINGS", "cmd": cmd, "content": msg, "response": msg}
-    msg = "No audio settings app found (pavucontrol / gnome-control-center)."
-    return {"ok": False, "action": "OPEN_AUDIO_SETTINGS", "error": msg, "content": msg, "response": msg}
-
 
 def open_file_system(path: str = "~") -> Dict[str, Any]:
     from eli.execution.effectors.system_helpers import open_file_system as _ofs
@@ -3511,37 +3318,6 @@ def clear_chat_history() -> Dict[str, Any]:
     return {"ok": True, "action": "CLEAR_CHAT_HISTORY", "content": msg, "response": msg}
 
 
-# ================== MISSING FUNCTIONS FROM Eli_PC_Control2_Working.py ==================
-
-# --- SMART IMPORT HANDLING ---
-def _try_import_faster_whisper():
-    """Try multiple strategies to import faster_whisper."""
-    strategies = [
-        # Try direct import first
-        lambda: __import__('faster_whisper'),
-        
-        # Try adding venv path
-        lambda: (sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.venv', 'lib', 
-                                                 f'python{sys.version_info.major}.{sys.version_info.minor}', 
-                                                 'site-packages')) or __import__('faster_whisper')),
-        
-        # Platform-correct site-packages via the site module (Linux/macOS/Windows),
-        # not a hardcoded ~/.local/lib path.
-        lambda: ([sys.path.insert(0, _p) for _p in
-                  (list(__import__('site').getsitepackages()) +
-                   [__import__('site').getusersitepackages()])]
-                 and __import__('faster_whisper')),
-    ]
-    
-    for strategy in strategies:
-        try:
-            return strategy()
-        except ImportError:
-            continue
-    
-    return None
-
-
 # --- ENV HELPERS ---
 def _env_int(name: str, default: int) -> int:
     try:
@@ -3551,112 +3327,8 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
-# --- MEDIA DUCKING ---
-
-
-# --- TTS FUNCTIONS ---
-_TTS_ENGINE = None
-_MIC_IGNORE_UNTIL = 0.0  # ignore mic until this monotonic time
-_BUSY_UNTIL = 0.0  # ignore mic while executing actions
-_STOP_REQUESTED = False
-
-def _init_tts():
-    global _TTS_ENGINE
-    if _TTS_ENGINE is not None:
-        return
-    try:
-        import pyttsx3
-    except Exception as e:
-        if DEBUG:
-            log.debug(f"[TTS] pyttsx3 not available: {e}")
-        _TTS_ENGINE = None
-        return
-
-    eng = pyttsx3.init()
-    voice_name = os.environ.get("ELI_TTS_VOICE", "").strip().lower()
-    rate       = os.environ.get("ELI_TTS_RATE", "").strip()
-
-    # optional: choose a different voice by partial name
-    if voice_name:
-        try:
-            for v in eng.getProperty("voices"):
-                if voice_name in v.name.lower():
-                    eng.setProperty("voice", v.id)
-                    break
-        except Exception as e:
-            if DEBUG:
-                log.debug(f"[TTS] voice selection failed: {e}")
-
-    if rate:
-        try:
-            eng.setProperty("rate", int(rate))
-        except Exception as e:
-            if DEBUG:
-                log.debug(f"[TTS] rate set failed: {e}")
-
-    _TTS_ENGINE = eng
-
-def _tts_list_voices() -> dict:
-    _init_tts()
-    eng = _TTS_ENGINE
-    voices = []
-    try:
-        for v in (eng.getProperty("voices") or []):
-            voices.append({
-                "id": getattr(v, "id", "") or "",
-                "name": getattr(v, "name", "") or "",
-            })
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return {"current": os.environ.get("ELI_TTS_VOICE", ""), "voices": voices, "count": len(voices)}
-
-def _tts_set_voice(target: str) -> dict:
-    _init_tts()
-    eng = _TTS_ENGINE
-    target_l = (target or "").strip().lower()
-    if not target_l:
-        raise ValueError("empty voice target")
-    chosen_id = None
-    chosen_name = None
-    try:
-        for v in (eng.getProperty("voices") or []):
-            vid = (getattr(v, "id", "") or "").lower()
-            vname = (getattr(v, "name", "") or "").lower()
-            if target_l in vid or target_l in vname:
-                chosen_id = getattr(v, "id", None)
-                chosen_name = getattr(v, "name", None) or target
-                break
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    if not chosen_id:
-        raise ValueError(f"Voice not found: {target}")
-    try:
-        eng.setProperty("voice", chosen_id)
-    except Exception:
-        # still persist preference; engine may apply on next init
-        log.debug("suppressed exception", exc_info=True)
-    os.environ["ELI_TTS_VOICE"] = str(chosen_name)
-    try:
-        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TTS_PREF_FILE = MEMORY_PATH.parent / "tts_voice.json"
-        TTS_PREF_FILE.write_text(json.dumps({"voice": os.environ["ELI_TTS_VOICE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return {"voice": os.environ["ELI_TTS_VOICE"], "id": chosen_id}
-
-def _speak_legacy(text: str):
-    """Compatibility wrapper: delegate to canonical TTS router."""
-    try:
-        from eli.perception.tts_router import maybe_speak
-        maybe_speak(text, enabled=True)
-    except Exception as e:
-        log.debug(f"[ELI-TTS] exception: {repr(e)}")
-    return
-
-
-# --- TTS PATCH ---
 import tempfile
-from eli.utils.platform_compat import open_url, open_file, notify, play_alarm_sound
+from eli.utils.platform_compat import notify, play_alarm_sound
 
 # ---- Ollama host canonical config ----
 OLLAMA_HOST = (os.environ.get("ELI_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
@@ -3664,627 +3336,15 @@ _OLLAMA_HOST = OLLAMA_HOST  # backward-compatible alias
 CHAT_TIMEOUT_S = (10, 3600)  # connect/read timeout for Ollama chat
 
 
-def _eli_set_pulse_sink():
-    sink = (os.environ.get("ELI_OUTPUT_DEVICE") or "").strip()
-    if sink:
-        os.environ["PULSE_SINK"] = sink
-
-def _eli_tts_echo(_text: str) -> None:
-    # Always show what ELI *tries* to say, even if audio routing is cursed.
-    try:
-        if os.environ.get("ELI_TTS_ECHO", "1") != "0":
-            log.debug(f"[ELI-SAY] {_text}")
-        if os.environ.get("ELI_TTS_LOG", "1") != "0":
-            from pathlib import Path
-            import json
-            from datetime import datetime
-            try:
-                from eli.core.paths import logs_dir
-                logp = Path(logs_dir()) / "tts.jsonl"
-            except Exception:
-                logp = Path(__file__).resolve().parent / "data" / "logs" / "tts.jsonl"
-            logp.parent.mkdir(parents=True, exist_ok=True)
-            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "text": _text}
-            with open(logp, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-def _speak(text: str, *args, **kwargs):
-    """Speak arbitrarily long text by chunking + sanitizing to avoid TTS silent failures."""
-    import re as _re
-
-    if text is None:
-        return
-    text = str(text)
-
-    # Strip model junk tokens
-    text = text.replace("<|end|>", "").replace("<|", "").replace("|>", "")
-
-    # Remove/replace fenced code blocks (TTS engines often choke on them)
-    text = _re.sub(r"```.*?```", " [code omitted] ", text, flags=_re.DOTALL)
-
-    # Normalize whitespace
-    text = _re.sub(r"[ \t]+", " ", text)
-    text = _re.sub(r"\n{3,}", "\n\n", text).strip()
-    if not text:
-        return
-
-    # Chunk by sentence-ish boundaries, capped by char length
-    MAX_CHARS = 350
-    parts = _re.split(r"(?<=[.!?])\s+", text)
-    buf = ""
-    chunks = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if len(buf) + len(part) + 1 <= MAX_CHARS:
-            buf = (buf + " " + part).strip()
-        else:
-            if buf:
-                chunks.append(buf)
-            # hard-split very long parts
-            while len(part) > MAX_CHARS:
-                chunks.append(part[:MAX_CHARS])
-                part = part[MAX_CHARS:]
-            buf = part
-    if buf:
-        chunks.append(buf)
-
-    for c in chunks:
-        _speak_raw(c, *args, **kwargs)
-
-def _speak_raw(text: str) -> None:
-    """Compatibility wrapper: delegate to canonical TTS router."""
-    try:
-        from eli.perception.tts_router import speak
-        speak(text)
-    except Exception:
-        return
-
-
-# --- PIPER TTS HOOK ---
-def _eli_speak_piper(text: str):
-    """Compatibility wrapper: canonical Piper selection lives in eli.perception.tts_router."""
-    try:
-        from eli.perception.tts_router import speak
-        speak(text)
-    except Exception:
-        return
-
-
-# Hook into speak function if piper is configured
-try:
-    _ELI_SPEAK_ORIG = _speak
-    def _speak(text, *args, **kwargs):
-        if os.environ.get("ELI_TTS_ENGINE", "").strip().lower() == "piper":
-            return _eli_speak_piper(str(text))
-        return _ELI_SPEAK_ORIG(text, *args, **kwargs)
-except Exception:
-    # If ELI changes its internals, fail gracefully instead of crashing startup
-    log.debug("suppressed exception", exc_info=True)
-
-
-# --- UTILITY FUNCTIONS ---
-def _slugify(name: str) -> str:
-    name = (name or "doc").strip().lower()
-    name = re.sub(r"[^a-z0-9]+", "_", name).strip("_")
-    return name or "doc"
-
-def _open_file(path: str) -> None:
-    try:
-        open_file(path)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-def _allowed_cmds_set():
-    """
-    Allowed executables for sandboxed run().
-    Accept BOTH comma-separated and whitespace-separated formats.
-    Also include both './x' and 'x' variants so normpath quirks don't brick you.
-    """
-    import os
-    import os.path
-    from pathlib import Path as _Path
-
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return None
-
-    # commas OR spaces
-    raw = raw.replace(",", " ")
-    parts = [p for p in raw.split() if p]
-
-    allowed = set()
-
-    def add(tok: str):
-        if not tok:
-            return
-        t = str(tok).strip()
-        if not t:
-            return
-
-        # keep raw
-        allowed.add(t)
-
-        # normpath form
-        try:
-            n = os.path.normpath(t)
-            allowed.add(n)
-        except Exception:
-            n = t
-
-        # add "./" and no-"./" variants
-        try:
-            if n.startswith("./"):
-                allowed.add(n[2:])
-            else:
-                allowed.add("./" + n)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    for p in parts:
-        add(p)
-
-    # Always allow venv python in common forms (belt + suspenders)
-    add("./.venv/bin/python")
-    add(".venv/bin/python")
-    try:
-        add(str((_Path(__file__).resolve().parent.parent / ".venv/bin/python").resolve()))
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    return allowed
-
-def _allow_or_block(argv0: str) -> bool:
-    """Allow or block executables based on sandbox rules."""
-    
-    # FULL CONTROL MODE: allow everything
-    if _full_control():
-        return True
-    
-    allowed = _allowed_cmds_set()
-    if allowed is None:
-        return True  # No restrictions
-    
-    # Wildcard allows everything
-    if "*" in allowed:
-        return True
-    
-    return argv0 in allowed
-
-def _run_argv(argv, timeout=30):
-    # Normalize timeouts (router sometimes sends None)
-    # None/"" => env ELI_RUN_TIMEOUT_SEC (default 120s)
-    import os as _os
-    if timeout is None or timeout == "":
-        try:
-            timeout = float(_os.environ.get("ELI_RUN_TIMEOUT_SEC", "120"))
-        except Exception:
-            timeout = 120.0
-    else:
-        try:
-            timeout = float(timeout)
-        except Exception:
-            timeout = 120.0
-
-    if not argv:
-        return {"ok": False, "error": "empty argv"}
-    if not _allow_or_block(argv[0]):
-
-        # --- ALLOW_VENV_PYTHON_V1 ---
-        # Normalize doubled venv paths and allow our own venv python binary under the allowlist sandbox.
-        try:
-            import os
-            _v = str(argv[0])
-            # collapse accidental duplication
-            _v = _v.replace("./.venv/bin/./.venv/bin/python", "./.venv/bin/python")
-            _v = _v.replace(".venv/bin/.venv/bin/python", ".venv/bin/python")
-            _v = os.path.normpath(_v)
-            # allow exactly the project venv python
-            _venv_py_rel = os.path.normpath("./.venv/bin/python")
-            _venv_py_abs = os.path.normpath(str((Path(__file__).resolve().parent / ".venv/bin/python")))
-            if _v in (_venv_py_rel, _venv_py_abs) or _v.endswith("/.venv/bin/python"):
-                # overwrite the checked value if it's a simple name
-                if isinstance(argv[0], str):
-                    argv[0] = _v
-                # skip raising
-                raise SystemExit("__ELI_ALLOW_VENV_PYTHON_SKIP__")
-        except SystemExit as _e:
-            if str(_e) == "__ELI_ALLOW_VENV_PYTHON_SKIP__":
-                pass
-            else:
-                raise
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # If we didn't early-allow venv python, fall through to the original denial.
-        try:
-            _ALLOW_VENV_PYTHON
-        except NameError:
-            _ALLOW_VENV_PYTHON = False
-        if not _ALLOW_VENV_PYTHON:
-            return {"ok": False, "error": f"command not allowed: {argv[0]} (ELI_ALLOWED_CMDS)"}
-
-    try:
-        r = subprocess.run(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-        return {
-            "ok": (r.returncode == 0),
-            "returncode": r.returncode,
-            "stdout": (r.stdout or "")[-2000:],
-            "stderr": (r.stderr or "")[-2000:],
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
 # App opening. Canonical alias table lives in eli/execution/app_aliases.py; this copy and the
 # router's each lacked names the other had (thunderbird, mozilla, browser vs vs code, calculator,
 # files), so resolution depended on which layer handled the phrase.
 from eli.execution.app_aliases import APP_ALIASES as _APP_ALIASES
 
-def _normalize_app(spoken: str) -> str:
-    """Normalize application names using aliases."""
-    s = (spoken or "").strip().lower()
-    s = " ".join(s.split())
-    return _APP_ALIASES.get(s, s)
-
-def _allowed_apps_set():
-    """Return set of allowed apps, or None for no restrictions."""
-    import os
-    
-    # FULL CONTROL MODE: no app restrictions
-    if _full_control():
-        return None
-    
-    raw = (os.environ.get("ELI_ALLOWED_APPS") or "").strip()
-    if not raw:
-        return None  # None => allow common safe apps
-    return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
 def _open_app_with_timeout(argv, timeout=30):
     from eli.execution.effectors.system_helpers import open_app_with_timeout
     return open_app_with_timeout(argv, timeout=timeout)
-
-def _open_app_builtin(app_name: str) -> dict:
-    app = _normalize_app(app_name)
-    if not app:
-        return {"ok": False, "error": "empty app_name"}
-
-    allowed = _allowed_apps_set()
-    if allowed is not None and app not in allowed:
-        return {"ok": False, "error": f"app not allowed: {app} (set ELI_ALLOWED_APPS)"}
-
-    # Allow per-app override command
-    env_key = "ELI_APP_CMD_" + re.sub(r"[^A-Z0-9]+", "_", app.upper())
-    override = (os.environ.get(env_key) or "").strip()
-
-    if override:
-        argv = shlex.split(override)
-    else:
-        # sensible defaults
-        if app == "thunderbird":
-            argv = ["thunderbird"]
-        elif app == "firefox":
-            argv = ["firefox"]
-        elif app == "spotify":
-            SPOTIFY_CMD = os.environ.get("ELI_SPOTIFY_CMD", "").strip() or "spotify"
-            argv = shlex.split(SPOTIFY_CMD) if SPOTIFY_CMD else ["spotify"]
-        else:
-            # last resort: try running by name
-            argv = [app]
-
-    try:
-        return _open_app_with_timeout(argv)
-    except Exception as e:
-        return {"ok": False, "error": str(e), "app": app, "cmd": argv}
-
-
-# --- BUILTIN DOCUMENT FUNCTIONS ---
-def _builtin_create_doc(args: dict) -> dict:
-    try:
-        doc_type  = (args.get("doc_type") or "txt").strip().lower()
-        title     = (args.get("title") or "document").strip()
-        content   = args.get("content") or ""
-        filename  = (args.get("filename") or "").strip()
-        convert_to = (args.get("convert_to") or "omit").strip().lower()
-        open_after = bool(args.get("open_after", False))
-
-        ext = doc_type if doc_type in {"md","txt","tex"} else "txt"
-
-        outdir = Path(os.environ.get("ELI_DOC_DIR", str(Path(__file__).resolve().parent.parent / "eli_docs"))).expanduser()
-        outdir.mkdir(parents=True, exist_ok=True)
-
-        if filename:
-            fn = filename if filename.endswith(f".{ext}") else filename + f".{ext}"
-        else:
-            fn = _slugify(title) + f".{ext}"
-
-        outpath = outdir / fn
-        outpath.write_text(content, encoding="utf-8")
-
-        if open_after:
-            _open_file(str(outpath))
-
-        return {"ok": True, "path": str(outpath)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _write_note_builtin(args: dict) -> dict:
-    """Create a note file under ELI_DOC_DIR (default: ./eli_docs)."""
-    try:
-        title = (args.get("title") or "note").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent.parent
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        if not filename:
-            safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-            filename = f"{safe_title}.md"
-        if not filename.lower().endswith((".md", ".txt")):
-            filename += ".md"
-
-        if not content:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            content = f"# {title}\n\nCreated: {ts}\n\n"
-
-        path = (doc_dir / filename).resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if path != doc_dir_resolved and doc_dir_resolved not in path.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        path.write_text(content, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(path))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(path), "title": title}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _append_note_builtin(args: dict) -> dict:
-    """Append content to a note under ELI_DOC_DIR."""
-    try:
-        title = (args.get("title") or "").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        if not title and not filename:
-            return {"ok": False, "error": "append_note: title or filename is required"}
-        if not content:
-            return {"ok": False, "error": "append_note: content is empty"}
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent.parent
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        note_file = None
-        if filename:
-            note_file = (doc_dir / filename)
-        else:
-            if title.lower().endswith((".md", ".txt")):
-                note_file = (doc_dir / title)
-            else:
-                for ext in (".md", ".txt"):
-                    cand = doc_dir / f"{title}{ext}"
-                    if cand.exists():
-                        note_file = cand
-                        break
-                if note_file is None:
-                    safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-                    note_file = doc_dir / f"{safe_title}.md"
-
-        note_file = note_file.resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if note_file != doc_dir_resolved and doc_dir_resolved not in note_file.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        blob = f"\n\n---\n\n{ts}\n\n{content.strip()}\n"
-
-        if note_file.exists():
-            prev = note_file.read_text(encoding="utf-8", errors="ignore")
-        else:
-            prev = f"# {title or note_file.stem}\n"
-
-        note_file.write_text(prev.rstrip() + blob, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(note_file))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(note_file), "title": title or note_file.stem}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _calendar_event_builtin(args: dict) -> dict:
-    """Open a prefilled Google Calendar event in the browser (handles 'tomorrow', weekdays, 2pm, 16.40pm, etc.)."""
-    try:
-        import re, urllib.parse, subprocess, os
-        from datetime import datetime, date, timedelta
-
-        title = (args.get("title") or "ELI Event").strip()
-        date_s = (args.get("date") or args.get("day") or "").strip()
-        time_s = (args.get("time") or args.get("at") or "").strip()
-        start_s = (args.get("start") or "").strip()
-        location = (args.get("location") or "").strip()
-        notes = (args.get("notes") or args.get("details") or "").strip()
-
-        dur = args.get("duration_min", None)
-        if dur is None:
-            dur = args.get("duration", None)
-        try:
-            duration_min = int(dur) if dur is not None else 30
-        except Exception:
-            duration_min = 30
-
-        def parse_time(ts: str) -> str:
-            if not ts:
-                return "09:00"
-            t = ts.strip().lower().replace(" ", "")
-            t = t.replace(".", ":")
-            m = re.match(r'^(\d{1,2})(?::(\d{2}))?(am|pm)?$', t)
-            if not m:
-                return "09:00"
-            hh = int(m.group(1))
-            mm = int(m.group(2) or "0")
-            ap = m.group(3)
-            # If already 13-23, ignore am/pm even if user says nonsense like 16:40pm
-            if ap and hh <= 12:
-                if ap == "pm" and hh < 12: hh += 12
-                if ap == "am" and hh == 12: hh = 0
-            hh = max(0, min(23, hh))
-            mm = max(0, min(59, mm))
-            return f"{hh:02d}:{mm:02d}"
-
-        def parse_date(ds: str) -> str:
-            today = date.today()
-            if not ds:
-                return today.isoformat()
-            d = ds.strip().lower()
-            wmap = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}
-            if d == "today":
-                return today.isoformat()
-            if d == "tomorrow":
-                return (today + timedelta(days=1)).isoformat()
-            if d in wmap:
-                delta = (wmap[d] - today.weekday()) % 7
-                delta = 7 if delta == 0 else delta
-                return (today + timedelta(days=delta)).isoformat()
-            # ISO date?
-            if re.match(r'^\d{4}-\d{2}-\d{2}$', ds.strip()):
-                return ds.strip()
-            return today.isoformat()
-
-        dt = None
-        if start_s:
-            # try iso-ish start string
-            try:
-                dt = datetime.fromisoformat(start_s.replace("Z",""))
-            except Exception:
-                # salvage "tomorrowT14:00" style
-                if "T" in start_s:
-                    left, right = start_s.split("T", 1)
-                    date_s2 = parse_date(left)
-                    time_s2 = parse_time(right)
-                    dt = datetime.fromisoformat(f"{date_s2}T{time_s2}")
-
-        if dt is None:
-            d_iso = parse_date(date_s)
-            t_hm = parse_time(time_s)
-            dt = datetime.fromisoformat(f"{d_iso}T{t_hm}")
-
-        end_dt = dt + timedelta(minutes=duration_min)
-
-        def fmt(d: datetime) -> str:
-            return d.strftime("%Y%m%dT%H%M%S")
-
-        params = {
-            "action": "TEMPLATE",
-            "text": title,
-            "dates": f"{fmt(dt)}/{fmt(end_dt)}",
-        }
-        if location:
-            params["location"] = location
-        if notes:
-            params["details"] = notes
-
-        # timezone offset (local)
-        import time as _time
-        tz_offset = _time.localtime().tm_gmtoff
-        tz_sign = "+" if tz_offset >= 0 else "-"
-        tz_hours = abs(tz_offset) // 3600
-        tz_minutes = (abs(tz_offset) % 3600) // 60
-        params["ctz"] = f"UTC{tz_sign}{tz_hours:02d}:{tz_minutes:02d}"
-
-        base_url = "https://calendar.google.com/calendar/render"
-        url = f"{base_url}?{urllib.parse.urlencode(params)}"
-        open_url(url)
-
-        return {"ok": True, "title": title, "start": dt.isoformat(), "end": end_dt.isoformat(),
-                "duration_min": duration_min, "url": url}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _recall_memory_builtin(args: dict) -> dict:
-    """Read recent utterances from ./data/memory/utterances.jsonl (if present)."""
-    try:
-        import json
-        from pathlib import Path
-
-        limit = int(args.get("limit", 20))
-        root = Path(__file__).resolve().parent.parent
-        memory_log = root / "data" / "memory" / "utterances.jsonl"
-
-        if not memory_log.exists():
-            return {"ok": True, "entries": [], "message": "No memory log found"}
-
-        entries = []
-        with open(memory_log, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-        recent = entries[-limit:] if entries else []
-        return {"ok": True, "entries": recent, "count": len(recent), "total": len(entries)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _type_text_builtin(text: str) -> dict:
-    text = (text or "")
-    if not text:
-        return {"ok": False, "error": "empty text"}
-
-    # Linux: prefer the native typing tools (respecting Wayland vs X11) when installed.
-    if sys.platform.startswith("linux"):
-        sess = (os.environ.get("XDG_SESSION_TYPE") or "").lower().strip()
-        if sess == "wayland" and shutil.which("wtype"):
-            return _run_argv(["wtype", "--", text], timeout=30)
-        if shutil.which("xdotool"):
-            return _run_argv(["xdotool", "type", "--clearmodifiers", "--delay", "8", text], timeout=30)
-        # else fall through to the cross-platform backend below
-
-    # Cross-platform backend (Windows, macOS, or Linux without wtype/xdotool): pyautogui.
-    try:
-        import pyautogui
-        pyautogui.typewrite(text, interval=0.008)
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": f"no typing backend available ({e})"}
 
 
 # --- NOTIFICATION FUNCTION ---
@@ -4302,18 +3362,6 @@ def _notify(title: str, msg: str):
 # ----------------------------
 # Artifact saver
 # ----------------------------
-
-def _artifacts_dir() -> "Path":
-    """Return the canonical artifacts root. Honours ELI_ARTIFACTS_DIR (so tests can
-    redirect to a tmp dir and never pollute the real artifacts/) — defaults to
-    artifacts/ under the project root."""
-    from pathlib import Path
-    import os as _o
-    _env = _o.environ.get("ELI_ARTIFACTS_DIR")
-    if _env:
-        _p = Path(_env).expanduser()
-        return _p if _p.is_absolute() else (Path(__file__).resolve().parents[2] / _p)
-    return Path(__file__).resolve().parents[2] / "artifacts"
 
 
 # Saving an artifact lives in effectors._base (one copy for the executor and every effector).
@@ -4362,149 +3410,6 @@ _GENERATIVE_EVIDENCE_ACTIONS = {
 # ----------------------------
 # Dispatcher
 # ----------------------------
-
-def _eli_marketplace_install(query: str):
-    """Install a community listing through the verified path, or None if not one.
-
-    Returns None when the query does not match anything in a configured community
-    registry, so the caller falls through to the bundled-plugin path. Chat can
-    trigger a verified install but NEVER a permissioned one: anything that would
-    open the consent dialog is reported back as needing the desktop screen, because
-    a chat message cannot carry informed consent for granting capabilities.
-    """
-    try:
-        from eli.plugins.marketplace import needs_review, preview_install, search
-    except Exception:
-        return None
-    try:
-        matches = search(query)
-    except Exception:
-        return None
-    exact = [m for m in matches if str(m.get("id", "")).lower() == query.lower()]
-    candidates = exact or matches
-    if not candidates:
-        return None
-    if len(candidates) > 1 and not exact:
-        listing = None
-    else:
-        listing = candidates[0]
-    if listing is None:
-        names = ", ".join(str(m.get("id")) for m in candidates[:5])
-        return {"ok": True,
-                "message": f"Several community listings match '{query}': {names}. "
-                           f"Name one exactly and I'll check it."}
-
-    if str(listing.get("kind")) == "mcp":
-        from eli.plugins.mcp import network_caveat
-        return {"ok": True,
-                "message": (f"'{listing.get('name')}' is an MCP server, which runs as a "
-                            f"separate program.\n\n{network_caveat()}\n\n"
-                            f"Add it from Settings > Marketplace > MCP servers.")}
-
-    preview = preview_install(listing)
-    reasons = needs_review(preview)
-    if reasons:
-        scan = (preview.get("scan") or {})
-        detail = "; ".join(reasons)
-        verdict = scan.get("verdict")
-        head = (f"I checked '{listing.get('name')}' and will not install it from chat: "
-                if verdict == "malicious" else
-                f"I checked '{listing.get('name')}'. It needs your decision: ")
-        return {"ok": verdict != "malicious",
-                "message": head + detail +
-                           "\n\nOpen Settings > Marketplace to see the full report and "
-                           "decide."}
-
-    from eli.plugins.marketplace import install
-    result = install(listing, confirm=lambda _p: True)
-    if not result.get("ok"):
-        return {"ok": False,
-                "message": "Install failed: " + "; ".join(result.get("problems") or [])}
-    return {"ok": True,
-            "message": (f"Installed '{listing.get('name')}' — it matched the checksum in "
-                        f"its listing, scanned clean, and asks for no permissions. "
-                        f"It is switched OFF; say 'enable plugin "
-                        f"{listing.get('id')}' when you want it.")}
-
-
-def _eli_mcp_client():
-    """MCP runtime client — ported from v3, which had the calling half while v2 had
-    only the lifecycle half. Same config file and same `mcpServers` shape, so the
-    two halves compose: eli.plugins.mcp installs and verifies a server,
-    eli.integrations.mcp.client connects to it and calls its tools."""
-    from eli.integrations.mcp import client
-    return client
-
-
-def _h_mcp_status(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        st = _eli_mcp_client().status()
-    except Exception as e:
-        msg = f"Couldn't read the MCP configuration: {e}"
-        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    if not st["configured"]:
-        msg = ("No MCP servers are configured yet, so I have no external tools beyond my own. "
-               f"Add them to {st['config_path']} and I'll pick them up.")
-        return {"ok": True, "action": a, "content": msg, "response": msg, **st}
-
-    lines = [f"{st['configured']} MCP server(s) configured:"]
-    for s in st["servers"]:
-        if s["connected"]:
-            tools = ", ".join(s["tools"]) or "no tools"
-            lines.append(f"  {s['name']} — connected ({tools})")
-        elif s["error"]:
-            lines.append(f"  {s['name']} — not working: {s['error']}")
-        else:
-            lines.append(f"  {s['name']} — configured, not started yet")
-    body = "\n".join(lines)
-    return {"ok": True, "action": a, "content": body, "response": body, **st}
-
-
-def _h_mcp_tools(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        tools = _eli_mcp_client().list_tools(refresh=bool(args.get("refresh")))
-    except Exception as e:
-        msg = f"Couldn't list MCP tools: {e}"
-        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    if not tools:
-        msg = ("I can't see any MCP tools right now — either nothing is configured, "
-               "or the configured servers didn't start. Ask me for MCP status for the reason.")
-        return {"ok": True, "action": a, "tools": [], "content": msg, "response": msg}
-
-    lines = [f"{len(tools)} MCP tool(s) available:"]
-    for t in tools:
-        desc = (t["description"] or "").strip().splitlines()[0][:110] if t["description"] else ""
-        lines.append(f"  {t['qualified']}" + (f" — {desc}" if desc else ""))
-    body = "\n".join(lines)
-    return {"ok": True, "action": a, "tools": tools, "content": body, "response": body}
-
-
-def _h_mcp_call(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    tool = str(args.get("tool") or args.get("name") or args.get("qualified") or "").strip()
-    if not tool:
-        msg = "Tell me which MCP tool to call — ask for MCP tools to see what's available."
-        return {"ok": False, "action": a, "error": "missing tool", "content": msg, "response": msg}
-
-    arguments = args.get("arguments") or args.get("args") or {}
-    if not isinstance(arguments, dict):
-        arguments = {"input": arguments}
-
-    try:
-        res = _eli_mcp_client().call_tool(tool, arguments)
-    except Exception as e:
-        msg = f"MCP call failed: {e}"
-        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    if not res.get("ok"):
-        reason = str(res.get("error") or "the tool call failed")
-        hint = res.get("hint")
-        msg = f"{tool} didn't run: {reason}" + (f" ({hint})" if hint else "")
-        return {"ok": False, "action": a, "error": reason, "content": msg, "response": msg}
-
-    body = str(res.get("text") or "").strip() or f"{tool} ran and returned nothing to show."
-    return {"ok": True, "action": a, "tool": tool, "content": body, "response": body}
 
 
 def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -5092,17 +3997,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             msg = f"Repair playbook unavailable: {e}"
             return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- GET_WEATHER ----
-
-    _LOC_PATS = [
-        re.compile(r"weather (?:in|at|for) ([A-Za-z][A-Za-z ,]+?)(?:\?|$|[,;])", re.I),
-        re.compile(r"(?:in|at|for) ([A-Za-z][A-Za-z ,]+?) weather", re.I),
-        re.compile(r"(?:temperature|forecast) (?:in|at) ([A-Za-z][A-Za-z ,]+?)(?:\?|$)", re.I),
-    ]
-
-
-    # ---- end GAZE ENGINE ----
 
     # ---- OPEN_IDE / OPEN_IN_IDE / SHOW_DIFF ----
     if a == "OPEN_IDE":
@@ -5921,107 +4815,6 @@ def _action_post_dispatch(
     return result
 
 
-def _eli_open_url_action(raw_url=None, *, query=None):
-    """
-    Safe URL opener for OPEN_URL.
-
-    Rules:
-    - Accepts http/https URLs.
-    - Accepts bare domains like github.com and normalizes to https://github.com.
-    - Blocks unsupported schemes such as file:, javascript:, data:, ftp:, etc.
-    - Uses xdg-open without shell=True.
-    """
-    from urllib.parse import urlparse, quote_plus
-    import shutil
-    import subprocess
-    import webbrowser
-
-    value = str(raw_url or "").strip()
-
-    if not value and query:
-        value = "https://duckduckgo.com/?q=" + quote_plus(str(query).strip())
-
-    if not value:
-        msg = "No URL was provided."
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    # Allow common bare domains: github.com, openai.com/docs, etc.
-    if "://" not in value:
-        if " " in value or "." not in value:
-            msg = f"Not a valid URL or bare domain: {value!r}"
-            return {
-                "ok": False,
-                "action": "OPEN_URL",
-                "url": value,
-                "error": msg,
-                "content": f"⚡ Could not open URL. {msg}",
-                "response": f"⚡ Could not open URL. {msg}",
-            }
-        value = "https://" + value
-
-    parsed = urlparse(value)
-
-    if parsed.scheme not in {"http", "https"}:
-        msg = f"Blocked unsupported URL scheme: {parsed.scheme!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    if not parsed.netloc:
-        msg = f"URL is missing a domain: {value!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    try:
-        opener = shutil.which("xdg-open")
-        if opener:
-            subprocess.Popen(
-                [opener, value],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        else:
-            webbrowser.open(value, new=2)
-
-        msg = f"Opened URL: {value}"
-        return {
-            "ok": True,
-            "action": "OPEN_URL",
-            "url": value,
-            "content": msg,
-            "response": msg,
-        }
-
-    except Exception as exc:
-        msg = f"Failed to open URL: {exc!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-
 def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
 
     # Unwrap dict form: execute({"action": "X", "args": {...}})
@@ -6068,10 +4861,6 @@ except Exception:
     log.debug("suppressed exception", exc_info=True)
 
 
-_PACKAGE_MIRROR_TOPLEVEL = {
-    "api", "brain", "controllers", "core", "gui", "integrations", "plugins", "tools", "utils"
-}
-
 def _resolve_existing_user_or_artifact_path(path: str) -> Path:
     """Resolve a user path, then recover common generated artifact locations."""
     raw = str(path or "").strip()
@@ -6104,31 +4893,6 @@ def _resolve_existing_user_or_artifact_path(path: str) -> Path:
             continue
     return resolved
 
-def _resolve_legacy_eli_fs_path(path: str) -> Path:
-    raw = str(path or "").strip()
-    if not raw:
-        return Path(".").resolve()
-
-    expanded = Path(raw).expanduser()
-    repo_root = Path(__file__).resolve().parents[2]  # project root
-    legacy_root = Path.home() / "eli"
-
-    if expanded == legacy_root:
-        return (repo_root / "eli").resolve()
-
-    try:
-        rel = expanded.relative_to(legacy_root)
-    except Exception:
-        return expanded.resolve()
-
-    if not rel.parts:
-        return (repo_root / "eli").resolve()
-
-    top = rel.parts[0]
-    if top in _PACKAGE_MIRROR_TOPLEVEL:
-        return (repo_root / "eli" / rel).resolve()
-
-    return (repo_root / rel).resolve()
 
 if __name__ == "__main__":
     import argparse
@@ -6137,104 +4901,6 @@ if __name__ == "__main__":
     ap.add_argument("--args", default="{}")
     ns = ap.parse_args()
     print(json.dumps(execute(ns.action, json.loads(ns.args)), indent=2))
-
-
-
-# ----------------------------
-# Proactive daemon control (real PID management)
-# ----------------------------
-def _proactive_paths():
-    base = Path(os.environ.get("ELI_ARTIFACTS_DIR", "artifacts")) / "proactive"
-    base.mkdir(parents=True, exist_ok=True)
-    return base, base / "daemon.pid", base / "daemon.log"
-
-
-def proactive_status() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    pid = None
-    if pidf.exists():
-        try:
-            pid = int(pidf.read_text().strip())
-        except Exception:
-            pid = None
-    alive = False
-    if pid:
-        try:
-            import psutil as _psutil
-            alive = _psutil.pid_exists(int(pid))
-        except Exception:
-            # psutil missing — the signal-0 probe is POSIX-only. On Windows os.kill with
-            # ANY signal calls TerminateProcess, so os.kill(pid, 0) would KILL the process.
-            if os.name != "nt":
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except Exception:
-                    alive = False
-    # In-process daemon: the GUI runs it as a thread (no separate PID), so the PID check above
-    # falsely reports STOPPED. Also honour the in-process signals: the singleton's running flag and
-    # the named daemon thread.
-    if not alive:
-        try:
-            import threading as _th
-            from eli.planning import proactive_daemon as _pd
-            if getattr(getattr(_pd, "_daemon", None), "running", False):
-                alive = True
-            elif any(t.name == "eli-proactive-daemon" and t.is_alive()
-                     for t in _th.enumerate()):
-                alive = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    msg = f"Proactive daemon is {'RUNNING' if alive else 'STOPPED'}."
-    return {"ok": True, "action": "PROACTIVE_STATUS", "pid": pid, "running": alive, "log": str(logf), "content": msg, "response": msg}
-
-
-def proactive_start() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    st = proactive_status()
-    if st.get("running"):
-        return st
-    try:
-        py = sys.executable if "sys" in globals() else "python3"
-    except Exception:
-        py = "python3"
-    # run as module so imports work
-    argv = [py, "-m", "eli.proactive.proactive_daemon"]
-    try:
-        lf = open(logf, "a", encoding="utf-8")
-        p = subprocess.Popen(argv, stdout=lf, stderr=lf, cwd=str(Path.cwd()))
-        pidf.write_text(str(p.pid), encoding="utf-8")
-        msg = "Proactive daemon started."
-        return {"ok": True, "action": "PROACTIVE_START", "pid": p.pid, "cmd": argv, "log": str(logf), "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to start proactive daemon."
-        return {"ok": False, "action": "PROACTIVE_START", "error": repr(e), "content": msg, "response": msg}
-
-
-def proactive_stop() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    pid = None
-    if pidf.exists():
-        try:
-            pid = int(pidf.read_text().strip())
-        except Exception:
-            pid = None
-    if not pid:
-        msg = "Proactive daemon not running (no PID)."
-        return {"ok": True, "action": "PROACTIVE_STOP", "content": msg, "response": msg}
-    try:
-        os.kill(pid, 15)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    try:
-        pidf.unlink(missing_ok=True)  # py3.8+: if not available it will throw
-    except Exception:
-        try:
-            pidf.unlink()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    msg = "Proactive daemon stopped."
-    return {"ok": True, "action": "PROACTIVE_STOP", "pid": pid, "content": msg, "response": msg}
 
 
 class Executor:

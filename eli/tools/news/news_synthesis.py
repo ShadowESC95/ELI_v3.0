@@ -32,7 +32,6 @@ log = get_logger(__name__)
 
 
 WINDOW_SECONDS = 3 * 3600  # 3 hours
-DAY_SECONDS = 24 * 3600
 
 
 _CREATE_REFLECTIONS = """
