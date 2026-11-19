@@ -85,7 +85,7 @@ lines in the `kernel/stages/` mixins it is composed from), `eli/execution/router
 | `bash install.sh` | | venv, dependencies, clean config seed, verification |
 
 Boot path (GUI): `eli/gui/app.py` → first-boot wizard when no model is configured
-(`eli/gui/panels/startup.py`) → `eli/gui/gui_eli_original.py` (a shim onto `main_window/window.py:main()`) builds `EliMainWindow` →
+(`eli/gui/panels/startup.py`) → `eli/gui/main_window/window.py:main()` builds `EliMainWindow` →
 constructs the `CognitiveEngine` singleton → loads the GGUF named in `config/settings.json`
 → starts the daemons.
 
@@ -317,7 +317,7 @@ wider `mode_chat_agent_profile()` fan-out. Quick still runs the orchestrator.
 - **`evidence_ledger.py`, `evidence_arbitration.py`**: what counts as evidence, where it is
   recorded (the ledger also records every executed action), and conflict resolution.
 - **`persistence_gate.py`**: keeps internal report dumps out of memory.
-- **`response_contracts.py`, `response_policy.py`, `final_response_provider.py`,
+- **`response_contracts.py`, `final_response_provider.py`,
   `user_visible_response_surface.py`**: shape and clean the user-visible answer.
 - **`truth_report.py`, `eli_identity_audit.py`, `control_contracts.py`**: runtime truth,
   identity grounding, control-action contracts.
@@ -470,7 +470,7 @@ An internal world the agent inhabits. `world_event_bus.py` receives runtime even
 - **`netguard.py`**: offline by default: `guarded_urlopen`, a process-wide socket guard
   (fail-closed on non-loopback while offline), and `allow_network()` for deliberate
   user-initiated fetches.
-- **`paths.py`, `portable_paths.py`, `legacy_paths.py`, `db_paths.py`**: path resolution (dev
+- **`paths.py`, `portable_paths.py`, `legacy_paths.py`**: path resolution (dev
   tree vs platform directories, `ELI_*` overrides, read-only frozen bundles).
 - **`runtime_settings.py`, `config.py`**: settings load, merge and heal; `DEFAULTS` are clean
   (offline, no model, wizard on). `config/settings.json` is per user and gitignored, seeded
@@ -486,7 +486,7 @@ An internal world the agent inhabits. `world_event_bus.py` receives runtime even
 
 ## 18. GUI (`eli/gui`)
 
-PySide6 (LGPL). `main_window/` (`window.py` builds `EliMainWindow` from the mixins in `_mixins/`; `models.py`, `adapters.py`, `widgets.py`), `app.py` (boot), `labs/` (the Labs sub-tabs; `labs_tab.py` is a shim), `panels/` (`startup.py`: StartupModelSelectionDialog,
+PySide6 (LGPL). `main_window/` (`window.py` builds `EliMainWindow` from the mixins in `_mixins/`; `models.py`, `adapters.py`, `widgets.py`), `app.py` (boot), `labs/` (the Labs sub-tabs), `panels/` (`startup.py`: StartupModelSelectionDialog,
 FirstBootWizard and the hardware tuning dock; `settings.py`, `agent_wizard.py`,
 `permission_dialog.py`), `tabs/` (`eli_world_tab.py`, `experimental_tab.py`,
 `marketplace_tab.py`, `tasks_tab.py`, `training_tab.py`, `extensions_tab.py`), `docks/` (operator console,

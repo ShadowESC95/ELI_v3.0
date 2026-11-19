@@ -59,7 +59,6 @@ flowchart TD
 | `main_window/adapters.py` | 617 | `CentralMemoryAdapter`, `ExecutorBridge`, `_GUIEngineAdapter` |
 | `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
 | `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
-| `labs_tab.py`, `gui_eli_original.py` | 30, 7 | compatibility shims that re-export the packages above |
 | `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
 | `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
 | `tabs/extensions_tab.py` | 1991 | Extensions tab |
@@ -76,7 +75,7 @@ The entry path: `_detect_hardware` (queries **free** VRAM — the display server
 consumes VRAM before ELI launches, so free ≠ total), `_auto_tune(model_path, hw)`
 (picks n_ctx/layers/batch), `_pick_model`, `_confirm_params`, config load/save.
 `main()` either shows the startup model picker (first boot) or delegates to
-`gui_eli_original.main()` (the shim onto `main_window.window.main`). `--setup` forces the wizard.
+`main_window.window.main()`. `--setup` forces the wizard.
 
 ## Main window (`main_window/`)
 
