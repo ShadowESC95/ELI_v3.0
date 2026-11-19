@@ -994,11 +994,19 @@ def _first_run_gpu_offer() -> None:
         pass  # never block the GUI boot on the chooser
 
 
+_SINGLETON_LOCK = None   # the open lock file; the OS holds the lock until this process ends
+
+
 def _gui_singleton_or_exit() -> None:
     """Keep one GUI process — Windows Setup/desktop often starts ELI twice.
 
+    An OS lock on a file (msvcrt on Windows, fcntl elsewhere), held for the life of the process and
+    released by the OS however it ends, crash included. It replaced a PID file checked with
+    os.kill with signal 0, which on Windows sends Ctrl+C instead of testing whether the process exists.
+
     Override with ELI_ALLOW_MULTI_INSTANCE=1 for debugging.
     """
+    global _SINGLETON_LOCK
     if os.environ.get("ELI_ALLOW_MULTI_INSTANCE", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):
@@ -1010,63 +1018,30 @@ def _gui_singleton_or_exit() -> None:
         lock_dir = Path.home() / ".local" / "share" / "ELI_v3"
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        return
-    lock_path = lock_dir / ".eli_gui_singleton.lock"
-    try:
-        # Exclusive create: second process fails immediately.
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-    except FileExistsError:
-        # Stale lock from a crash? If the recorded PID is dead, take over.
-        try:
-            old = lock_path.read_text(encoding="utf-8").strip()
-            old_pid = int(old.split()[0]) if old else 0
-        except Exception:
-            old_pid = 0
-        alive = False
-        if old_pid > 0:
-            try:
-                os.kill(old_pid, 0)
-                alive = True
-            except Exception:
-                alive = False
-        if alive:
-            try:
-                _message_box_warning(
-                    "ELI is already running",
-                    "Another ELI window is already open.\n\n"
-                    "Close it first, or use the existing window.\n"
-                    "(Set ELI_ALLOW_MULTI_INSTANCE=1 to override.)",
-                )
-            except Exception:
-                print("ELI is already running.", file=sys.stderr)
-            sys.exit(0)
-        try:
-            lock_path.unlink(missing_ok=True)
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-        except Exception:
-            return
-    except Exception:
+        handle = open(lock_dir / ".eli_gui_singleton.lock", "a+b")
+    except OSError:
         return
     try:
-        os.write(fd, f"{os.getpid()}\n".encode("ascii", errors="ignore"))
-    except Exception:
-        pass
-    # Keep fd open for process lifetime so exclusive create remains meaningful
-    # after unlink-on-exit; register cleanup.
-    import atexit
-
-    def _unlock() -> None:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
         try:
-            os.close(fd)
+            _message_box_warning(
+                "ELI is already running",
+                "Another ELI window is already open.\n\n"
+                "Close it first, or use the existing window.\n"
+                "(Set ELI_ALLOW_MULTI_INSTANCE=1 to override.)",
+            )
         except Exception:
-            pass
-        try:
-            lock_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    atexit.register(_unlock)
+            print("ELI is already running.", file=sys.stderr)
+        sys.exit(0)
+    _SINGLETON_LOCK = handle
 
 
 def _serve() -> int:
