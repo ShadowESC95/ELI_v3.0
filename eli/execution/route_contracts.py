@@ -417,7 +417,7 @@ def identity_question(text: Any) -> Optional[Dict[str, Any]]:
     """{"action", "args", "matched_by"} for a question about who the user is, else None: the report
     of what ELI keeps on them ("show user info", "dump my profile") is USER_INFO_REPORT; who they are,
     their name, or whether ELI knows them is USER_IDENTITY_SUMMARY with its identity_scope."""
-    low = re.sub(r"\s+", " ", _low(text)).strip()
+    low = re.sub(r"\s+", " ", _low(text)).strip(" .,!?:;")     # as identity_scope reads it: "And my name."
     if _ASKS_FOR_THE_REPORT.search(low):
         if _REMAKE.search(low):
             return None

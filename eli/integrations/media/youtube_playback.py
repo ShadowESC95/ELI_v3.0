@@ -115,10 +115,13 @@ def yt_resolve_watch_url(query: str) -> str | None:
 
 
 def yt_resolve_watch_url_ytdlp(query: str) -> str | None:
+    """The same through yt-dlp. It is another program, so the Net toggle is asked here: with ELI
+    offline it is not started (it searched YouTube whatever the toggle said)."""
+    from eli.core.netguard import should_block_network
     from eli.integrations.media.media_deps import path_env_for_subprocess, yt_dlp_argv
 
     argv = yt_dlp_argv()
-    if not argv:
+    if not argv or should_block_network():
         return None
     try:
         r = subprocess.run(
@@ -241,6 +244,11 @@ def attempt_youtube_mpv(
         path_env_for_subprocess,
     )
 
+    from eli.core.netguard import should_block_network
+    if should_block_network():
+        # mpv and yt-dlp fetch the stream themselves, past ELI's own guard: offline, they are not started
+        return {"ok": False, "played": False, "reason": "offline",
+                "error": "ELI is offline: the Net toggle is off"}
     missing = missing_youtube_tools()
     if missing:
         return {

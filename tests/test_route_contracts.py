@@ -194,6 +194,7 @@ def test_who_the_user_is_is_decided_in_one_place_with_the_scope_it_asks_for():
     cases = {
         "who am i": ("USER_IDENTITY_SUMMARY", "identity_only"),
         "and my name?": ("USER_IDENTITY_SUMMARY", "name_only"),
+        "And my name.": ("USER_IDENTITY_SUMMARY", "name_only"),
         "what's my name": ("USER_IDENTITY_SUMMARY", "name_only"),
         "do you remember me": ("USER_IDENTITY_SUMMARY", "memory_presence_only"),
         "you don't know me": ("USER_IDENTITY_SUMMARY", "memory_presence_only"),
