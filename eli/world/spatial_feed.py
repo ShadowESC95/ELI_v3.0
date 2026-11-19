@@ -166,7 +166,10 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
     it; with none, the current world is read from storage. A version 2 message is held to `budget`
     bytes (MESSAGE_BYTES): ELI's books fill what the rest leaves of it. `reader` is whose thoughts it
     carries (shown.kept's user_id: a member's own and ELI's shared ones; None the owner's), as for
-    /v1/world/thoughts: the message read every caller the owner's."""
+    /v1/world/thoughts: the message read every caller the owner's. Everything else in it that is
+    made of the owner's records (memories, claims, goals, results, the agenda, the evidence, the
+    books, what happened lately) goes to the owner only: a member got all of it with their own
+    thoughts on top. A member's message has the house, the models and what is theirs."""
     if state is None:
         state = _load_world()
     avatar = state.get("avatar") or {}
@@ -233,29 +236,31 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             if look and room_id != building.OWN_ROOM:
                 message["spaces"][room_id] = {"name": str(info.get("name") or room_id),
                                               "purpose": str(info.get("purpose") or ""), "mood": look}
-        message["recent"] = _recent(state)
-        message["log"] = _log(state)
+        owners = not reader
+        message["recent"] = _recent(state) if owners else []
+        message["log"] = _log(state) if owners else []
         try:
             # ELI's real memories and goals, standing in the rooms named for them
             from eli.world import shown
-            message["objects"] = objects + shown.items()
-            message["mind"] = shown.thoughts()
-            message["coming_up"] = shown.coming_up()
+            message["objects"] = objects + (shown.items() if owners else [])
+            message["mind"] = shown.thoughts() if owners else []
+            message["coming_up"] = shown.coming_up() if owners else []
             # ELI's own models, for a body to fetch and draw
             from eli.world import models
             message["models"] = models.listed()
             # moments of ELI's own waiting to be made into something, and whether ELI is free to:
             # a body may ask ELI to make something of one while someone is there to see it
-            message["waiting"] = len([u for u in own.get("urges") or [] if isinstance(u, dict)])
+            message["waiting"] = len([u for u in own.get("urges") or [] if isinstance(u, dict)]) if owners else 0
             message["free"] = shown.free()
             # ELI's thoughts lately, each with why it had it, how sure it was, what it decided and what
             # became of it, by the room they belong in (eli/cognition/thoughts.py)
             message["thoughts"] = shown.kept(user_id=reader)
             # what ELI's actions did and how often its figures proved right (the Evidence Wall)
-            message["evidence"] = shown.evidence()
+            message["evidence"] = shown.evidence() if owners else {}
         except Exception:
             log.debug("ELI's records were not all read for the world message", exc_info=True)
-        _add_books(message, budget if budget is not None else MESSAGE_BYTES)
+        if owners:
+            _add_books(message, budget if budget is not None else MESSAGE_BYTES)
     return message
 
 
@@ -519,13 +524,14 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         except ValueError as e:
             raise _problem(e)
 
-    @router.get("/v1/world/picture/{row_id}", dependencies=[Depends(require_read)])
-    def world_picture(row_id: int):
+    @router.get("/v1/world/picture/{row_id}")
+    def world_picture(row_id: int, principal: Any = Depends(require_read)):
         """A picture ELI took or looked at for the user: only one its evidence ledger records as such,
-        still on disk, and a picture by its own first bytes. Anything else is not found."""
+        still on disk, and a picture by its own first bytes. Anything else is not found, and to a
+        member every one of the owner's is."""
         from fastapi.responses import FileResponse
         from eli.world import shown
-        path = shown.picture(row_id)
+        path = "" if _reads(principal) else shown.picture(row_id)
         if not path:
             raise HTTPException(status_code=404, detail="no such picture")
         with open(path, "rb") as f:
@@ -602,12 +608,12 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=size, user_id=who)
                 if (room or wanted) else shown.kept(user_id=who)[:size]}
 
-    @router.get("/v1/world/book/{book_id}", dependencies=[Depends(require_read)])
-    def world_book(book_id: str):
+    @router.get("/v1/world/book/{book_id}")
+    def world_book(book_id: str, principal: Any = Depends(require_read)):
         """One of ELI's books whole: what it is, and its sections [{heading, when, text}]. Only a book of
-        this user's records (eli/world/books.py); anything else is not found."""
+        the owner's records (eli/world/books.py), and only to the owner; anything else is not found."""
         from eli.world import books
-        book = books.read(book_id)
+        book = None if _reads(principal) else books.read(book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="no such book")
         return {"id": book["id"], "book": {k: v for k, v in book.items() if k not in ("id", "sections")},

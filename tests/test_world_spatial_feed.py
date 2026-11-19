@@ -410,9 +410,19 @@ def test_the_world_message_gives_each_caller_their_own_thoughts(monkeypatch, tmp
     th.record("recall", "the owner's walk by the canal", decision="shown", ref="recall:r-a:1")
     th.record("claim", "works at: the harbour office", decision="shown", ref="claim:1:r-b", user_id="member-b")
     th.record("proposal", "a fix for the router", decision="proposed", ref="proposal:1")
-    for name, stand_in in (("items", lambda now=None: []), ("thoughts", lambda now=None: []),
-                           ("coming_up", lambda now=None: []), ("free", lambda now=None: False)):
+    # the owner's records, as the rooms show them: each a thing only the owner's message may hold
+    owned = {"id": "memory:7", "name": "the owner's walk by the canal", "kind": "memory", "room": "archive"}
+    for name, stand_in in (("items", lambda now=None: [dict(owned)]),
+                           ("thoughts", lambda now=None: [{"kind": "tone", "text": "the owner sounded tired"}]),
+                           ("coming_up", lambda now=None: [{"what": "the owner's dentist", "when": 1.0}]),
+                           ("evidence", lambda now=None: {"actions": [{"what": "opened the owner's notes"}]}),
+                           ("books", lambda room, now=None: [dict(owned, id="book:1", kind="book")]),
+                           ("picture", lambda row_id: str(tmp_path / "shot.png")),
+                           ("free", lambda now=None: False)):
         monkeypatch.setattr(shown, name, stand_in)       # the rest of the message reads no store here
+    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    from eli.world import books as book_store
+    monkeypatch.setattr(book_store, "read", lambda book_id: {"id": book_id, "title": "the owner's year", "sections": []})
     monkeypatch.setattr(models, "listed", lambda: [])
     monkeypatch.setattr(spatial_feed, "_load_world", lambda: WORLD)
     monkeypatch.setattr(spatial_feed, "POLL_SECONDS", 0.05)
@@ -427,19 +437,29 @@ def test_the_world_message_gives_each_caller_their_own_thoughts(monkeypatch, tmp
     client = TestClient(app)
 
     def over_http(name):
-        message = client.get("/v1/world/state", params={"version": 2}, headers={"x-who": name}).json()
-        return {t["what"] for t in message["thoughts"]}
+        return client.get("/v1/world/state", params={"version": 2}, headers={"x-who": name}).json()
 
     def over_the_socket(name):
         with client.websocket_connect("/v1/world/ws", headers={"x-who": name}) as ws:
             ws.receive_json()
             ws.send_json({"type": "hello", "protocol_versions": [1, 2]})
             assert ws.receive_json()["type"] == "welcome"
-            return {t["what"] for t in ws.receive_json()["thoughts"]}
+            return ws.receive_json()
 
+    world_things = {str(o["id"]) for o in spatial_feed.spatial_state(WORLD, version=1)["objects"]}
     for read in (over_http, over_the_socket):
-        assert read("") == {"the owner's walk by the canal", "a fix for the router"}, read.__name__
-        assert read("member-b") == {"works at: the harbour office", "a fix for the router"}, read.__name__
+        owner, member = read(""), read("member-b")
+        assert {t["what"] for t in owner["thoughts"]} == {"the owner's walk by the canal", "a fix for the router"}, read.__name__
+        assert {t["what"] for t in member["thoughts"]} == {"works at: the harbour office", "a fix for the router"}, read.__name__
+        # the owner's memories, agenda, evidence, books and what happened lately are the owner's only
+        assert {"memory:7", "book:1"} <= {o["id"] for o in owner["objects"]} and owner["coming_up"] and owner["evidence"]
+        assert {str(o["id"]) for o in member["objects"]} == world_things, read.__name__
+        assert (member["mind"], member["coming_up"], member["evidence"], member["recent"], member["log"]) == ([], [], {}, [], [])
+        assert "the owner" not in json.dumps(member), read.__name__
+    assert client.get("/v1/world/picture/3", headers={"x-who": ""}).status_code == 200
+    assert client.get("/v1/world/picture/3", headers={"x-who": "member-b"}).status_code == 404
+    assert client.get("/v1/world/book/b1", headers={"x-who": ""}).status_code == 200
+    assert client.get("/v1/world/book/b1", headers={"x-who": "member-b"}).status_code == 404
 
 
 def test_state_route_returns_the_message(monkeypatch):
