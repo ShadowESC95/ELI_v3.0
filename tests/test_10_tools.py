@@ -18,4 +18,3 @@ def test_platform_compat_app_aliases_include_android():
     mod = importlib.import_module("eli.utils.platform_compat")
     assert mod.app_aliases("android")["terminal"] == "com.termux"
     assert mod.normalize_app_name("vs code", "windows")
-    assert "macos" in mod.platform_aliases("darwin")

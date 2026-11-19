@@ -1,15 +1,13 @@
 """Tests for the DAG execution orchestrator (eli/core/dag.py).
 
-Covers every frontier feature: dependency result-passing, parallel layers, the
-conditional `when` skip, retries, fallback, memoisation, priority, fail-fast,
-upstream-failure skip, time budget, cycle detection, and the RunReport.
+Covers dependency result-passing, parallel layers, upstream-failure skip, non-critical
+failures, the shared context, cycle detection, pass-through nodes and the RunReport.
 """
 from __future__ import annotations
 
 import pytest
 
-from eli.core.dag import (Task, Orchestrator, run_graph, NodeContext,
-                          DAGCycleError)
+from eli.core.dag import Task, run_graph, DAGCycleError
 
 
 def test_runs_in_dependency_order_and_passes_results():
@@ -37,47 +35,6 @@ def test_parallel_layers_same_result_as_sequential():
     assert par.ok and [sorted(l) for l in par.layers] == [["root"], ["x", "y"], ["join"]]
 
 
-def test_conditional_when_skips_node_and_downstream():
-    tasks = [
-        Task("a", run=lambda c: 1),
-        Task("b", run=lambda c: 2, depends_on={"a"}, when=lambda c: False),
-        Task("c", run=lambda c: 3, depends_on={"b"}),
-    ]
-    r = run_graph(tasks, max_workers=1)
-    assert r.outcomes["b"].status == "skipped"
-    assert r.outcomes["c"].status == "skipped"      # upstream b never completed
-    assert r.outcomes["a"].ok
-
-
-def test_retries_then_succeeds():
-    calls = {"n": 0}
-    def flaky(c):
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise RuntimeError("transient")
-        return "ok"
-    r = run_graph([Task("f", run=flaky, retries=3)], max_workers=1)
-    assert r.result("f") == "ok" and r.outcomes["f"].attempts == 3
-
-
-def test_fallback_used_when_all_attempts_fail():
-    def boom(c):
-        raise ValueError("nope")
-    r = run_graph([Task("f", run=boom, retries=1, fallback=lambda c: "safe")], max_workers=1)
-    assert r.ok and r.result("f") == "safe"
-
-
-def test_memoisation_skips_recompute():
-    cache: dict = {}
-    calls = {"n": 0}
-    def expensive(c):
-        calls["n"] += 1
-        return 99
-    Orchestrator(cache=cache, max_workers=1).run([Task("e", run=expensive, cache_key="k")])
-    r2 = Orchestrator(cache=cache, max_workers=1).run([Task("e", run=expensive, cache_key="k")])
-    assert calls["n"] == 1 and r2.outcomes["e"].status == "cached" and r2.result("e") == 99
-
-
 def test_upstream_failure_skips_descendants_and_marks_not_ok():
     tasks = [
         Task("a", run=lambda c: (_ for _ in ()).throw(RuntimeError("x"))),
@@ -97,25 +54,6 @@ def test_non_critical_failure_keeps_run_ok():
     ]
     r = run_graph(tasks, max_workers=1)
     assert r.ok is True and r.result("main") == "done"
-
-
-def test_fail_fast_skips_remaining_layers():
-    tasks = [
-        Task("a", run=lambda c: (_ for _ in ()).throw(RuntimeError("x"))),
-        Task("b", run=lambda c: 1),            # independent, later layer not guaranteed
-        Task("c", run=lambda c: 2, depends_on={"b"}),
-    ]
-    r = Orchestrator(fail_fast=True, max_workers=1).run(tasks)
-    assert r.ok is False and r.outcomes["c"].status == "skipped"
-
-
-def test_priority_orders_within_layer():
-    seen = []
-    mk = lambda name: Task(name, run=lambda c, n=name: seen.append(n))
-    tasks = [Task("hi", run=lambda c: seen.append("hi"), priority=10),
-             Task("lo", run=lambda c: seen.append("lo"), priority=1)]
-    run_graph(tasks, max_workers=1)
-    assert seen == ["hi", "lo"]
 
 
 def test_shared_context_bag_visible_to_all():

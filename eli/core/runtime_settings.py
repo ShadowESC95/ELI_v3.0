@@ -856,10 +856,6 @@ def load_runtime_settings() -> Dict[str, Any]:
     return load_settings()
 
 
-def save_runtime_settings(settings: Dict[str, Any]) -> None:
-    save_settings(settings)
-
-
 def _resolve_gpu_split(s):
     """Resolve (tensor_split, main_gpu, split_mode) for multi-GPU.
 

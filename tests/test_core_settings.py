@@ -17,7 +17,6 @@ from eli.core.runtime_settings import (
     save_settings,
     update_settings,
     load_runtime_settings,
-    save_runtime_settings,
     INT_KEYS,
     FLOAT_KEYS,
     BOOL_KEYS,
@@ -384,16 +383,6 @@ def test_update_settings_persists(tmp_settings_file, monkeypatch):
     update_settings(theme="light")
     data = json.loads(tmp_settings_file.read_text())
     assert data["theme"] == "light"
-
-
-# ── load_runtime_settings / save_runtime_settings aliases ────────────────
-
-
-def test_save_runtime_settings_alias(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    save_runtime_settings({"theme": "dark"})
-    data = json.loads(tmp_settings_file.read_text())
-    assert data["theme"] == "dark"
 
 
 # ── ENV_TO_KEY mapping completeness ──────────────────────────────────────

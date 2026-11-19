@@ -270,14 +270,6 @@ def get_entry(key: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def default_entry() -> Dict[str, Any]:
-    cat = list_catalog()
-    for e in cat:
-        if e.get("default"):
-            return e
-    return cat[0]
-
-
 def recommend_for_vram(free_vram_gb: Optional[float]) -> Dict[str, Any]:
     """Largest catalog model that fits the detected VRAM (CPU-only → smallest).
 
@@ -294,33 +286,6 @@ def recommend_for_vram(free_vram_gb: Optional[float]) -> Dict[str, Any]:
     _headroom = 1.25
     fit = [e for e in cat if float(e.get("size_gb", 0)) * _headroom <= float(free_vram_gb)]
     return (fit[-1] if fit else cat[0])
-
-
-def remote_size_bytes(key_or_entry: Any, timeout: float = 30.0) -> int:
-    """Best-effort TRUE download size via an HTTP HEAD (Content-Length), routed
-    through netguard. Returns 0 if unknown/offline. Lets callers display the real
-    size instead of the catalog's static `size_gb` estimate (which goes stale
-    when a repo re-quantizes or a URL is repointed → the 'wrong size displayed'
-    symptom)."""
-    entry = key_or_entry if isinstance(key_or_entry, dict) else get_entry(key_or_entry)
-    if not entry:
-        return 0
-    url = str(entry.get("url") or "").strip()
-    if not url:
-        return 0
-    try:
-        with netguard.allow_network(f"size check: {entry.get('filename') or url}"):
-            req = urllib.request.Request(
-                url, method="HEAD",
-                headers={"User-Agent": "ELI-v2.0/2.0 (size-check)"},
-            )
-            with netguard.guarded_urlopen(req, timeout=timeout) as resp:
-                clen = resp.headers.get("Content-Length")
-                if clen and str(clen).isdigit():
-                    return int(clen)
-    except Exception:
-        return 0
-    return 0
 
 
 def _size_result_fields(final_path: Path, entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -607,9 +572,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if argv[0] in ("--choose", "--select", "-c"):
         return interactive_select()
-    if argv[0] in ("--list", "-l"):
-        print(_fmt_catalog())
-        return 0
 
     # Support models. `--aux` → all required aux (the embedder); `--aux-all` → every
     # aux incl. optional vision; `--aux <key>` → a specific one.

@@ -300,6 +300,17 @@ def test_what_the_headsets_programs_hold_is_measured_and_the_most_seen_is_kept(m
     assert load_plan.xr_reserve_mb(_cards()[0]) == pytest.approx(1500.0)
 
 
+def test_the_footprint_is_written_through_a_temporary_file_of_its_own(machine, monkeypatch, tmp_path):
+    """Both tables were written through one fixed name beside them ("gpu_xr.tmp"): two writers shared
+    it, and one left in the way stopped every later write. Each write has its own now."""
+    import json
+    _headset(monkeypatch, tmp_path, smi_cards=_SMI_CARDS, held={0: 900.0})
+    (tmp_path / "gpu_xr.tmp").mkdir()                     # another writer's, in the way
+    load_plan.note_xr_footprint(force=True)
+    assert json.loads((tmp_path / "gpu_xr.json").read_text(encoding="utf-8"))["Card 0|4096"]["mb"] == 900.0
+    assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["gpu_xr.json"], "no temporary file left"
+
+
 def test_nothing_is_kept_for_a_headset_that_is_not_here_or_coming(machine, monkeypatch, tmp_path):
     _headset(monkeypatch, tmp_path, smi_cards=_SMI_CARDS, held={0: 1500.0}, wanted=False)
     load_plan.note_xr_footprint(force=True)

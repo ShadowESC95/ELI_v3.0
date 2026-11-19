@@ -498,12 +498,6 @@ def knowledge_graph_db_path() -> Path:
 
 # ── Persona paths ──
 
-def persona_base_path() -> Path:
-    """Base persona text file."""
-    if _is_dev_mode():
-        return project_root() / "eli" / "brain" / "persona" / "persona.txt"
-    return config_dir() / "persona.txt"
-
 def persona_path() -> Path:
     """Canonical base persona file."""
     return project_root() / "eli" / "cognition" / "persona.txt"
@@ -574,10 +568,6 @@ def get_agent_db_path() -> Path:
 def get_models_dir() -> Path:
     """Backward compat alias."""
     return models_dir()
-
-# ── GGUF model path (runtime setting, not a fixed path) ──
-
-_gguf_model_path: str | None = None
 
 def project_root() -> Path:
     env = os.environ.get("ELI_PROJECT_ROOT")
@@ -757,20 +747,12 @@ def get_gguf_model_path() -> str | None:
     env = os.environ.get("ELI_GGUF_MODEL_PATH") or os.environ.get("ELI_MODEL")
     if env:
         return str(resolve_runtime_path(env))
-    if _gguf_model_path:
-        return _gguf_model_path
     d = gguf_models_dir()
     if d.exists():
         hits = sorted(d.glob("*.gguf"))
         if hits:
             return str(hits[0])
     return None
-
-def set_gguf_model_path(path: str):
-    """Set the GGUF model path at runtime."""
-    global _gguf_model_path
-    _gguf_model_path = path
-    os.environ["ELI_MODEL"] = path
 
 
 # ── Startup info ──
@@ -848,8 +830,6 @@ class EliPaths:
     def notes_dir(self): return notes_dir()
     @property
     def notebook_dir(self): return notebook_dir()
-    @property
-    def persona_base(self): return persona_base_path()
     @property
     def persona_auto(self): return persona_auto_path()
     @property

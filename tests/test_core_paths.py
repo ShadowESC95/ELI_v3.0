@@ -30,7 +30,6 @@ from eli.core.paths import (
     training_root,
     get_paths,
     get_gguf_model_path,
-    set_gguf_model_path,
     path_info,
     EliPaths,
     PATHS,
@@ -216,12 +215,6 @@ def test_paths_repr():
 def test_get_gguf_model_path_returns_str_or_none():
     result = get_gguf_model_path()
     assert result is None or isinstance(result, str)
-
-def test_set_gguf_model_path(monkeypatch, tmp_path):
-    model = tmp_path / "model.gguf"
-    model.write_bytes(b"fake")
-    set_gguf_model_path(str(model))
-    assert get_gguf_model_path() == str(model)
 
 def test_gguf_env_override(monkeypatch, tmp_path):
     model = tmp_path / "env_model.gguf"

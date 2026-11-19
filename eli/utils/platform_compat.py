@@ -87,15 +87,6 @@ PLATFORM_CANONICAL = {
     "posix": "posix",
 }
 
-PLATFORM_ALIASES = {
-    "windows": ("windows", "win", "win32", "win64", "nt", "cygwin", "msys", "mingw"),
-    "macos": ("macos", "mac", "darwin", "osx", "mac os", "mac os x"),
-    "linux": ("linux", "linux2", "gnu/linux", "ubuntu", "debian", "fedora", "arch"),
-    "android": ("android", "termux", "bionic"),
-    "bsd": ("bsd", "freebsd", "openbsd", "netbsd"),
-    "unix": ("unix", "posix"),
-}
-
 COMMON_APP_ALIASES = {
     "browser": "browser",
     "web browser": "browser",
@@ -346,11 +337,6 @@ def normalize_platform(name: str | None = None) -> str:
         return "unknown"
     key = " ".join(str(name).strip().lower().replace("_", " ").replace("-", " ").split())
     return PLATFORM_CANONICAL.get(key, key or "unknown")
-
-
-def platform_aliases(name: str | None = None) -> tuple[str, ...]:
-    """Return accepted aliases for a platform."""
-    return PLATFORM_ALIASES.get(normalize_platform(name), ())
 
 
 _MACOS_APP_DIRS = (
@@ -1517,37 +1503,6 @@ def play_wav_blocking(path: str | Path, *, post_play_tail: float | None = None) 
     return False
 
 
-def find_executable(name: str, extra_paths: list[str] | None = None) -> str | None:
-    """Find an executable on PATH, with optional extra search directories."""
-    result = shutil.which(name)
-    if result:
-        return result
-    if extra_paths:
-        for p in extra_paths:
-            candidate = Path(p) / name
-            if candidate.exists() and os.access(candidate, os.X_OK):
-                return str(candidate)
-            # Windows: try with .exe
-            if WINDOWS:
-                candidate = Path(p) / f"{name}.exe"
-                if candidate.exists():
-                    return str(candidate)
-    return None
-
-
-def user_documents_dir() -> Path:
-    """Cross-platform user documents directory."""
-    if ANDROID:
-        sdcard = Path("/sdcard/Documents")
-        return sdcard if sdcard.exists() else Path.home() / "Documents"
-    if WINDOWS:
-        return Path(os.environ.get("USERPROFILE", Path.home())) / "Documents"
-    elif MACOS:
-        return Path.home() / "Documents"
-    else:
-        return Path.home() / "Documents"
-
-
 def user_pictures_dir() -> Path:
     """Cross-platform user pictures directory."""
     if ANDROID:
@@ -1701,41 +1656,9 @@ def type_text(text: str) -> bool:
         log.debug(f"pyautogui type failed: {e}")
     return False
 
-# --- Platform detection functions (added for audit) ---
-def is_linux() -> bool:
-    """Return True if running on Linux."""
-    return LINUX
-
 def is_android() -> bool:
     """Return True if running on Android or Termux."""
     return ANDROID
-
-def is_macos() -> bool:
-    """Return True if running on macOS."""
-    return MACOS
-
-def is_windows() -> bool:
-    """Return True if running on Windows."""
-    return WINDOWS
-
-def is_bsd() -> bool:
-    """Return True if running on a BSD platform."""
-    return BSD
-
-def is_unix() -> bool:
-    """Return True for Unix-like platforms."""
-    return UNIX
-
-# --- Alias for audit compatibility ---
-def is_mac() -> bool:
-    """Return True if running on macOS (alias for is_macos)."""
-    return is_macos()
-
-# --- get_platform for audit compatibility ---
-def get_platform() -> str:
-    """Return current canonical platform name."""
-    return normalize_platform()
-
 
 # ── system libraries ─────────────────────────────────────────────────────────
 # Some libraries come from the system and can't be bundled (libGL belongs to the GPU driver).
@@ -1894,66 +1817,3 @@ def musl_libc_hint() -> str | None:
             )
     return None
 
-# --- Added for audit compatibility ---
-def open_file_manager(path: str = None) -> bool:
-    """Open the system file manager at the given path (or home if None)."""
-    import os
-
-    target = os.path.expanduser(path or "~")
-    if ANDROID:
-        if shutil.which("termux-open"):
-            try:
-                subprocess.Popen(["termux-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-            except Exception:
-                return False
-        return False
-    if WINDOWS:
-        try:
-            os.startfile(target)
-            return True
-        except Exception:
-            return False
-    if MACOS:
-        try:
-            subprocess.Popen(["open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except Exception:
-            return False
-    if shutil.which("nautilus"):
-        subprocess.Popen(["nautilus", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    elif shutil.which("dolphin"):
-        subprocess.Popen(["dolphin", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    elif shutil.which("thunar"):
-        subprocess.Popen(["thunar", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    elif shutil.which("pcmanfm"):
-        subprocess.Popen(["pcmanfm", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    elif shutil.which("xdg-open"):
-        subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    return False
-
-# --- Missing functions for audit compatibility ---
-def get_config_dir() -> str:
-    """Return the platform-specific config directory."""
-    from eli.core.paths import config_dir
-    return str(config_dir())
-
-def get_data_dir() -> str:
-    """Return the platform-specific data directory."""
-    from eli.core.paths import data_dir
-    return str(data_dir())
-
-def get_cache_dir() -> str:
-    """Return the platform-specific cache directory."""
-    from eli.core.paths import cache_dir
-    return str(cache_dir())
-
-def get_log_dir() -> str:
-    """Return the platform-specific log directory."""
-    from eli.core.paths import logs_dir
-    return str(logs_dir())

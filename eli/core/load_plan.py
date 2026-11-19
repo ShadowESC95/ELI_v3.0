@@ -324,10 +324,9 @@ def note_headroom() -> None:
         if changed:
             try:
                 path = _headroom_file()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(table, indent=1), encoding="utf-8")
-                tmp.replace(path)
+                # a temporary file of its own for each writer, then moved into place
+                from eli.core.secure_io import secure_write_text
+                secure_write_text(path, json.dumps(table, indent=1))
             except Exception:
                 log.debug("headroom not recorded", exc_info=True)
 
@@ -454,10 +453,9 @@ def note_xr_footprint(force: bool = False) -> Dict[str, float]:
         if changed:
             try:
                 path = _xr_file()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(table, indent=1), encoding="utf-8")
-                tmp.replace(path)
+                # a temporary file of its own for each writer, then moved into place
+                from eli.core.secure_io import secure_write_text
+                secure_write_text(path, json.dumps(table, indent=1))
             except OSError:
                 log.debug("the headset's footprint was not recorded", exc_info=True)
         return {k: float(v.get("mb") or 0.0) for k, v in table.items()}

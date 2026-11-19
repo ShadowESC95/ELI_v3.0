@@ -19,16 +19,12 @@ import os
 import json
 
 from eli.core.runtime_settings import (
+    DEFAULTS as _RS_DEFAULTS,
     load_settings as _rs_load,
     save_settings as _rs_save,
     _settings_file as _rs_file,
 )
-from eli.core.paths import (
-    gguf_models_dir,
-    models_dir as _paths_models_dir,
-    project_root,
-    resolve_runtime_path,
-)
+from eli.core.paths import resolve_runtime_path
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -90,66 +86,7 @@ def delete(key: str):
     return False
 
 
-def list_keys():
-    """List all top-level keys in settings.json."""
-    try:
-        return list(_rs_load().keys())
-    except Exception:
-        return []
-
-
-# ---------- Web automation ----------
-
-def set_web_headless(headless: bool):
-    set("web_headless", bool(headless))
-
-
-def get_web_headless() -> bool:
-    return bool(get("web_headless", True))
-
-
-# ---------- Model discovery ----------
-
-ROOT = project_root()
-MODEL_DIR = gguf_models_dir()
-
-
-def get_model_dir():
-    env = os.getenv("ELI_MODELS_DIR")
-    if env:
-        return resolve_runtime_path(env)
-    return _paths_models_dir()
-
-
-def get_available_gguf_models():
-    d = get_model_dir()
-    if not d.exists():
-        return []
-    return sorted(d.rglob("*.gguf"))
-
-
-def get_default_gguf_model():
-    env = os.getenv("ELI_GGUF_MODEL_PATH")
-    if env:
-        p = resolve_runtime_path(env)
-        if p.exists():
-            return str(p)
-    name = os.getenv("ELI_GGUF_MODEL")
-    if name:
-        p = get_model_dir() / name
-        if p.exists():
-            return str(p)
-    models = get_available_gguf_models()
-    if models:
-        return str(models[0])
-    return None
-
-
 # ---------- GGUF parameters (canonical + legacy getter/setter names) ----------
-
-def set_gguf_model_path(path: str):
-    set("model_path", path)
-
 
 def get_gguf_model_path() -> Optional[str]:
     env = os.getenv("ELI_GGUF_MODEL_PATH")
@@ -171,24 +108,6 @@ def get_gguf_model_path() -> Optional[str]:
         return None
 
 
-def set_gguf_n_gpu_layers(layers: int):
-    set("n_gpu_layers", int(layers))
-
-
-def get_gguf_n_gpu_layers() -> int:
-    env = os.getenv("ELI_GGUF_N_GPU_LAYERS") or os.getenv("ELI_N_GPU_LAYERS")
-    if env is not None:
-        try:
-            return int(env)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    return int(get("n_gpu_layers", -1))        # -1: every layer, llama.cpp's own value
-
-
-def set_gguf_n_ctx(ctx: int):
-    set("n_ctx", int(ctx))
-
-
 def get_gguf_n_ctx() -> int:
     """The operator's context (env, then settings); 0 / unset is auto, sized for the configured
     model on this machine. 0 only when there is no model to size for."""
@@ -208,10 +127,6 @@ def get_gguf_n_ctx() -> int:
         return 0
 
 
-def set_gguf_n_batch(batch: int):
-    set("batch_size", int(batch))
-
-
 def get_gguf_n_batch() -> int:
     env = os.getenv("ELI_GGUF_N_BATCH") or os.getenv("ELI_BATCH_SIZE")
     if env is not None:
@@ -219,20 +134,10 @@ def get_gguf_n_batch() -> int:
             return int(env)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-    return int(get("batch_size", 512))
+    return int(get("batch_size", _RS_DEFAULTS["batch_size"]))
 
 
 # ---------- Persona (delegates to canonical persona authority) ----------
-
-def set_persona(text: str):
-    try:
-        from eli.cognition.persona import write_base_persona
-        write_base_persona(text)
-        return
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    set("eli_persona", text)
-
 
 DEFAULT_PERSONA = ("You are ELI, a local reasoning and automation assistant. "
                    "Be direct, accurate, grounded, privacy-preserving, and useful.")
@@ -254,10 +159,8 @@ def get_eli_persona() -> str:
 
 
 # ---------- Generation parameters ----------
-
-def set_temperature(value: float):
-    set("temperature", float(value))
-
+# A value the settings cannot give falls back to the one defaults table (runtime_settings.DEFAULTS):
+# these getters carried figures of their own (0.55, 0.9, 1.15, 2048) that differed from it.
 
 def get_temperature() -> float:
     cur = get("temperature", None)
@@ -272,35 +175,19 @@ def get_temperature() -> float:
             return float(env)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-    return 0.55
-
-
-def set_top_p(value: float):
-    set("top_p", float(value))
+    return float(_RS_DEFAULTS["temperature"])
 
 
 def get_top_p() -> float:
-    return float(get("top_p", 0.9))
-
-
-def set_top_k(value: int):
-    set("top_k", int(value))
+    return float(get("top_p", _RS_DEFAULTS["top_p"]))
 
 
 def get_top_k() -> int:
-    return int(get("top_k", 40))
-
-
-def set_repeat_penalty(value: float):
-    set("repeat_penalty", float(value))
+    return int(get("top_k", _RS_DEFAULTS["top_k"]))
 
 
 def get_repeat_penalty() -> float:
-    return float(get("repeat_penalty", 1.15))
-
-
-def set_num_predict(value: int):
-    set("max_tokens", int(value))
+    return float(get("repeat_penalty", _RS_DEFAULTS["repeat_penalty"]))
 
 
 def get_num_predict() -> int:
@@ -316,7 +203,7 @@ def get_num_predict() -> int:
             return int(env)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-    return 2048
+    return int(_RS_DEFAULTS["max_tokens"])
 
 
 # ---------- Threads ----------
@@ -337,10 +224,6 @@ def get_n_threads() -> int:
             log.debug("suppressed exception", exc_info=True)
     from eli.core.hardware_profile import recommend_cpu_threads   # auto: the one thread rule
     return int(recommend_cpu_threads())
-
-
-def set_n_threads(n: int) -> None:
-    set("n_threads", int(n))
 
 
 # ---------- Network / offline policy ----------

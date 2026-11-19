@@ -2,35 +2,6 @@
 Database path resolution — delegates to core.paths.
 Kept for backward compatibility; import from eli.core.paths directly in new code.
 """
-from eli.core.paths import (
-    project_root, data_dir, user_db_path, agent_db_path,
-    memory_db_path, get_gguf_model_path, set_gguf_model_path,
-)
-
-# Backward compat: some modules import DBPaths class
-class DBPaths:
-    """Legacy compatibility wrapper."""
-    
-    @staticmethod
-    def project_root():
-        return project_root()
-    
-    @staticmethod
-    def artifacts_dir():
-        return data_dir()
-    
-    @staticmethod
-    def user_db():
-        return user_db_path()
-    
-    @staticmethod
-    def agent_db():
-        return agent_db_path()
-    
-    @staticmethod
-    def memory_db():
-        return memory_db_path()
-
 # Canonical DB paths. get_db_paths() returns an _AttrDict (p.user_db and p["user_db"] both work),
 # each resolved by eli.core.paths: ELI_PROJECT_ROOT, ELI_DATA_DIR, ELI_DB_DIR, ELI_USER_DB,
 # ELI_MEMORY_DB (legacy), ELI_AGENT_DB, then dev mode or platformdirs for installed users.
@@ -69,15 +40,3 @@ def get_db_paths(*args, **kwargs):
 
 def get_user_db_path():
     return get_db_paths().user_db
-
-
-def get_agent_db_path():
-    return get_db_paths().agent_db
-
-
-def get_memory_db_path():
-    return get_db_paths().memory_db
-
-
-# Module-level cached instance for callers that want eager resolution.
-DB_PATHS = get_db_paths()

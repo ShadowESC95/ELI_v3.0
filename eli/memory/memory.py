@@ -246,7 +246,7 @@ def _eli_count_table(conn, table_name: str) -> int:
         _validate_identifier(table_name, "table")
     except (ValueError, Exception):
         return 0
-    if not _eli_table_exists(conn, table_name):
+    if not _has_table(conn, table_name):
         return 0
     row = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
     return int((row[0] if row else 0) or 0)
@@ -374,7 +374,7 @@ _OWN_REFLECTION_KINDS = ("reflection", "assistant_insight")
 def _ensure_owner_columns(conn) -> None:
     for table in _OWNED_TABLES:
         try:
-            if _eli_table_exists(conn, table):
+            if _has_table(conn, table):
                 _add_column_if_missing(conn, table, "user_id", "TEXT DEFAULT ''")
         except Exception:
             log.debug("[MEMORY] owner column not added to %s", table, exc_info=True)
@@ -383,7 +383,7 @@ def _ensure_owner_columns(conn) -> None:
 def _owned_scope(conn, table: str, user_id=None) -> tuple:
     """(" AND ...", params) keeping the turn's user's rows of one of _OWNED_TABLES; nothing when the
     table has no owner column yet."""
-    if "user_id" not in _memory_table_columns(conn, table):
+    if "user_id" not in _table_columns(conn, table):
         return "", ()
     from eli.memory import policy as _policy
     return _policy.scope_sql("user_id", _policy.owner_key(user_id))
@@ -462,12 +462,6 @@ def _table_columns(conn, table):
         return []
 
 
-def _add_contract_column(conn, table, name, decl):
-    if name not in _contract_table_columns(conn, table):
-        t = _validate_identifier(table, "table")
-        _validate_identifier(name, "column")
-        conn.execute(f"ALTER TABLE {t} ADD COLUMN {name} {decl}")
-
 def _ensure_contract_schema(conn):
     # improvements
     conn.execute("""
@@ -500,7 +494,7 @@ def _ensure_contract_schema(conn):
         ("text", "TEXT"), ("content", "TEXT"), ("details", "TEXT"), ("source", "TEXT"),
         ("count", "INTEGER DEFAULT 1"), ("suggestion", "TEXT"), ("applied", "INTEGER DEFAULT 0"),
     ]:
-        _add_contract_column(conn, "improvements", name, decl)
+        _add_column_if_missing(conn, "improvements", name, decl)
 
     # failures
     conn.execute("""
@@ -540,14 +534,7 @@ def _ensure_contract_schema(conn):
         ("source", "TEXT"), ("signature", "TEXT"), ("status", "TEXT"), ("count", "INTEGER DEFAULT 1"),
         ("traceback", "TEXT"),
     ]:
-        _add_contract_column(conn, "failures", name, decl)
-
-def _contract_table_columns(conn, table):
-    try:
-        t = _validate_identifier(table, "table")
-        return [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-    except (ValueError, Exception):
-        return []
+        _add_column_if_missing(conn, "failures", name, decl)
 
 def _jsonify_value(v):
     if v is None:
@@ -586,7 +573,7 @@ def _prune_observations(conn, category: str) -> int:
         return 0
     limit = int(observation_retention_limit(key))
     try:
-        cols = _memory_table_columns(conn, "observations")
+        cols = _table_columns(conn, "observations")
         cat_col = "category" if "category" in cols else ("source" if "source" in cols else None)
         if not cat_col:
             return 0
@@ -621,12 +608,6 @@ def _prune_observations(conn, category: str) -> int:
 def _now_ts():
     return float(time.time())
 
-def _add_memory_column(conn, table, name, decl):
-    if name not in _memory_table_columns(conn, table):
-        t = _validate_identifier(table, "table")
-        _validate_identifier(name, "column")
-        conn.execute(f"ALTER TABLE {t} ADD COLUMN {name} {decl}")
-
 def _ensure_full_memory_schema(conn):
     # Include `importance` in fresh DBs so all storage paths share one schema.
     conn.execute("""
@@ -647,7 +628,7 @@ def _ensure_full_memory_schema(conn):
         )
     """)
     # Existing DBs get missing columns on connection open. Idempotent:
-    # _add_memory_column is a no-op if the column already exists.
+    # _add_column_if_missing is a no-op if the column already exists.
     for n, d in [
         ("content", "TEXT"), ("timestamp", "REAL"), ("source", "TEXT"),
         ("status", "TEXT"), ("weight", "REAL DEFAULT 1.0"), ("confidence", "REAL DEFAULT 1.0"),
@@ -656,7 +637,7 @@ def _ensure_full_memory_schema(conn):
         ("verification_status", "TEXT DEFAULT 'verified'"),
         ("provenance_kind", "TEXT DEFAULT 'user_verbatim'"),
     ]:
-        _add_memory_column(conn, "memories", n, d)
+        _add_column_if_missing(conn, "memories", n, d)
 
     _migrate_memory_provenance(conn)
     _ensure_policy_schema(conn)
@@ -688,7 +669,7 @@ def _ensure_full_memory_schema(conn):
         ("timestamp", "REAL"), ("ts", "REAL"), ("created_at", "REAL"), ("updated_at", "REAL"),
         ("title", "TEXT")
     ]:
-        _add_memory_column(conn, "conversations", n, d)
+        _add_column_if_missing(conn, "conversations", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS conversation_turns (
@@ -705,7 +686,7 @@ def _ensure_full_memory_schema(conn):
         ("session_id", "TEXT"), ("user_id", "TEXT"), ("role", "TEXT"),
         ("content", "TEXT"), ("ts", "REAL"), ("timestamp", "REAL")
     ]:
-        _add_memory_column(conn, "conversation_turns", n, d)
+        _add_column_if_missing(conn, "conversation_turns", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS recall_log (
@@ -722,7 +703,7 @@ def _ensure_full_memory_schema(conn):
         ("ts", "REAL"), ("timestamp", "REAL"), ("query", "TEXT"),
         ("results_count", "INTEGER"), ("result_count", "INTEGER"), ("memory_id", "INTEGER")
     ]:
-        _add_memory_column(conn, "recall_log", n, d)
+        _add_column_if_missing(conn, "recall_log", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS habit_events (
@@ -744,7 +725,7 @@ def _ensure_full_memory_schema(conn):
         ("timestamp", "REAL"), ("ts", "REAL"), ("name", "TEXT"), ("cmd", "TEXT"),
         ("method", "TEXT"), ("command", "TEXT")
     ]:
-        _add_memory_column(conn, "habit_events", n, d)
+        _add_column_if_missing(conn, "habit_events", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS habit_rules (
@@ -769,7 +750,7 @@ def _ensure_full_memory_schema(conn):
         ("ts", "REAL"), ("pattern", "TEXT"), ("action", "TEXT"),
         ("trigger_phrase", "TEXT"), ("action_type", "TEXT")
     ]:
-        _add_memory_column(conn, "habit_rules", n, d)
+        _add_column_if_missing(conn, "habit_rules", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS habits (
@@ -791,7 +772,7 @@ def _ensure_full_memory_schema(conn):
         ("hour", "INTEGER"), ("minute", "INTEGER"), ("timestamp", "REAL"),
         ("command", "TEXT"), ("enabled", "INTEGER DEFAULT 1"), ("ts", "REAL")
     ]:
-        _add_memory_column(conn, "habits", n, d)
+        _add_column_if_missing(conn, "habits", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS corrections (
@@ -803,7 +784,7 @@ def _ensure_full_memory_schema(conn):
         )
     """)
     for n, d in [("original", "TEXT"), ("corrected", "TEXT"), ("timestamp", "REAL"), ("ts", "REAL")]:
-        _add_memory_column(conn, "corrections", n, d)
+        _add_column_if_missing(conn, "corrections", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS observations (
@@ -823,7 +804,7 @@ def _ensure_full_memory_schema(conn):
         ("content", "TEXT"), ("text", "TEXT"), ("details", "TEXT"),
         ("timestamp", "REAL"), ("ts", "REAL")
     ]:
-        _add_memory_column(conn, "observations", n, d)
+        _add_column_if_missing(conn, "observations", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS session_summaries (
@@ -845,7 +826,7 @@ def _ensure_full_memory_schema(conn):
         ("content", "TEXT"), ("turns_count", "INTEGER"), ("started_at", "REAL"),
         ("ended_at", "REAL"), ("source", "TEXT"), ("timestamp", "REAL"), ("ts", "REAL")
     ]:
-        _add_memory_column(conn, "session_summaries", n, d)
+        _add_column_if_missing(conn, "session_summaries", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS improvements (
@@ -878,7 +859,7 @@ def _ensure_full_memory_schema(conn):
         ("details", "TEXT"), ("source", "TEXT"), ("count", "INTEGER DEFAULT 1"),
         ("suggestion", "TEXT"), ("applied", "INTEGER DEFAULT 0")
     ]:
-        _add_memory_column(conn, "improvements", n, d)
+        _add_column_if_missing(conn, "improvements", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS failures (
@@ -917,7 +898,7 @@ def _ensure_full_memory_schema(conn):
         ("details", "TEXT"), ("description", "TEXT"), ("source", "TEXT"),
         ("signature", "TEXT"), ("status", "TEXT"), ("count", "INTEGER DEFAULT 1")
     ]:
-        _add_memory_column(conn, "failures", n, d)
+        _add_column_if_missing(conn, "failures", n, d)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS capability_proposals (
@@ -947,7 +928,7 @@ def _ensure_full_memory_schema(conn):
         ("priority", "TEXT"), ("notes", "TEXT"), ("created_at", "REAL"),
         ("updated_at", "REAL"), ("source", "TEXT"), ("category", "TEXT")
     ]:
-        _add_memory_column(conn, "capability_proposals", n, d)
+        _add_column_if_missing(conn, "capability_proposals", n, d)
 
     conn.execute("DROP TABLE IF EXISTS error_tracking")     # the second failure store (see above)
     _ensure_owner_columns(conn)
@@ -989,13 +970,6 @@ def _plugin_may(capability: str, what: str) -> None:
     from eli.plugins.sandbox import enforce
     enforce(capability, what)
 
-
-def _memory_table_columns(conn, table):
-    try:
-        t = _validate_identifier(table, "table")
-        return [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-    except (ValueError, Exception):
-        return []
 
 def _examples_json(v):
     if v is None:
@@ -1199,7 +1173,7 @@ def _has_table(conn, table):
         return False
 
 def _insert_payload(conn, table, payload):
-    cols = set(_memory_table_columns(conn, table))
+    cols = set(_table_columns(conn, table))
     ordered = [k for k in payload.keys() if k in cols]
     vals = [payload[k] for k in ordered]
     sql = f"INSERT INTO {table} ({', '.join(ordered)}) VALUES ({', '.join(['?'] * len(ordered))})"
@@ -1253,7 +1227,7 @@ def _ensure_profile_schema(conn):
         ("timestamp", "REAL"),
         ("ts", "REAL"),
     ]:
-        _add_memory_column(conn, "user_patterns", n, d)
+        _add_column_if_missing(conn, "user_patterns", n, d)
     _ensure_owner_columns(conn)
 
     conn.execute("""
@@ -1281,7 +1255,7 @@ def _ensure_profile_schema(conn):
         ("timestamp", "REAL"),
         ("ts", "REAL"),
     ]:
-        _add_memory_column(conn, "learning_replay", n, d)
+        _add_column_if_missing(conn, "learning_replay", n, d)
 
     if _has_table(conn, "session_summaries"):
         for n, d in [
@@ -1293,7 +1267,7 @@ def _ensure_profile_schema(conn):
             ("timestamp", "REAL"),
             ("ts", "REAL"),
         ]:
-            _add_memory_column(conn, "session_summaries", n, d)
+            _add_column_if_missing(conn, "session_summaries", n, d)
 
     if _has_table(conn, "observations"):
         for n, d in [
@@ -1306,18 +1280,7 @@ def _ensure_profile_schema(conn):
             ("timestamp", "REAL"),
             ("ts", "REAL"),
         ]:
-            _add_memory_column(conn, "observations", n, d)
-
-
-def _eli_table_exists(conn, table_name):
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table_name,),
-        ).fetchone()
-        return row is not None
-    except Exception:
-        return False
+            _add_column_if_missing(conn, "observations", n, d)
 
 
 def _fts_delete(conn, rowid: int, text: str, tags: str) -> None:
@@ -1441,7 +1404,7 @@ class Memory(metaclass=_MemoryMeta):
         tag_blob = ",".join([x.strip() for x in (tags or []) if x.strip()])
         if ts is None:
             ts = time.time()
-        cols = _memory_table_columns(conn, "memories")
+        cols = _table_columns(conn, "memories")
         row = {
             "ts": ts, "timestamp": ts, "kind": kind, "text": t, "value": t, "tags": tag_blob,
             "source": source, "confidence": float(confidence), "weight": 1.0,
@@ -1502,7 +1465,7 @@ class Memory(metaclass=_MemoryMeta):
         """If this user already has this statement stored, count the new sighting and return its id."""
         if not text_key:
             return None
-        cols = _memory_table_columns(conn, "memories")
+        cols = _table_columns(conn, "memories")
         if "text_key" not in cols or "seen_count" not in cols:
             return None
         scope, scope_params = _memory_scope(cols, "", user_key or "")
@@ -1704,9 +1667,9 @@ class Memory(metaclass=_MemoryMeta):
             return []
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "memories"):
+            if not _has_table(conn, "memories"):
                 return []
-            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
+            mine, mine_params = _memory_scope(_table_columns(conn, "memories"))
             rows = conn.execute("""
                 SELECT id, COALESCE(text,''), COALESCE(tags,''), COALESCE(timestamp, ts, id)
                 FROM memories
@@ -1737,9 +1700,9 @@ class Memory(metaclass=_MemoryMeta):
     def get_recent_semantic_memories(self, limit=20):
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "memories"):
+            if not _has_table(conn, "memories"):
                 return []
-            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
+            mine, mine_params = _memory_scope(_table_columns(conn, "memories"))
             rows = conn.execute("""
                 SELECT id, COALESCE(timestamp, ts, id), COALESCE(kind,''), COALESCE(text,''), COALESCE(tags,''), COALESCE(source,'')
                 FROM memories WHERE 1=1""" + mine + """
@@ -1782,7 +1745,7 @@ class Memory(metaclass=_MemoryMeta):
         limit = int(limit or 10)
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             text_expr = "LOWER(COALESCE(text, content, ''))" if "content" in cols else "LOWER(COALESCE(text, ''))"
             time_expr = "COALESCE(timestamp, ts, 0)"
             time_expr_m = "COALESCE(m.timestamp, m.ts, 0)"
@@ -2403,7 +2366,6 @@ class Memory(metaclass=_MemoryMeta):
 
     def apply_weight_decay(
         self,
-        decay_factor: float = 0.98,
         min_weight: float = 0.05,
         older_than_days: int = 7,
         half_life_days: Optional[float] = None,
@@ -2413,7 +2375,7 @@ class Memory(metaclass=_MemoryMeta):
         now = time.time()
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             base = float(half_life_days) if half_life_days else self.adaptive_half_life(conn)
             floor = max(0.0, min(1.0, float(min_weight)))
             cutoff_ts = now - (max(0, int(older_than_days)) * 86400)
@@ -2494,7 +2456,7 @@ class Memory(metaclass=_MemoryMeta):
         summary: Dict[str, Any] = {"groups": 0, "removed": 0, "scanned": 0, "dry_run": bool(dry_run)}
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             have = "seen_count" in cols
             sel = ("id, COALESCE(text, content, value, ''), COALESCE(tags, ''), source, kind, "
                    "COALESCE(importance, 0.5), COALESCE(weight, 1.0), COALESCE(timestamp, ts, 0)")
@@ -2592,7 +2554,7 @@ class Memory(metaclass=_MemoryMeta):
         out: Dict[str, Any] = {"promoted": 0, "demoted": 0, "dry_run": bool(dry_run)}
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             if "recall_count" not in cols or "corrected_count" not in cols:
                 return out
             rows = conn.execute(
@@ -2631,7 +2593,7 @@ class Memory(metaclass=_MemoryMeta):
         out: Dict[str, Any] = {"archived": 0, "dry_run": bool(dry_run)}
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             if "origin" not in cols:
                 return out
             rows = conn.execute(
@@ -2688,7 +2650,7 @@ class Memory(metaclass=_MemoryMeta):
                 return []
             hits = " + ".join("(lower(COALESCE(text, '')) LIKE ?)" for _ in words)
             need = max(1, int(round(len(words) * 0.6)))
-            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories_archive"))
+            mine, mine_params = _memory_scope(_table_columns(conn, "memories_archive"))
             rows = conn.execute(
                 f"SELECT id, COALESCE(text, ''), origin, archived_at, archive_reason, ({hits}) AS h FROM memories_archive "
                 f"WHERE ({hits}) >= ?{mine} ORDER BY h DESC, archived_at DESC LIMIT ?",
@@ -2708,7 +2670,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._get_connection()
         back: List[int] = []
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             names = ", ".join(f'"{c}"' for c in cols)
             n = 0
             for i in ids:
@@ -2795,7 +2757,7 @@ class Memory(metaclass=_MemoryMeta):
                 f"SELECT id, COALESCE(text, content, ''), COALESCE(tags, '') FROM memories WHERE {self._FILED_DOCUMENTS}")]
             paths = sorted({m.group(1).strip() for r in rows for m in [re.match(r"PDF (.+)\nPages read:", r["text"])] if m})
             report: Dict[str, Any] = {"memories": len(rows), "documents": len(paths), "relations": 0, "entities": 0}
-            has_graph = _eli_table_exists(conn, "kg_relations") and _eli_table_exists(conn, "kg_entities")
+            has_graph = _has_table(conn, "kg_relations") and _has_table(conn, "kg_entities")
             if has_graph:
                 report["relations"] = conn.execute("SELECT COUNT(*) FROM kg_relations WHERE source = 'tool'").fetchone()[0]
             if dry_run or not (rows or report["relations"]):
@@ -2855,7 +2817,7 @@ class Memory(metaclass=_MemoryMeta):
                 everyone.update(frontier)
             report["derived"] = len(everyone) - len(wanted)
             marks = ",".join("?" * len(everyone))
-            whose = "COALESCE(user_id, '')" if "user_id" in _memory_table_columns(conn, "memories") else "''"
+            whose = "COALESCE(user_id, '')" if "user_id" in _table_columns(conn, "memories") else "''"
             rows = [{"id": r[0], "text": r[1] or "", "tags": r[2] or "", "ts": r[3] or 0, "source": r[4] or "user",
                      "user_id": r[5] or ""}
                     for r in conn.execute(
@@ -2892,7 +2854,7 @@ class Memory(metaclass=_MemoryMeta):
         but the ones being forgotten with it. Such a word (a code, a name said once) can only have
         come from this memory, so whatever holds it was made from it."""
         from eli.cognition.scoring import tokenize
-        has_turns = _eli_table_exists(conn, "conversation_turns")
+        has_turns = _has_table(conn, "conversation_turns")
         out = set()
         for w in set(tokenize(text)):
             if len(w) < 4 and not any(ch.isdigit() for ch in w):
@@ -2936,7 +2898,7 @@ class Memory(metaclass=_MemoryMeta):
             return bool(only_here & held)
 
         def has(name: str) -> bool:
-            return _eli_table_exists(conn, name)
+            return _has_table(conn, name)
 
         def columns(name: str) -> set:
             return {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
@@ -3221,7 +3183,7 @@ class Memory(metaclass=_MemoryMeta):
             return {}
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             wanted = ["COALESCE(text, content, '')", "COALESCE(timestamp, ts, 0)", "COALESCE(source, '')",
                       "COALESCE(importance, 0.5)",
                       "COALESCE(recall_count, 0)" if "recall_count" in cols else "0",
@@ -3258,7 +3220,7 @@ class Memory(metaclass=_MemoryMeta):
             return 0
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             if "recall_count" not in cols or "corrected_count" not in cols:
                 return 0
             now = time.time()
@@ -3343,7 +3305,7 @@ class Memory(metaclass=_MemoryMeta):
         out: Dict[str, Any] = {"rekeyed": 0}
         conn = self._get_connection()
         try:
-            if "text_key" not in _memory_table_columns(conn, "memories"):
+            if "text_key" not in _table_columns(conn, "memories"):
                 return out
             if self._meta_get(conn, "text_key_version") == _policy.KEY_VERSION:
                 out["skipped"] = "current"
@@ -3370,7 +3332,7 @@ class Memory(metaclass=_MemoryMeta):
         out = {"filled": 0, "relabelled": 0, "redated": 0}
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             if "origin" not in cols:
                 return out
             out.update(self._relabel_origins(conn, dry_run))
@@ -3493,7 +3455,7 @@ class Memory(metaclass=_MemoryMeta):
         for table, when in self._LOGS:
             if not _has_table(conn, table):
                 continue
-            cols = set(_memory_table_columns(conn, table))
+            cols = set(_table_columns(conn, table))
             expr = when if {"ts", "timestamp"} <= cols else ("ts" if "ts" in cols else "timestamp" if "timestamp" in cols else "")
             if not expr:
                 continue
@@ -3513,7 +3475,7 @@ class Memory(metaclass=_MemoryMeta):
         try:
             out.update(self._prune_logs(conn, dry_run=dry_run))
             from eli.cognition.stance_store import compact_revisions
-            if _eli_table_exists(conn, "eli_stances") and _eli_table_exists(conn, "memory_claims"):
+            if _has_table(conn, "eli_stances") and _has_table(conn, "memory_claims"):
                 from eli.memory import claims as _claims
                 if dry_run:
                     out["stance_claims_moved"] = conn.execute(
@@ -3522,13 +3484,13 @@ class Memory(metaclass=_MemoryMeta):
                         (_claims.SUBJECT_USER,)).fetchone()[0]
                 else:
                     out["stance_claims_moved"] = _claims.move_stance_claims(conn)
-            if _eli_table_exists(conn, "belief_revisions"):
+            if _has_table(conn, "belief_revisions"):
                 dup = conn.execute("SELECT COUNT(*) - COUNT(DISTINCT kind || '|' || topic || '|' || old_value || '|' || new_value) "
                                    "FROM belief_revisions").fetchone()[0]
                 out["revisions_removed"] = int(dup or 0)
                 if not dry_run and dup:
                     compact_revisions(conn.cursor())
-            if _eli_table_exists(conn, "user_patterns") and "corroboration" in _memory_table_columns(conn, "user_patterns"):
+            if _has_table(conn, "user_patterns") and "corroboration" in _table_columns(conn, "user_patterns"):
                 days = conn.execute("SELECT COUNT(DISTINCT date(COALESCE(timestamp, ts), 'unixepoch')) "
                                     "FROM conversation_turns WHERE role = 'user'").fetchone()[0] or 1
                 n = conn.execute("SELECT COUNT(*) FROM user_patterns WHERE COALESCE(corroboration, 1) > ?", (days,)).fetchone()[0]
@@ -3549,7 +3511,7 @@ class Memory(metaclass=_MemoryMeta):
         ensure_profile_tables(self.db_path)
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "semantic"):
+            if not _has_table(conn, "semantic"):
                 return out
             rows = conn.execute("SELECT id, fact, COALESCE(created_at, 0), COALESCE(evidence_count, 1), evidence "
                                 "FROM semantic ORDER BY COALESCE(created_at, 0), id").fetchall()
@@ -3585,11 +3547,11 @@ class Memory(metaclass=_MemoryMeta):
             q = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
             ids = {r[0] for r in conn.execute("SELECT id FROM memories")}
             rep["memories"] = len(ids)
-            rep["archived"] = q("SELECT COUNT(*) FROM memories_archive") if _eli_table_exists(conn, "memories_archive") else 0
-            if _eli_table_exists(conn, "memories_fts_docsize"):
+            rep["archived"] = q("SELECT COUNT(*) FROM memories_archive") if _has_table(conn, "memories_archive") else 0
+            if _has_table(conn, "memories_fts_docsize"):
                 fts = {r[0] for r in conn.execute("SELECT id FROM memories_fts_docsize")}
                 rep["fts_indexed"], rep["fts_missing"], rep["fts_orphans"] = len(fts), len(ids - fts), len(fts - ids)
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             if "text_key" in cols:
                 rep["duplicate_groups"] = q("SELECT COUNT(*) FROM (SELECT 1 FROM memories WHERE text_key <> '' "
                                             "GROUP BY text_key, origin HAVING COUNT(*) > 1)")
@@ -3607,7 +3569,7 @@ class Memory(metaclass=_MemoryMeta):
                                missing_vectors=len(embeddable - vec_ids))
             except Exception:
                 rep["vectors"] = None
-            if _eli_table_exists(conn, "session_summaries") and _eli_table_exists(conn, "conversation_turns"):
+            if _has_table(conn, "session_summaries") and _has_table(conn, "conversation_turns"):
                 sess = {r[0] for r in conn.execute("SELECT DISTINCT session_id FROM conversation_turns")}
                 summ = {r[0] for r in conn.execute("SELECT DISTINCT session_id FROM session_summaries")}
                 rep["sessions"], rep["sessions_without_summary"], rep["summaries_without_session"] = len(sess), len(sess - summ), len(summ - sess)
@@ -3647,13 +3609,13 @@ class Memory(metaclass=_MemoryMeta):
                 return out
             old = set()
             for table in ("conversation_turns", "conversations", "session_summaries", "emotion_events", "user_model"):
-                if _eli_table_exists(conn, table):
+                if _has_table(conn, table):
                     old |= {r[0] for r in conn.execute(f"SELECT DISTINCT user_id FROM {table}") if r[0]}
             old = {u for u in old if u != owner and self._UUID.match(u)}
             if not old:
                 return out
             for table in ("conversation_turns", "conversations", "session_summaries", "emotion_events"):
-                if _eli_table_exists(conn, table):
+                if _has_table(conn, table):
                     for u in old:
                         out["rows"] += conn.execute(f"UPDATE {table} SET user_id = ? WHERE user_id = ?", (owner, u)).rowcount
             self._merge_user_models(conn, owner, old)
@@ -3667,7 +3629,7 @@ class Memory(metaclass=_MemoryMeta):
             conn.close()
 
     def _merge_user_models(self, conn, owner: str, old: set) -> None:
-        if not _eli_table_exists(conn, "user_model"):
+        if not _has_table(conn, "user_model"):
             return
         import json as _json
         from eli.memory import policy as _policy
@@ -3801,7 +3763,7 @@ class Memory(metaclass=_MemoryMeta):
 
         # Helper to write to a single connection
         def _write_to_conn(conn):
-            ccols = _memory_table_columns(conn, "conversations")
+            ccols = _table_columns(conn, "conversations")
             row = conn.execute(
                 "SELECT id FROM conversations WHERE session_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
                 (session_id, user_id),
@@ -4054,7 +4016,7 @@ class Memory(metaclass=_MemoryMeta):
             ).fetchall()
 
             if not rows:
-                ccols = set(_memory_table_columns(conn, "conversations"))
+                ccols = set(_table_columns(conn, "conversations"))
                 if {"session_id", "content"} <= ccols:
                     role_expr = "role" if "role" in ccols else "'assistant'"
                     user_expr = "user_id" if "user_id" in ccols else "''"
@@ -4125,7 +4087,7 @@ class Memory(metaclass=_MemoryMeta):
     def get_session_summaries(self, user_id=None, limit=20):
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "session_summaries")
+            cols = _table_columns(conn, "session_summaries")
             has_user = "user_id" in cols
             order_col = "timestamp" if "timestamp" in cols else ("ended_at" if "ended_at" in cols else "id")
             sql = "SELECT session_id"
@@ -4161,7 +4123,7 @@ class Memory(metaclass=_MemoryMeta):
         themselves are get_recent_conversation's."""
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "conversation_turns"):
+            if not _has_table(conn, "conversation_turns"):
                 return []
             from eli.memory import policy as _policy
             mine, mine_params = _policy.scope_sql("user_id", _policy.owner_key(user_id), raw_ids=True)
@@ -4182,9 +4144,9 @@ class Memory(metaclass=_MemoryMeta):
         own (_OWN_REFLECTION_KINDS, or tagged reflection), of the turn's user's memories. limit -1: all."""
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "memories"):
+            if not _has_table(conn, "memories"):
                 return []
-            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
+            mine, mine_params = _memory_scope(_table_columns(conn, "memories"))
             kinds = ",".join("?" * len(_OWN_REFLECTION_KINDS))
             rows = conn.execute(
                 "SELECT id, COALESCE(timestamp, ts, 0), COALESCE(kind, ''), COALESCE(text, ''), COALESCE(tags, ''), "
@@ -4359,7 +4321,7 @@ class Memory(metaclass=_MemoryMeta):
         from eli.runtime.memory_provenance import verification_filter_sql
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             when = "COALESCE(event_ts, timestamp, ts, 0)" if "event_ts" in cols else "COALESCE(timestamp, ts, 0)"
             imp = "COALESCE(importance, 0.5)" if "importance" in cols else "0.5"
             skip, skip_params = memory_exclusion_sql(cols, alias="")
@@ -4384,7 +4346,7 @@ class Memory(metaclass=_MemoryMeta):
         period's other memories (memories_between keeps the strongest few) they could be cut."""
         conn = self._get_connection()
         try:
-            cols = _memory_table_columns(conn, "memories")
+            cols = _table_columns(conn, "memories")
             when = "COALESCE(event_ts, timestamp, ts, 0)" if "event_ts" in cols else "COALESCE(timestamp, ts, 0)"
             mine, mine_params = _memory_scope(cols, "", user_id)
             rows = conn.execute(
@@ -4400,7 +4362,7 @@ class Memory(metaclass=_MemoryMeta):
         """Return the most recent memory entries, ordered by timestamp descending."""
         conn = self._get_connection()
         try:
-            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
+            mine, mine_params = _memory_scope(_table_columns(conn, "memories"))
             cursor = conn.execute(
                 "SELECT id, ts, timestamp, kind, text, tags, source, confidence, weight "
                 "FROM memories WHERE 1=1" + mine + " ORDER BY COALESCE(timestamp, ts, id) DESC LIMIT ?",
@@ -4753,7 +4715,7 @@ class Memory(metaclass=_MemoryMeta):
     def get_habit_rules(self, enabled_only=True):
         conn = self._get_connection()
         try:
-            cols = set(_memory_table_columns(conn, "habit_rules"))
+            cols = set(_table_columns(conn, "habit_rules"))
             time_expr = "COALESCE(timestamp, ts, id)"
             sql = "SELECT id"
             sql += ", COALESCE(name, '')"
@@ -4961,7 +4923,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._get_connection()
         try:
             _ensure_contract_schema(conn)
-            _add_contract_column(conn, "failures", "examples", "TEXT")
+            _add_column_if_missing(conn, "failures", "examples", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)")
 
             row = conn.execute(
@@ -5102,7 +5064,7 @@ class Memory(metaclass=_MemoryMeta):
             by_kind = {}
             raw_memories = _eli_count_table(conn, "memories")
             processed_memories = 0
-            if _eli_table_exists(conn, "memories"):
+            if _has_table(conn, "memories"):
                 rows = conn.execute(
                     """
                     SELECT COALESCE(kind, 'note') AS kind, COUNT(*)
@@ -5122,7 +5084,7 @@ class Memory(metaclass=_MemoryMeta):
                 ).fetchone()
                 processed_memories = int((row[0] if row else 0) or 0)
             semantic_count = 0
-            if _eli_table_exists(conn, "semantic"):
+            if _has_table(conn, "semantic"):
                 try: semantic_count = conn.execute("SELECT COUNT(*) FROM semantic").fetchone()[0] or 0
                 except Exception: pass
 
@@ -5259,7 +5221,7 @@ class Memory(metaclass=_MemoryMeta):
     def get_recent_failures(self, limit=20):
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "failures"):
+            if not _has_table(conn, "failures"):
                 return []
             rows = conn.execute(
                 """
@@ -5286,7 +5248,7 @@ class Memory(metaclass=_MemoryMeta):
         Returns the number of rows updated."""
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "failures"):
+            if not _has_table(conn, "failures"):
                 return 0
             if id is not None:
                 cur = conn.execute("UPDATE failures SET status='resolved' WHERE id=?", (int(id),))
@@ -5309,7 +5271,7 @@ class Memory(metaclass=_MemoryMeta):
         or closed as no longer found)."""
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "improvements"):
+            if not _has_table(conn, "improvements"):
                 return []
             rows = conn.execute(
                 f"""
@@ -5337,7 +5299,7 @@ class Memory(metaclass=_MemoryMeta):
         try:
             if not _has_table(conn, "observations"):
                 return []
-            cols = _memory_table_columns(conn, "observations")
+            cols = _table_columns(conn, "observations")
             category_expr = "category" if "category" in cols else ("source" if "source" in cols else "'system'")
             obs_expr = "observation" if "observation" in cols else ("content" if "content" in cols else ("text" if "text" in cols else "''"))
             content_expr = "content" if "content" in cols else ("observation" if "observation" in cols else ("text" if "text" in cols else "''"))
@@ -5372,7 +5334,7 @@ class Memory(metaclass=_MemoryMeta):
     def get_recent_processed_memories(self, limit=20):
         conn = self._get_connection()
         try:
-            if not _eli_table_exists(conn, "memories"):
+            if not _has_table(conn, "memories"):
                 return []
             rows = conn.execute(
                 """

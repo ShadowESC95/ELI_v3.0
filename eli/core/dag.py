@@ -223,8 +223,8 @@ def build_dag(dependencies: Dict[str, Iterable[str]]) -> DAG:
     return g
 
 
-# Turns the scheduling DAG above into something you can run. Opt-in per task, same behaviour
-# as before by default: layers run in parallel, nodes can retry, time out, cache and be skipped.
+# Turns the scheduling DAG above into something you can run: layers run in parallel, a node can
+# have a timeout, and a node whose upstream did not complete is skipped.
 # Pure stdlib, no LLM or IO in here, that's the node callables' job.
 import time as _time
 import contextvars
@@ -233,17 +233,15 @@ from dataclasses import dataclass as _dc, field as _fld
 from typing import Callable as _Callable
 
 NodeFn = _Callable[["NodeContext"], Any]
-Predicate = _Callable[["NodeContext"], bool]
 
 
 @_dc
 class NodeContext:
     """Passed to every node fn. `results` holds completed upstream outputs;
-    `shared` is a mutable bag visible to all nodes; `attempt` is 0-based."""
+    `shared` is a mutable bag visible to all nodes."""
     task_id: str
     results: Dict[str, Any] = _fld(default_factory=dict)
     shared: Dict[str, Any] = _fld(default_factory=dict)
-    attempt: int = 0
 
 
 @_dc
@@ -252,20 +250,14 @@ class Task:
     id: str
     run: Optional[NodeFn] = None
     depends_on: Set[str] = _fld(default_factory=set)
-    priority: int = 0                      # higher runs first within a ready layer
-    retries: int = 0                       # extra attempts after the first
-    retry_backoff: float = 0.0             # base seconds for exponential backoff
     timeout: Optional[float] = None        # total per-node budget (seconds)
-    fallback: Optional[NodeFn] = None      # run if all attempts fail
-    when: Optional[Predicate] = None       # conditional skip if it returns False
-    cache_key: Optional[str] = None        # memoisation key (with a cache supplied)
     critical: bool = True                  # if it fails, the overall run is not ok
 
 
 @_dc
 class NodeOutcome:
     id: str
-    status: str                            # ok | cached | skipped | failed | timeout
+    status: str                            # ok | skipped | failed | timeout
     result: Any = None
     error: Optional[str] = None
     attempts: int = 0
@@ -273,7 +265,7 @@ class NodeOutcome:
 
     @property
     def ok(self) -> bool:
-        return self.status in ("ok", "cached")
+        return self.status == "ok"
 
 
 @_dc
@@ -316,56 +308,26 @@ class RunReport:
 
 
 class Orchestrator:
-    """Executes a set of Tasks on their dependency DAG with the frontier policies
-    above. `max_workers=1` ⇒ fully sequential + deterministic (used in tests);
-    higher ⇒ true intra-layer parallelism."""
+    """Executes a set of Tasks on their dependency DAG. `max_workers=1` ⇒ fully sequential +
+    deterministic (used in tests); higher ⇒ true intra-layer parallelism."""
 
-    def __init__(self, *, max_workers: Optional[int] = None,
-                 cache: Optional[Dict[str, Any]] = None,
-                 on_event: Optional[_Callable[[str, "NodeOutcome"], None]] = None,
-                 fail_fast: bool = False,
-                 time_budget: Optional[float] = None) -> None:
+    def __init__(self, *, max_workers: Optional[int] = None) -> None:
         self.max_workers = max_workers
-        self.cache = cache
-        self.on_event = on_event
-        self.fail_fast = fail_fast
-        self.time_budget = time_budget
 
-    # ── per-node execution (retries → fallback → cache), run inside a worker ──
+    # ── per-node execution, run inside a worker ──
     def _run_one(self, task: "Task", results_snapshot: Dict[str, Any],
                  shared: Dict[str, Any]) -> "NodeOutcome":
         t0 = _time.perf_counter()
-        if task.cache_key and self.cache is not None and task.cache_key in self.cache:
-            return NodeOutcome(task.id, "cached", self.cache[task.cache_key],
-                               attempts=0, seconds=_time.perf_counter() - t0)
         if task.run is None:  # pass-through / join node
             return NodeOutcome(task.id, "ok", None, attempts=0,
                                seconds=_time.perf_counter() - t0)
-        last_err: Optional[BaseException] = None
-        attempts = 0
-        for attempt in range(task.retries + 1):
-            attempts = attempt + 1
-            ctx = NodeContext(task.id, dict(results_snapshot), shared, attempt)
-            try:
-                res = task.run(ctx)
-                if task.cache_key and self.cache is not None:
-                    self.cache[task.cache_key] = res
-                return NodeOutcome(task.id, "ok", res, attempts=attempts,
-                                   seconds=_time.perf_counter() - t0)
-            except Exception as e:  # noqa: BLE001 — policy boundary
-                last_err = e
-                if attempt < task.retries and task.retry_backoff > 0:
-                    _time.sleep(task.retry_backoff * (2 ** attempt))
-        if task.fallback is not None:
-            try:
-                ctx = NodeContext(task.id, dict(results_snapshot), shared, attempts)
-                res = task.fallback(ctx)
-                return NodeOutcome(task.id, "ok", res, attempts=attempts,
-                                   seconds=_time.perf_counter() - t0)
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-        return NodeOutcome(task.id, "failed", None, error=str(last_err),
-                           attempts=attempts, seconds=_time.perf_counter() - t0)
+        try:
+            res = task.run(NodeContext(task.id, dict(results_snapshot), shared))
+            return NodeOutcome(task.id, "ok", res, attempts=1,
+                               seconds=_time.perf_counter() - t0)
+        except Exception as e:  # noqa: BLE001 — policy boundary
+            return NodeOutcome(task.id, "failed", None, error=str(e),
+                               attempts=1, seconds=_time.perf_counter() - t0)
 
     def run(self, tasks: Iterable["Task"],
             context: Optional[Dict[str, Any]] = None) -> "RunReport":
@@ -378,17 +340,11 @@ class Orchestrator:
         results: Dict[str, Any] = {}
         outcomes: Dict[str, NodeOutcome] = {}
         run_start = _time.perf_counter()
-        had_failure = False
 
         def _emit(o: NodeOutcome) -> None:
             outcomes[o.id] = o
             if o.ok:
                 results[o.id] = o.result
-            if self.on_event:
-                try:
-                    self.on_event(o.id, o)
-                except Exception:
-                    pass
 
         def _skip(tid: str, reason: str) -> None:
             _emit(NodeOutcome(tid, "skipped", error=reason, attempts=0, seconds=0.0))
@@ -397,27 +353,16 @@ class Orchestrator:
             runnable: List[Task] = []
             for tid in layer:
                 task = task_map[tid]
-                if self.fail_fast and had_failure:
-                    _skip(tid, "fail-fast: an earlier node failed"); continue
-                if self.time_budget is not None and \
-                        (_time.perf_counter() - run_start) > self.time_budget:
-                    _skip(tid, "time budget exceeded"); continue
                 bad_dep = next((d for d in task.depends_on
                                 if str(d) in task_map and not outcomes.get(str(d), NodeOutcome(str(d), "skipped")).ok),
                                None)
                 if bad_dep is not None:
                     _skip(tid, f"upstream '{bad_dep}' did not complete"); continue
-                if task.when is not None:
-                    try:
-                        if not task.when(NodeContext(tid, dict(results), shared)):
-                            _skip(tid, "condition (when) was false"); continue
-                    except Exception as e:  # noqa: BLE001
-                        _skip(tid, f"when() error: {e}"); continue
                 runnable.append(task)
 
             if not runnable:
                 continue
-            runnable.sort(key=lambda t: (-t.priority, t.id))   # priority within layer
+            runnable.sort(key=lambda t: t.id)
             snapshot = dict(results)
             workers = self.max_workers or min(len(runnable), 8)
             # Use the pool whenever we parallelise OR any node sets a timeout (a
@@ -426,9 +371,7 @@ class Orchestrator:
                 any(t.timeout is not None for t in runnable)
             if not use_pool:
                 for task in runnable:
-                    o = self._run_one(task, snapshot, shared)
-                    _emit(o)
-                    had_failure = had_failure or (o.status in ("failed", "timeout") and task.critical)
+                    _emit(self._run_one(task, snapshot, shared))
             else:
                 _late: Dict[Any, "Task"] = {}
                 with ThreadPoolExecutor(max_workers=max(workers, 1)) as ex:
@@ -444,7 +387,6 @@ class Orchestrator:
                             _late[fut] = task
                             continue
                         _emit(o)
-                        had_failure = had_failure or (o.status in ("failed", "timeout") and task.critical)
                 # Leaving the `with` above runs shutdown(wait=True), so every task is already done and its
                 # answer is in the future. Recording slow ones as timeouts threw away finished work (a 121.4s
                 # memory node against a ~121s ceiling left the reply with no memory). Harvest instead.
@@ -455,7 +397,6 @@ class Orchestrator:
                         o = NodeOutcome(task.id, "timeout",
                                         error=f"exceeded {task.timeout}s", attempts=1)
                     _emit(o)
-                    had_failure = had_failure or (o.status in ("failed", "timeout") and task.critical)
 
         ok = not any(o.status in ("failed", "timeout") and task_map[i].critical
                      for i, o in outcomes.items())
@@ -464,9 +405,9 @@ class Orchestrator:
 
 
 def run_graph(tasks: Iterable["Task"], *, max_workers: Optional[int] = None,
-              context: Optional[Dict[str, Any]] = None, **kw: Any) -> "RunReport":
+              context: Optional[Dict[str, Any]] = None) -> "RunReport":
     """One-shot convenience: build an Orchestrator and run `tasks`."""
-    return Orchestrator(max_workers=max_workers, **kw).run(tasks, context=context)
+    return Orchestrator(max_workers=max_workers).run(tasks, context=context)
 
 
 __all__ = [
