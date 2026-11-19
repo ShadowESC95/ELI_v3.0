@@ -178,6 +178,10 @@ def _selftest() -> int:
                 f"({llama_cpp.__file__}) — GPU pack shadowing would be broken"
             )
         _assert_paths_outside_bundle()
+        # every action module is in the build and imports: one that does not takes its actions with it
+        from eli.execution import effectors as _effectors
+        if _effectors.failed():
+            raise RuntimeError(f"effector modules did not load: {_effectors.failed()}")
         # A Qt binding that loses a reference to None on each call kills the app within the hour on
         # Python before 3.12 (PySide6 6.12.0 on 3.11). The reserve hides it; the build must not ship it.
         from eli.core.singleton_refs import none_refs_lost_per_qt_call

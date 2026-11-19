@@ -26,15 +26,33 @@ Empty until the first executor family is moved.
 
 
 def load_all() -> None:
-    """Import every effector module once so each registers its handlers."""
+    """Import every effector module once so each registers its handlers.
+
+    A module that fails to import is written to the log as an error and kept in `failed()`; the
+    others still load. One failure used to stop the loop with the loaded mark already set: the
+    first caller got the exception, and every caller after it a registry silently missing that
+    module's actions and those of every module after it in the alphabet."""
     global _LOADED
     if _LOADED:
         return
-    _LOADED = True
+    _LOADED = True      # first: an effector that reads the registry while it imports must not start this again
     import importlib
+    import logging
     import pkgutil
     for _m in pkgutil.iter_modules(__path__):
-        importlib.import_module(f"{__name__}.{_m.name}")
+        try:
+            importlib.import_module(f"{__name__}.{_m.name}")
+        except Exception as exc:
+            _FAILED[_m.name] = f"{type(exc).__name__}: {exc}"
+            logging.getLogger(__name__).error("effector module %s did not load; its actions are missing",
+                                              _m.name, exc_info=True)
+
+
+def failed() -> dict:
+    """The effector modules that did not import, each with why: {} when every action is there."""
+    load_all()
+    return dict(_FAILED)
 
 
 _LOADED = False
+_FAILED: dict = {}

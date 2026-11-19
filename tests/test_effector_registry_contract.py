@@ -96,3 +96,35 @@ def test_the_manifest_scan_finds_an_action_registered_in_any_form(tmp_path):
     found = CapabilitySync().discover()
     assert all(found[a]["in_supported_list"] and found[a]["in_dispatch"] for a in REG)
     assert {a for a, v in found.items() if v.get("in_supported_list")} == set(EX.SUPPORTED_ACTIONS)
+
+
+def test_every_effector_module_loads():
+    from eli.execution import effectors
+    assert effectors.failed() == {}
+
+
+def test_an_effector_module_that_fails_to_import_is_reported_and_the_rest_still_load(monkeypatch, caplog):
+    """One failing import stopped the loop with the loaded mark set: later callers got a registry
+    missing that module's actions and every later module's, and nothing said so."""
+    import importlib
+    import logging
+    from eli.execution import effectors
+    names = [m.name for m in __import__("pkgutil").iter_modules(effectors.__path__)]
+    broken, tried = names[0], []
+    real = importlib.import_module
+
+    def _import(name, *a, **k):
+        if name.startswith(effectors.__name__ + "."):
+            tried.append(name.rsplit(".", 1)[1])
+            if tried[-1] == broken:
+                raise ImportError("a library this module needs is not installed")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(effectors, "_LOADED", False)
+    monkeypatch.setattr(effectors, "_FAILED", {})
+    monkeypatch.setattr(importlib, "import_module", _import)
+    with caplog.at_level(logging.ERROR, logger=effectors.__name__):
+        effectors.load_all()
+    assert tried == names, "the modules after the broken one were not loaded"
+    assert list(effectors.failed()) == [broken] and "not installed" in effectors.failed()[broken]
+    assert any(broken in r.getMessage() for r in caplog.records)

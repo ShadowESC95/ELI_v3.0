@@ -114,11 +114,15 @@ def _complete() -> None:
     """Every declaration made: the catalogue's and every effector's (both declare at import)."""
     if _COMPLETE[0]:
         return
-    _COMPLETE[0] = True
-    import importlib
-    importlib.import_module("eli.tools.registry.capabilities_doc")
-    from eli.execution.effectors import load_all
-    load_all()
+    _COMPLETE[0] = True       # first, for a declaration read while these import
+    try:
+        import importlib
+        importlib.import_module("eli.tools.registry.capabilities_doc")
+        from eli.execution.effectors import load_all
+        load_all()
+    except BaseException:
+        _COMPLETE[0] = False  # not complete: the next reader meets the failure too, not half a registry
+        raise
 
 
 def with_facet(facet: str, *values: Any) -> frozenset:
