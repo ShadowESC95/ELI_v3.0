@@ -1,0 +1,52 @@
+name: full-suite
+
+# The whole test suite, on one clean Linux runner. cross-platform-smoke runs a chosen set of test
+# files on three systems; nothing ran the rest anywhere but the developer's machine, so a release
+# could go out with a failing test nobody had run. This does not gate a release yet: it has to be
+# seen passing on a runner first (a runner has no display, no speech voices, no model).
+#
+# Every pytest step MUST be `python -m pytest` (see cross-platform-smoke.yml for why).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', '**/*.pdf', 'blueprints/**', 'docs/**']
+
+concurrency:
+  group: full-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: every test · ubuntu · py3.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      QT_QPA_PLATFORM: offscreen
+      ELI_TEST_STRICT_ISOLATION: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: System libraries Qt needs with no display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: Install (everything the window, the server and the tests import; CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui,server,docs,analysis,extras,web,test]"
+          llama_src="$(python packaging/llama_source.py)"
+          pip install "$llama_src"
+
+      - name: Every test
+        run: |
+          python -m pytest -p no:cacheprovider -o addopts="" -q --strict-markers \
+            --continue-on-collection-errors -rf tests
