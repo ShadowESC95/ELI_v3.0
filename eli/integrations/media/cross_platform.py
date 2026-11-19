@@ -446,17 +446,6 @@ def spotify_resolve_artist_uri(name: str) -> str | None:
     return _spotify_scrape_uri(name, "artist")
 
 
-def spotify_resolve_track_uri(query: str) -> str | None:
-    """Resolve a "song by artist" query to its top spotify:track:<id> search hit.
-
-    A bare search opens Spotify's search UI with nothing selected — playerctl's
-    play then has no loaded track to act on. Resolving to the real track URI
-    first and opening THAT (same as the album/playlist/artist paths already do)
-    actually queues something to play.
-    """
-    return _spotify_scrape_uri(query, "track")
-
-
 def spotify_open_liked_songs() -> bool:
     """Open the user's Liked Songs collection — try every URI form Spotify accepts."""
     uris = (

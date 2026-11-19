@@ -58,6 +58,7 @@ CONTROL_ACTIONS = {
 
 
 from eli.core.confidence import confidence_label as _confidence_label_full
+from eli.utils.jsonio import read_json_dict as _read_json
 
 _BAD_PATH_RX = (
     re.compile(r"/home/[^/\s'\"`]+/[^\s'\"`]+"),
@@ -453,15 +454,6 @@ def _control_text(user_input: Any, current_action: Any = None) -> str | None:
 
 def _root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-def _read_json(path: Path) -> Dict[str, Any]:
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return {}
 
 def _data_dirs() -> tuple[Path, Path]:
     """(artifacts, config) as the running install actually uses them.

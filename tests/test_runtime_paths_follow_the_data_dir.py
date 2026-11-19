@@ -50,6 +50,25 @@ def test_runtime_state_lives_in_the_data_dir(module, func, data_dir):
     assert str(p).startswith(str(data_dir)), f"{module}.{func}() escaped to {p}"
 
 
+def test_the_operator_console_reads_the_files_their_owners_write(data_dir, monkeypatch):
+    """Its own project_root()/artifacts paths named files that are not there on an install, and the
+    console's two queue readers ignored the queue's own override, so they read another file."""
+    from eli.execution import operator_actions
+    from eli.planning import goal_store, proposal_queue
+    from eli.runtime import operator_state
+    recent, status = operator_state.safe_recent_proposals(), operator_state.safe_self_model_status()
+    assert recent["queue_path"] == str(proposal_queue.queue_path())
+    assert recent["archive_path"] == str(proposal_queue.archive_path())
+    assert status["goal_store_path"] == str(goal_store.goal_store_path())
+    for shown in (recent["queue_path"], recent["archive_path"], status["goal_store_path"],
+                  status["runtime_snapshot_path"]):
+        assert shown.startswith(str(data_dir)), shown
+    elsewhere = data_dir / "elsewhere" / "queue.jsonl"
+    monkeypatch.setenv("ELI_PROPOSAL_QUEUE_PATH", str(elsewhere))
+    assert operator_actions.queue_path() == proposal_queue.queue_path() == elsewhere
+    assert operator_state.safe_recent_proposals()["queue_path"] == str(elsewhere)
+
+
 def test_the_snapshot_is_read_from_where_it_is_written():
     """The loader writes runtime_snapshot.json to the artifacts dir; the budget
     guard must read it from the same place, not from the installation."""

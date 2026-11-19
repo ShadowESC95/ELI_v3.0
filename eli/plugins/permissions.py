@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -227,11 +228,9 @@ class PermissionStore:
         p = _grants_path()
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(
+            secure_write_text(p, json.dumps(
                 {"version": 1, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                 "grants": self._persistent}, indent=2), encoding="utf-8")
-            tmp.replace(p)
+                 "grants": self._persistent}, indent=2))
         except Exception:
             log.debug("[PLUGIN-PERM] could not persist grants", exc_info=True)
 

@@ -24,10 +24,10 @@ def agenda_turn_context(args):
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     try:
-        from eli.core.db_paths import get_user_db_path
+        from eli.core.paths import user_db_path
         from eli.memory import get_memory
         current = " ".join(str((args or {}).get("text") or "").split()).lower()
-        turns = get_memory(db_path=get_user_db_path()).get_recent_conversation(
+        turns = get_memory(db_path=user_db_path()).get_recent_conversation(
             limit=12, user_id=who or None, since=time.time() - 1800, role="user") or []
         for t in reversed(turns):
             said = str((t or {}).get("content") or "").strip()

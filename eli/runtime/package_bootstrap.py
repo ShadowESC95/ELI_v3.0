@@ -11,9 +11,9 @@ import importlib
 import os
 import subprocess
 import sys
-from pathlib import Path
 from typing import Sequence
 
+from eli.core.paths import project_root as _project_root
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -35,15 +35,6 @@ _TEST_MODULES = (
     "pytest",
     "pyflakes",
 )
-
-
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import project_root
-
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
 
 
 def _bootstrap_disabled() -> bool:

@@ -1,7 +1,0 @@
-"""Compatibility shim — gui_eli_original was decomposed into eli.gui.main_window."""
-from __future__ import annotations
-from eli.gui.main_window import *  # noqa: F401,F403
-from eli.gui.main_window import (  # underscored names aren't caught by *
-    CentralMemoryAdapter, EliMainWindow, ExecutorBridge, LocalModelManager, OllamaModelManager, _CapabilityList, _FlowLayout, _GlobalScrollZoom, _MiniTelemetryGraph, _QABoard, _ZoomableImagePreview, _ZoomableSettingsView, _eli_app_version, _eli_gui_visible_text, _eli_path_get, _policy_identity_memory_response, _sanitize_identity_drift, classify_gguf_source, detect_system_capabilities, discover_gguf_models, ensure_dirs, format_gb, main, now_hms, now_timestamp, recommend_model_setup, recommend_optimal_settings, resolve_model_path,
-)
-__all__ = ['APP_VERSION', 'CentralMemoryAdapter', 'EliMainWindow', 'ExecutorBridge', 'LocalModelManager', 'OllamaModelManager', '_CapabilityList', '_FlowLayout', '_GlobalScrollZoom', '_MiniTelemetryGraph', '_QABoard', '_ZoomableImagePreview', '_ZoomableSettingsView', '_eli_app_version', '_eli_gui_visible_text', '_eli_path_get', '_policy_identity_memory_response', '_sanitize_identity_drift', 'classify_gguf_source', 'detect_system_capabilities', 'discover_gguf_models', 'ensure_dirs', 'format_gb', 'main', 'now_hms', 'now_timestamp', 'recommend_model_setup', 'recommend_optimal_settings', 'resolve_model_path']

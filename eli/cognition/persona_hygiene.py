@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from eli.cognition.persona_updater import _dedup_lines
@@ -22,13 +21,10 @@ log = logging.getLogger(__name__)
 _MAX_ENTRIES_PER_SECTION = 8
 
 
-def clean_auto_persona(repo_root: Optional[Path] = None) -> Dict[str, object]:
+def clean_auto_persona() -> Dict[str, object]:
     """
-    Read persona.auto.txt, deduplicate entries within each section,
-    prune stale/noisy patterns, write back, return stats.
-
-    `repo_root` is not read (the overlay is where eli.core.paths says it is); it is still taken
-    because eli/runtime/awareness_boot.py passes it.
+    Read persona.auto.txt (where eli.core.paths says it is), deduplicate entries within each
+    section, prune stale/noisy patterns, write back, return stats.
     """
     from eli.core.paths import persona_auto_path
     auto_path = persona_auto_path()

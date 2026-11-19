@@ -348,7 +348,7 @@ def _h_generate_script(a, args):
         ]
     if _wants_plot and _detected_lang == "Python":
         try:
-            from eli.gui.labs_tab import _LABS_PLOT_FILES as _LPF
+            from eli.gui.labs import _LABS_PLOT_FILES as _LPF
             _plot_target = str(_LPF["plot"])
         except Exception:
             from eli.core.paths import temp_path as _temp_path

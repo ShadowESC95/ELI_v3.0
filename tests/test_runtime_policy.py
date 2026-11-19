@@ -1,14 +1,8 @@
-"""Tests for eli.runtime.response_policy and eli.runtime.control_contracts — ~80 tests."""
+"""Tests for eli.runtime.control_contracts and the output governor."""
 from __future__ import annotations
 
 import pytest
 
-from eli.runtime.response_policy import (
-    classify_response_mode,
-    GROUNDED_REPORT,
-    COGNITIVE_DEFAULT,
-    RAW_MEMORY_DUMP,
-)
 from eli.runtime.control_contracts import (
     CONTROL_ACTIONS,
     build_control_evidence,
@@ -61,82 +55,6 @@ def test_is_control_action_memory_recall():
 
 def test_is_control_action_unknown():
     assert not is_control_action("NOT_A_REAL_ACTION_XYZ")
-
-
-# ── classify_response_mode ────────────────────────────────────────────────
-
-
-def test_chat_mode_is_cognitive():
-    result = classify_response_mode("CHAT", {})
-    assert result == COGNITIVE_DEFAULT
-
-def test_memory_recall_mode():
-    result = classify_response_mode("MEMORY_RECALL", {})
-    assert result is not None
-
-def test_memory_recall_raw_dump_query():
-    result = classify_response_mode("MEMORY_RECALL", {"query": "give me everything raw dump verbatim"})
-    assert result == RAW_MEMORY_DUMP
-
-def test_runtime_status_mode():
-    result = classify_response_mode("RUNTIME_STATUS", {})
-    assert isinstance(result, str)
-    assert result in (GROUNDED_REPORT, COGNITIVE_DEFAULT)
-
-def test_memory_status_mode():
-    result = classify_response_mode("MEMORY_STATUS", {})
-    assert result == GROUNDED_REPORT
-
-def test_cognition_status_mode():
-    result = classify_response_mode("COGNITION_STATUS", {})
-    assert result == GROUNDED_REPORT
-
-def test_policy_for_unknown_action():
-    result = classify_response_mode("NONEXISTENT_ACTION_XYZ", {})
-    assert result == COGNITIVE_DEFAULT
-
-
-# ── Policy constants ──────────────────────────────────────────────────────
-
-
-def test_policies_are_distinct():
-    assert GROUNDED_REPORT != COGNITIVE_DEFAULT
-    assert GROUNDED_REPORT != RAW_MEMORY_DUMP
-    assert COGNITIVE_DEFAULT != RAW_MEMORY_DUMP
-
-
-# ── Memory recall policy edge cases ──────────────────────────────────────
-
-@pytest.mark.parametrize("query,expected_policy", [
-    ("give me everything verbatim", RAW_MEMORY_DUMP),
-    ("don't summarise anything", RAW_MEMORY_DUMP),
-    ("raw memory dump", RAW_MEMORY_DUMP),
-    ("full dump please", RAW_MEMORY_DUMP),
-    ("do not summarise", RAW_MEMORY_DUMP),
-])
-def test_memory_recall_raw_queries(query, expected_policy):
-    result = classify_response_mode("MEMORY_RECALL", {"query": query})
-    assert result == expected_policy
-
-@pytest.mark.parametrize("query", [
-    "what do you know about me",
-    "my preferences",
-    "recent memories",
-    "",
-])
-def test_memory_recall_normal_queries(query):
-    result = classify_response_mode("MEMORY_RECALL", {"query": query})
-    assert result in (COGNITIVE_DEFAULT, GROUNDED_REPORT, RAW_MEMORY_DUMP)
-
-
-# ── Grounded actions ──────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("action", [
-    "MEMORY_STATUS", "COGNITION_STATUS",
-])
-def test_grounded_actions_return_grounded_report(action):
-    result = classify_response_mode(action, {})
-    assert result == GROUNDED_REPORT
 
 
 class _DummyEngine:

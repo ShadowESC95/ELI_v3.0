@@ -1,6 +1,6 @@
 """The source of the GUI the launcher opens.
 
-eli/gui/app.py starts eli.gui.gui_eli_original, which is the eli/gui/main_window package. An
+eli/gui/app.py starts eli.gui.main_window, the eli/gui/main_window package. An
 older single-file copy of the GUI stayed in the tree after the split and fixes kept landing in it
 instead, with their tests passing: it is gone, and tests read the window that runs.
 """

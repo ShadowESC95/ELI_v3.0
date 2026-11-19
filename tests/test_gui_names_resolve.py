@@ -18,7 +18,7 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-WINDOW_MODULE = "eli.gui.gui_eli_original"
+WINDOW_MODULE = "eli.gui.main_window"
 
 
 def _run(what: str, tmp_path, timeout: int = 300) -> dict:

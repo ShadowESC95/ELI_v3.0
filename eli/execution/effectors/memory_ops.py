@@ -97,8 +97,8 @@ def _when_said_answer(a: str, topic: str, turn_args: Optional[Dict[str, Any]] = 
 
 
 def _get_memory_path():
-    from eli.core.db_paths import get_user_db_path
-    return get_user_db_path()
+    from eli.core.paths import user_db_path
+    return user_db_path()
 
 
 def memory_store(*a, **k):

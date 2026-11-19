@@ -121,10 +121,11 @@ def handle(message: Dict[str, Any]) -> Dict[str, Any] | None:
     params = message.get("params") or {}
 
     if method == "initialize":
+        from eli.runtime.version_record import current_version
         result = {
             "protocolVersion": _PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "ELI", "version": _version()},
+            "serverInfo": {"name": "ELI", "version": current_version() or "0"},
         }
     elif method == "tools/list":
         result = {"tools": [_describe(a) for a in _exposed_actions()]}
@@ -143,14 +144,6 @@ def handle(message: Dict[str, Any]) -> Dict[str, Any] | None:
     if msg_id is None:
         return None
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
-
-
-def _version() -> str:
-    try:
-        from eli.kernel.self_upgrade import _DEFAULT_RELEASE_TAG
-        return str(_DEFAULT_RELEASE_TAG).lstrip("v")
-    except Exception:
-        return "0"
 
 
 def serve(stdin=None, stdout=None) -> int:

@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -95,9 +96,7 @@ def _save(data: Dict[str, Any]) -> None:
     p = registry_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     data["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(p)
+    secure_write_text(p, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def list_grants() -> List[Dict[str, Any]]:

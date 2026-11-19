@@ -42,24 +42,6 @@ def test_resolve_album_uri_from_search_html(monkeypatch):
     assert spotify_resolve_album_uri("harbour lights lp", "orlo") == "spotify:album:4cQZRveqW4purQgPiE8xNK"
 
 
-def test_resolve_track_uri_from_search_html(monkeypatch):
-    html = '{"uri":"spotify:track:7xpjmdv9k5zgdH3EbLn4N1"}'
-
-    class _Resp:
-        def read(self):
-            return html.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
-    from eli.integrations.media.cross_platform import spotify_resolve_track_uri
-    assert spotify_resolve_track_uri("silver lanterns veridian") == "spotify:track:7xpjmdv9k5zgdH3EbLn4N1"
-
-
 def test_play_specific_asks_spotify_for_its_top_result_first(monkeypatch):
     """Spotify plays its top search result over MPRIS before anything types into its window: that
     path needs no window focus, so it is the one that works on Wayland."""

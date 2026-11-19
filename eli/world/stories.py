@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -251,9 +252,7 @@ def write_story(generate: Optional[Callable[[str], str]] = None, *, now: Optiona
                   "written_at": float(time.time() if now is None else now), "model": _model_name()})
     path = folder() / f"{ident}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    scratch = path.with_suffix(".tmp")
-    scratch.write_text(json.dumps(story, ensure_ascii=False, indent=1), encoding="utf-8")
-    scratch.replace(path)
+    secure_write_text(path, json.dumps(story, ensure_ascii=False, indent=1))
     return story
 
 

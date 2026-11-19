@@ -232,6 +232,19 @@ def test_every_runtime_report_of_the_version_reads_the_one_reader(monkeypatch, t
     import tomllib
     from pathlib import Path
     beside = Path(version_record.__file__).resolve().parents[2] / "pyproject.toml"
-    assert version_record.current_version() == tomllib.loads(beside.read_text())["project"]["version"]
+    running = tomllib.loads(beside.read_text())["project"]["version"]
+    assert version_record.current_version() == running
+    # the window title, the "what changed" report and the MCP server's handshake read it too: the
+    # window fell back to "2.0" and other products' package names, the report asked for the package
+    # 'eli', and the MCP server gave the pinned release tag instead of what is running
+    from eli.execution import executor_enhanced
+    from eli.gui import main_window
+    from eli.integrations.mcp import server as mcp_server
+    from eli.kernel import self_upgrade
+    monkeypatch.setattr(self_upgrade, "_DEFAULT_RELEASE_TAG", "v0.0.1")
+    assert main_window.APP_VERSION == running
+    assert mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})["result"]["serverInfo"]["version"] == running
+    for module in (executor_enhanced, mcp_server, main_window._common):
+        assert "importlib.metadata" not in Path(module.__file__).read_text(encoding="utf-8"), module.__name__
     monkeypatch.setattr(version_record, "__file__", str(tmp_path / "a" / "b" / "version_record.py"))
     assert version_record.current_version() == "9.8.7"

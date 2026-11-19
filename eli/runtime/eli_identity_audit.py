@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from eli.core.paths import project_root as _project_root
 from eli.runtime.experimental_inventory import build_experimental_inventory
 
 
@@ -15,15 +16,6 @@ REASONING_MODE_KEYS = (
     "tree_of_thoughts",
     "constitutional_ai",
 )
-
-
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-
-        return Path(get_paths().project_root)
-    except Exception:
-        return Path(__file__).resolve().parents[2]
 
 
 def _module_exists(module_name: str) -> bool:

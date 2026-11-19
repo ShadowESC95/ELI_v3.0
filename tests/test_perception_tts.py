@@ -298,3 +298,13 @@ def test_the_speaking_lock_is_held_for_the_whole_reply(tmp_path, monkeypatch):
     monkeypatch.setattr(tr, "_run_tts_impl", lambda text, voice_name=None: seen.append(lock.read_text()) or True)
     assert tr._run_tts("hello there", voice_name="any") is True
     assert seen == [str(os.getpid())] and not lock.exists()
+
+
+def test_piper_speaks_with_the_palettes_neutral_voice():
+    """The four Piper prosody figures were typed out here and in the tone palette."""
+    from eli.cognition.emotion_palette import NEUTRAL_VOICE
+    from eli.perception import tts_router
+    assert tts_router._PIPER_PROSODY_DEFAULTS == {k: v for k, v in NEUTRAL_VOICE.items() if k != "pitch"}
+    assert set(tts_router._PIPER_PROSODY_DEFAULTS) == {"length_scale", "noise_scale", "noise_w", "sentence_silence"}
+    source = __import__("pathlib").Path(tts_router.__file__).read_text(encoding="utf-8")
+    assert '"noise_scale": 0.72' not in source

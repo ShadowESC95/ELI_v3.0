@@ -30,6 +30,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
+
 SPEC_VERSION = 1
 
 TRIGGER_KEYWORD = "keyword"
@@ -384,9 +386,7 @@ def save_spec(spec: AgentSpec) -> Dict[str, Any]:
     d = specs_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{spec.id}.agent.json"
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(spec.to_json(), encoding="utf-8")
-    tmp.replace(path)
+    secure_write_text(path, spec.to_json())
     return {"ok": True, "path": str(path), "hash": spec.content_hash(),
             "problems": [], "warnings": check["warnings"]}
 

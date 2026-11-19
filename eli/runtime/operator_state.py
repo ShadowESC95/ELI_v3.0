@@ -4,20 +4,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-        return get_paths().project_root
-    except Exception:
-        return Path(__file__).resolve().parents[3]
-
-
-def _queue_path() -> Path:
-    return _project_root() / "artifacts" / "proactive" / "proposal_queue.jsonl"
-
-
-def _archive_path() -> Path:
-    return _project_root() / "artifacts" / "proactive" / "proposal_queue.archive.jsonl"
+from eli.planning.proposal_queue import archive_path as _archive_path, queue_path as _queue_path
 
 
 from eli.utils.jsonio import read_jsonl_dicts as _safe_read_jsonl
@@ -93,11 +80,11 @@ def safe_active_goals(limit: int = 20) -> Dict[str, Any]:
 
 
 def safe_self_model_status() -> Dict[str, Any]:
-    root = _project_root()
-    from eli.core.paths import persona_auto_path
+    from eli.core.paths import artifacts_dir, persona_auto_path
+    from eli.planning.goal_store import goal_store_path
     persona_auto = persona_auto_path()
-    runtime_snapshot = root / "artifacts" / "runtime_snapshot.json"
-    goals = root / "artifacts" / "runtime" / "goals.json"
+    runtime_snapshot = artifacts_dir() / "runtime_snapshot.json"
+    goals = goal_store_path()
     return {
         "ok": True,
         "persona_auto_exists": persona_auto.exists(),

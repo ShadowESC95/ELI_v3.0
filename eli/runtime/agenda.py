@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -791,9 +792,7 @@ def _export_ics() -> None:
             out += [f"SUMMARY:{_ics_escape(r['title'])}", "END:VEVENT"]
         out.append("END:VCALENDAR")
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".ics.tmp")
-        tmp.write_text("\r\n".join(out) + "\r\n", encoding="utf-8")
-        os.replace(tmp, path)
+        secure_write_text(path, "\r\n".join(out) + "\r\n")
     except Exception:
         log.debug("agenda: calendar file not written", exc_info=True)
 

@@ -1,7 +1,6 @@
 """ELI Labs package — the decomposed former labs_tab.py monolith.
 
-Each scientific/dev sub-tab is now its own module. Import the public surface from
-here (or from the eli.gui.labs_tab compatibility shim, unchanged for old callers).
+Each scientific/dev sub-tab is now its own module. Import the public surface from here.
 """
 from __future__ import annotations
 

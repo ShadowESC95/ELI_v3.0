@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from eli.core.paths import artifacts_dir as _artifacts_dir
 from eli.execution.operator_policy import load_policy
 from eli.runtime.operator_state import safe_proposal_summary, safe_goal_summary
 from eli.planning.attention_queue import append_attention, recent_attention, summarize_attention
@@ -15,12 +16,6 @@ from eli.planning.attention_queue import append_attention, recent_attention, sum
 # upgrade/training machinery, not how to run it.
 _SELF_UPGRADE_CHECK_INTERVAL_SEC = 3 * 24 * 3600
 _LORA_CHECK_INTERVAL_SEC = 7 * 24 * 3600
-
-
-def _artifacts_dir() -> Path:
-    """The user data dir on a packaged install; the source tree in dev."""
-    from eli.core.paths import artifacts_dir
-    return artifacts_dir()
 
 
 def scheduler_state_path() -> Path:

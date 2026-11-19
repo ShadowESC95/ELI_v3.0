@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -55,10 +56,7 @@ def note_seen(version: Optional[str] = None, now: Optional[float] = None) -> Dic
         seen[version] = float(now if now is not None else time.time())
         try:
             path = _seen_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(seen, indent=1), encoding="utf-8")
-            os.replace(tmp, path)
+            secure_write_text(path, json.dumps(seen, indent=1))
         except OSError:
             log.debug("the versions seen could not be written", exc_info=True)
     return seen

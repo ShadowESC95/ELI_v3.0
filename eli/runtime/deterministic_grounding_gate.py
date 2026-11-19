@@ -394,7 +394,7 @@ def _eli_cognition_pipeline_v2(focus: str = "", question: str = "") -> str:
 _COGNITION_PIPELINE_TEXT = """Cognition pipeline, input to output:
 
 1. GUI / voice capture
-- Text input enters through eli/gui/gui_eli_original.py.
+- Text input enters through eli/gui/main_window.
 - Voice input is captured through the STT/audio path, then normalised before it is sent into cognition.
 
 2. Input normalisation
@@ -459,7 +459,7 @@ def _eli_runtime_audit_v2() -> str:
         root / "eli" / "execution" / "executor_enhanced.py",
         root / "eli" / "runtime" / "deterministic_grounding_gate.py",
         root / "eli" / "runtime" / "generated_script_guard.py",
-        root / "eli" / "gui" / "gui_eli_original.py",
+        root / "eli" / "gui" / "main_window" / "window.py",
         root / "eli" / "core" / "runtime_settings.py",
     ]
 

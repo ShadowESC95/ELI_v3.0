@@ -284,7 +284,7 @@ def boot_awareness(
     # 3. Persona hygiene (dedup/prune)
     try:
         from eli.cognition.persona_hygiene import clean_auto_persona
-        result = clean_auto_persona(repo_root)
+        result = clean_auto_persona()
         state.persona_cleaned = bool(result.get("changed"))
     except Exception as exc:
         log.warning("awareness: persona hygiene failed: %s", exc)

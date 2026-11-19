@@ -11,17 +11,11 @@ import json
 import time
 from pathlib import Path
 
-def _eli_root() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds and manifest/inventory writes then fail.
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[3]
+from eli.core.paths import project_root
 
-
-ELI_ROOT = _eli_root()
+# The env-honouring root: __file__ resolves into the read-only bundle in frozen builds, where
+# manifest/inventory writes then fail.
+ELI_ROOT = Path(project_root())
 
 
 def shipped_manifest_path() -> Path:

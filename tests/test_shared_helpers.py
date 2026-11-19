@@ -38,3 +38,42 @@ def test_read_jsonl_dicts_skips_blank_and_bad_lines(tmp_path):
     p.write_text('{"a": 1}\n\nnot json\n[1,2]\n{"b": 2}\n')
     assert read_jsonl_dicts(p) == [{"a": 1}, {"b": 2}]
     assert read_jsonl_dicts(tmp_path / "missing.jsonl") == []
+
+
+def test_small_state_files_are_written_through_a_scratch_file_of_their_own(tmp_path, monkeypatch):
+    """Each of these wrote through one fixed '<name>.tmp' beside the file, so two writers at once
+    shared it. They go through core.secure_io now: a scratch file per write, owner-only."""
+    import json
+    import os
+    from eli.cognition import agent_trust
+    from eli.plugins import integrity
+    from eli.runtime import version_record
+    from eli.world import models
+
+    trust, seen, manifest, publishers = (tmp_path / n for n in (
+        "trusted_agents.json", "versions_seen.json", "manifest.json", "publishers.json"))
+    monkeypatch.setenv("ELI_AGENT_TRUST_FILE", str(trust))
+    monkeypatch.setattr(version_record, "_seen_path", lambda: seen)
+    monkeypatch.setattr(models, "_manifest_path", lambda: manifest)
+    monkeypatch.setattr(integrity, "_publishers_path", lambda: publishers)
+    old_scratch = [trust.with_suffix(".json.tmp"), seen.with_suffix(".tmp"), manifest.with_suffix(".tmp"),
+                   publishers.with_suffix(".json.tmp")]
+    for scratch in old_scratch:
+        scratch.write_text("another writer's half-written file", encoding="utf-8")
+
+    agent_trust._save({"version": 1, "agents": {}})
+    version_record.note_seen("9.8.7", now=5.0)
+    models._write_manifest({"chair": {"file": "chair.glb"}})
+    integrity._save_publishers({"p1": {"name": "Example"}})
+
+    assert json.loads(trust.read_text(encoding="utf-8"))["agents"] == {}
+    assert json.loads(seen.read_text(encoding="utf-8")) == {"9.8.7": 5.0}
+    assert json.loads(manifest.read_text(encoding="utf-8")) == {"chair": {"file": "chair.glb"}}
+    assert json.loads(publishers.read_text(encoding="utf-8"))["publishers"] == {"p1": {"name": "Example"}}
+    for scratch in old_scratch:
+        assert scratch.read_text(encoding="utf-8") == "another writer's half-written file", scratch.name
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        p.name for p in (trust, seen, manifest, publishers, *old_scratch)), "no scratch file is left behind"
+    if os.name == "posix":
+        for written in (trust, seen, manifest, publishers):
+            assert written.stat().st_mode & 0o777 == 0o600, written.name

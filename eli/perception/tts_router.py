@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from eli.utils.platform_compat import play_wav_blocking as _platform_play_wav_blocking
 
+from eli.cognition.emotion_palette import NEUTRAL_VOICE as _NEUTRAL_VOICE
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -83,12 +84,7 @@ _SYSTEM_VOICE_PREFIX = "sys:"
 # sentence and a bit more pitch variation. All overridable via env: length_scale (pacing, >1
 # slower), noise_scale (expressiveness), noise_w (timing variation), sentence_silence (seconds
 # after '.', '?', '!').
-_PIPER_PROSODY_DEFAULTS = {
-    "length_scale": 1.03,
-    "noise_scale": 0.72,
-    "noise_w": 0.85,
-    "sentence_silence": 0.38,
-}
+_PIPER_PROSODY_DEFAULTS = {k: v for k, v in _NEUTRAL_VOICE.items() if k != "pitch"}   # Piper takes no pitch
 
 
 def _piper_prosody_args() -> "list[str]":

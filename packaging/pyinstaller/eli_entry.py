@@ -161,7 +161,7 @@ def _selftest() -> int:
         from eli.core.init_data import bootstrap_once
         bootstrap_once()
         # the module eli.gui.app:main opens: the full GUI import chain (Qt, plugins, memory)
-        import eli.gui.gui_eli_original as gui
+        import eli.gui.main_window as gui
         import api.server                             # noqa: F401  web/phone server stack
         import segno                                  # noqa: F401  LAN QR codes in GUI
         import cryptography                           # noqa: F401  LAN HTTPS certs

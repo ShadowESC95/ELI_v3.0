@@ -39,8 +39,8 @@ _GROUNDED_ACTIONS: frozenset = frozenset({
 })
 
 # Substring triggers: any of these in the lowercased input means grounded. A merged superset of
-# agent_bus._query_is_grounded, engine._is_grounded_status_query and the router's
-# _RE_GROUNDED_PIPELINE patterns.
+# agent_bus._query_is_grounded and engine._is_grounded_status_query (the router's own
+# grounded-pipeline patterns were unused and are gone).
 _TRIGGERS: tuple = (
     # Identity / user knowledge
     "who am i",

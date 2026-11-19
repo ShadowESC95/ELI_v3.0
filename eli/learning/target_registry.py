@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from eli.core.secure_io import secure_write_text
+
 # Shipped defaults. These stay as built-ins so an existing install keeps working
 # byte-for-byte; they are no longer the *only* thing that can be trained.
 BUILTIN_TARGETS: dict[str, dict[str, Any]] = {
@@ -121,9 +123,7 @@ def _write_user_registry(targets: dict[str, dict[str, Any]]) -> Path:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"version": 1, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"), "targets": targets}
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    secure_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
     return path
 
 

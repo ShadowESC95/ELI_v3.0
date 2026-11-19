@@ -8,27 +8,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from eli.core.paths import artifacts_dir as _artifacts_dir, project_root as _project_root
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
-
-
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-
-        return Path(get_paths().project_root)
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
-def _artifacts_dir() -> Path:
-    try:
-        from eli.core.paths import get_paths
-
-        return Path(get_paths().artifacts_dir)
-    except Exception:
-        return _project_root() / "artifacts"
 
 
 from eli.utils.jsonio import read_json_dict as _read_json
@@ -223,7 +206,7 @@ def _world_and_labs_status() -> Dict[str, Any]:
     world_tab = root / "eli" / "gui" / "tabs" / "eli_world_tab.py"
     experimental_tab = root / "eli" / "gui" / "tabs" / "experimental_tab.py"
     experimental_root = root / "experimental"
-    labs_tab = root / "eli" / "gui" / "labs_tab.py"
+    labs_tab = root / "eli" / "gui" / "labs" / "__init__.py"
     world_model = root / "eli" / "kernel" / "world_model.py"
 
     runtime_world_path = _artifacts_dir() / "runtime" / "world_model.json"
@@ -306,7 +289,7 @@ def _module_matrix() -> List[Dict[str, Any]]:
         ("proactive", "eli.planning.proactive_daemon"),
         ("image_engine", "eli.tools.image_engine.gui_bridge"),
         ("world_model", "eli.kernel.world_model"),
-        ("labs_tab", "eli.gui.labs_tab"),
+        ("labs_tab", "eli.gui.labs"),
         ("world_tab", "eli.gui.tabs.eli_world_tab"),
         ("experimental_tab", "eli.gui.tabs.experimental_tab"),
         ("router", "eli.execution.router_enhanced"),

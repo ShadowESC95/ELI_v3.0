@@ -7,23 +7,6 @@ import pytest
 from eli.memory.memory import Memory
 
 
-# ── DB Paths ──────────────────────────────────────────────────────────────
-# Canonical module is eli.core.db_paths (db_paths was consolidated there; it was
-# never a submodule of eli.memory). eli.memory exposes resolve_db_paths().
-
-
-def test_db_paths_resolve_returns_something():
-    from eli.core.db_paths import get_db_paths
-    result = get_db_paths()
-    assert result is not None
-
-def test_db_paths_has_user_db():
-    from eli.core.db_paths import get_db_paths
-    result = get_db_paths()
-    user_db = getattr(result, "user_db", None) or getattr(result, "memory_db", None)
-    assert user_db is not None
-
-
 # ── Memory store write/read cycle ────────────────────────────────────────
 
 def _write_memories(tmp_db, count=10):

@@ -1,7 +1,7 @@
 """Screen-control worker threads must marshal to the GUI thread via signals,
 not QTimer.singleShot(0, ...) called from the worker thread itself (no
 guaranteed event loop there). Found while porting v2.4.38: the real v3 GUI
-entry point is eli.gui.main_window (via the gui_eli_original compat shim),
+entry point is eli.gui.main_window,
 not the legacy eli_pro_audio_gui_v2_0.py file -- the fix has to live in
 main_window/_mixins/screen_capture.py to actually be reachable at runtime.
 

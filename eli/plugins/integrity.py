@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -101,11 +102,9 @@ def _load_publishers() -> Dict[str, Dict[str, Any]]:
 def _save_publishers(pubs: Dict[str, Dict[str, Any]]) -> None:
     p = _publishers_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(
+    secure_write_text(p, json.dumps(
         {"version": 1, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-         "publishers": pubs}, indent=2), encoding="utf-8")
-    tmp.replace(p)
+         "publishers": pubs}, indent=2))
 
 
 # ── the marketplace's own signing identity ─────────────────────────────────────
@@ -438,10 +437,7 @@ def remember_release(registry: str, listing: Dict[str, Any]) -> None:
         p = _releases_path()
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"version": 1, "releases": releases}, indent=2),
-                           encoding="utf-8")
-            tmp.replace(p)
+            secure_write_text(p, json.dumps({"version": 1, "releases": releases}, indent=2))
         except OSError:
             log.debug("[INTEGRITY] could not record release", exc_info=True)
 

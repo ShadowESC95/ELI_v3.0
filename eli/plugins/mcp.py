@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -99,11 +100,9 @@ def _write(servers: Dict[str, Dict[str, Any]]) -> Path:
             shutil.copy2(p, p.with_suffix(".json.bak"))
         except Exception:
             log.debug("[MCP] could not back up the previous config", exc_info=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(
+    secure_write_text(p, json.dumps(
         {"version": 1, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-         "mcpServers": servers}, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(p)
+         "mcpServers": servers}, indent=2, ensure_ascii=False))
     return p
 
 

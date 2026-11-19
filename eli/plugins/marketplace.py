@@ -42,6 +42,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -145,11 +146,9 @@ def _save_registries(registries: List[Dict[str, Any]]) -> None:
             existing_home = str(json.loads(p.read_text(encoding="utf-8")).get("home") or "")
         except Exception:
             log.debug("[MARKET] could not preserve the marketplace home", exc_info=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(
+    secure_write_text(p, json.dumps(
         {"version": 1, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-         "home": existing_home, "registries": keep}, indent=2), encoding="utf-8")
-    tmp.replace(p)
+         "home": existing_home, "registries": keep}, indent=2))
 
 
 def marketplace_home() -> str:
@@ -196,9 +195,7 @@ def set_marketplace_home(url: str) -> Dict[str, Any]:
         data.setdefault("version", 1)
         data.setdefault("registries", [])
         data["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(p)
+        secure_write_text(p, json.dumps(data, indent=2, ensure_ascii=False))
     return {"ok": True, "problems": [], "warnings": warnings}
 
 
@@ -482,10 +479,7 @@ def set_licence_key(plugin_id: str, key: str) -> Dict[str, Any]:
         data[str(plugin_id)] = str(key or "")
         p = _licences_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"version": 1, "licences": data}, indent=2),
-                       encoding="utf-8")
-        tmp.replace(p)
+        secure_write_text(p, json.dumps({"version": 1, "licences": data}, indent=2))
     return {"ok": True}
 
 

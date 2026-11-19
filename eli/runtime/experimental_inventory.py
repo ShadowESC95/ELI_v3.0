@@ -3,14 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
-
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-
-        return Path(get_paths().project_root)
-    except Exception:
-        return Path(__file__).resolve().parents[2]
+from eli.core.paths import project_root as _project_root
 
 
 def _relative(path: Path, root: Path) -> str:

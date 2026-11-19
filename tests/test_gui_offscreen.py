@@ -83,7 +83,7 @@ def test_coding_tab_constructs(qapp):
 
 
 def test_labs_container_builds_full_tree(qapp):
-    from eli.gui.labs_tab import LabsTab
+    from eli.gui.labs import LabsTab
     w = LabsTab(parent_window=None)
     assert isinstance(w, QWidget)
     # The container hosts all the sub-tabs — a deep child tree.
@@ -92,7 +92,7 @@ def test_labs_container_builds_full_tree(qapp):
 
 def test_calculator_tab_has_inputs(qapp):
     # A concrete sub-tab built its interactive surface (not just an empty frame).
-    import eli.gui.labs_tab as lt
+    import eli.gui.labs as lt
     w = lt._CalculatorTab()
     from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit
     fields = (w.findChildren(QLineEdit) + w.findChildren(QTextEdit)

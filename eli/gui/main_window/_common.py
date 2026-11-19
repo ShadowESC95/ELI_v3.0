@@ -81,18 +81,6 @@ except Exception:
     _boot_logging.getLogger("eli.gui.boot").debug("suppressed exception", exc_info=True)
 
 
-def _eli_path_get(obj, key, default=None):
-    """
-    Compatibility helper for ELI path containers.
-    Accepts both dict-style path maps and object/namespace-style path maps.
-    """
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
 try:
     from PySide6.QtWidgets import *
     from PySide6.QtCore import *
@@ -173,31 +161,9 @@ def _eli_gui_visible_text(result):
 from eli.gui.branding import APP_NAME  # noqa: E402,F401  (one product name)
 
 
-def _eli_app_version() -> str:
-    """Version of the source ACTUALLY running. Portable installs run from the source tree
-    (PYTHONPATH), which may be newer than the installed wheel, so read pyproject FIRST;
-    fall back to installed-package metadata only if the source can't be found."""
-    try:
-        from eli.core.toml_util import load_toml
-        from eli.core.paths import project_root
-        v = load_toml(str(project_root() / "pyproject.toml"))["project"]["version"]
-        if v:
-            return v
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    try:
-        from importlib.metadata import version, PackageNotFoundError
-        for _pkg in ("eli-v2.0", "eli_v2_0", "eli-mkxi", "eli"):
-            try:
-                return version(_pkg)
-            except PackageNotFoundError:
-                continue
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return "2.0"
-
-
-APP_VERSION = _eli_app_version()
+# The version of the source actually running: the one reader every report uses.
+from eli.runtime.version_record import current_version as _current_version  # noqa: E402
+APP_VERSION = _current_version()
 
 
 PROJECT_ROOT = _BOOT_PROJECT_ROOT
@@ -230,7 +196,7 @@ def _eli_pick_any_bundled_model() -> str:
 
 if CENTRAL_IMPORTS_AVAILABLE and get_paths:
     _paths = get_paths()
-    MEMORY_DB = _eli_path_get(_paths, "memory_db")
+    MEMORY_DB = _paths.memory_db
     CONVERSATIONS_DIR = _paths.conversations_dir
     ARTIFACTS_DIR = _paths.artifacts_dir
     DEFAULT_MODEL_PATH = str(_paths.model) if _paths.model and _paths.model.exists() else _eli_pick_any_bundled_model()

@@ -47,19 +47,12 @@ def _index_root() -> Path:
         return Path(__file__).resolve().parents[1]
 
 
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
 class RepoIndex:
     def __init__(self, db_path: Path, root: Path):
         self.db_path = db_path
         self.root = root.resolve()
-        self.project_root = _project_root().resolve()
+        from eli.core.paths import project_root
+        self.project_root = Path(project_root()).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 

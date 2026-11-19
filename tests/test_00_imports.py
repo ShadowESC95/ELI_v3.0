@@ -37,7 +37,6 @@ ALL_MODULES = [
     "eli.core",
     # eli.core.architecture_contracts — deleted module (no consumer), removed 2026-09-29
     "eli.core.config",
-    "eli.core.db_paths",
     "eli.core.hardware_profile",
     "eli.core.legacy_paths",
     "eli.core.paths",
@@ -77,7 +76,7 @@ ALL_MODULES = [
     "eli.kernel.world_model",
     # ── memory ────────────────────────────────────────────────────────────────
     "eli.memory",
-    # eli.memory.db_paths — module does not exist (stale entry; use eli.core.db_paths), removed 2026-06-01
+    # eli.memory.db_paths — module does not exist (stale entry), removed 2026-06-01
     # eli.memory.habits_memory_db — deleted module, superseded by memory.py + planning/habits.py (fc5b8b6b's sibling removal), removed 2026-09-29
     "eli.memory.knowledge_graph",
     "eli.memory.memory",
@@ -99,7 +98,7 @@ ALL_MODULES = [
     "eli.planning.attention_queue",
     "eli.planning.autonomy_controller",
     "eli.planning.autonomy_scheduler",
-    # eli.planning.db_paths — module does not exist (stale entry; use eli.core.db_paths), removed 2026-06-01
+    # eli.planning.db_paths — module does not exist (stale entry), removed 2026-06-01
     "eli.planning.goal_models",
     "eli.planning.goal_store",
     "eli.planning.goal_tick",
@@ -162,7 +161,6 @@ ALL_MODULES = [
     "eli.runtime.profile_extractor",
     "eli.runtime.reflection",
     "eli.runtime.response_contracts",
-    "eli.runtime.response_policy",
     # eli.runtime.route_authority — deleted module (shim over the deleted execution module), removed 2026-09-29
     "eli.runtime.security",
     "eli.runtime.self_improvement",

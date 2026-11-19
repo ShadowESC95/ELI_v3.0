@@ -183,9 +183,9 @@ def run_and_review(target: str = "tests/", *, timeout: int = 3600,
         except Exception:
             backup_path = None
 
-    # 2) Run the suite (writes test_report.md + the junit via the conftest hook /
-    #    run_test_report). The last run's junit goes first: left in place, a run that wrote none
-    #    (it did not start, or nothing was collected) was read as the last run's results.
+    # 2) Run the suite (tools/run_test_report.py writes test_report.md + the junit). The last run's
+    #    junit goes first: left in place, a run that wrote none (it did not start, or nothing was
+    #    collected) was read as the last run's results.
     junit = art / "test_report.junit.xml"
     try:
         junit.unlink()

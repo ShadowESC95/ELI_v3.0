@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from eli.core.paths import artifacts_dir as _artifacts_dir
+
 _SEVERITY_SCORE = {
     "critical": 100,
     "high": 75,
@@ -13,12 +15,6 @@ _SEVERITY_SCORE = {
     "low": 25,
     "info": 10,
 }
-
-def _artifacts_dir() -> Path:
-    """The user data dir on a packaged install; the source tree in dev."""
-    from eli.core.paths import artifacts_dir
-    return artifacts_dir()
-
 
 def attention_path() -> Path:
     # artifacts_dir() rather than project_root()/artifacts: identical under the

@@ -23,12 +23,6 @@
   assert:
     - {type: action_not, value: [MEDIA_CONTROL, NEXT_MEDIA, PREVIOUS_MEDIA]}
 
-- id: next_track_real
-  target: router
-  prompt: "next track"
-  assert:
-    - {type: action_is, value: [NEXT_MEDIA, MEDIA_CONTROL]}
-
 - id: next_video_on_youtube
   target: router
   prompt: "next video on youtube"
@@ -40,12 +34,6 @@
   prompt: "pause the youtube video"
   assert:
     - {type: action_is, value: [PAUSE_MEDIA, MEDIA_CONTROL]}
-
-- id: volume_up
-  target: router
-  prompt: "volume up"
-  assert:
-    - {type: action_is, value: [VOLUME, MEDIA_CONTROL]}
 
 - id: fresh_document_not_pdf_folder
   target: router

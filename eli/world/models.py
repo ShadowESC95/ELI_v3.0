@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.core.secure_io import secure_write_text
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -58,9 +59,7 @@ def _read_manifest() -> Dict[str, Dict[str, Any]]:
 def _write_manifest(data: Dict[str, Dict[str, Any]]) -> None:
     path = _manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    secure_write_text(path, json.dumps(data, indent=1, ensure_ascii=False))
 
 
 def ident_of(text: str) -> str:

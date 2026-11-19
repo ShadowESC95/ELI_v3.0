@@ -1545,8 +1545,8 @@ def _native_input_tool() -> "tuple[str, str] | None":
     """
     if not LINUX:
         return None
-    wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or \
-        (os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland")
+    from eli.system.portable_app_control import display_server   # the one rule for the session type
+    wayland = display_server() == "wayland"
     order = ("ydotool", "xdotool") if wayland else ("xdotool", "ydotool")
     for tool in order:
         if shutil.which(tool):

@@ -23,6 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from eli.core.paths import project_root as _repo_root
+
 log = logging.getLogger(__name__)
 
 # component -> (path relative to repo root, one-line role). Paths are verified-real
@@ -60,14 +62,6 @@ _COMPONENTS: Dict[str, Tuple[str, str]] = {
     "netguard":       ("eli/core/netguard.py",
                        "Process-wide offline-by-default socket failsafe."),
 }
-
-
-def _repo_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-        return Path(get_paths().project_root)
-    except Exception:
-        return Path(__file__).resolve().parents[2]
 
 
 def _dotted(rel_path: str) -> str:

@@ -31,8 +31,7 @@ def test_memory_knowledge_graph_has_class():
 
 
 def test_memory_db_paths_exists():
-    # db_paths lives in eli.core.db_paths; the memory layer exposes the
-    # resolve_db_paths() helper. Verify the memory-layer API resolves DB paths.
+    # The memory layer exposes the resolve_db_paths() helper. Verify the memory-layer API resolves DB paths.
     from eli.memory import resolve_db_paths
     paths = resolve_db_paths()
     assert paths is not None

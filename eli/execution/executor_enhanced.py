@@ -139,8 +139,8 @@ def _convlog_append(role: str, text: str, meta: dict | None = None) -> None:
 # === MEMORY ===
 
 def _get_memory_path():
-    from eli.core.db_paths import get_user_db_path
-    return get_user_db_path()
+    from eli.core.paths import user_db_path
+    return user_db_path()
 
 
 def memory_store(text, tags=None, kind="note", source="chat", confidence=0.7, ts=None):
@@ -754,7 +754,7 @@ def _import_audit_report() -> Dict[str, Any]:
         'eli.memory',
         'eli.execution.router_enhanced',
         'eli.execution.executor_enhanced',
-        'eli.gui.gui_eli_original',
+        'eli.gui.main_window',
         'eli.core.runtime_settings',
         'eli.core.paths',
         'eli.planning.proactive_daemon',
@@ -6674,19 +6674,8 @@ try:
         return lines[:limit]
 
     def _eli_self_installed_version():
-        from importlib.metadata import PackageNotFoundError, version as _pkg_version
-        try:
-            return str(_pkg_version("eli"))
-        except PackageNotFoundError:   # a bundle has no package record: normal, and printed a traceback every time
-            log.debug("no package record")
-        try:
-            import tomllib as _toml
-            pp = _eli_self_Path(__file__).resolve().parents[2] / "pyproject.toml"
-            if pp.is_file():
-                return str(_toml.loads(pp.read_text(encoding="utf-8")).get("project", {}).get("version") or "")
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        return ""
+        from eli.runtime.version_record import current_version
+        return current_version()
 
     def _eli_self_packaged_update_summary(report, *, question=""):
         """Short conversational answer when git history is unavailable (AppImage/portable)."""

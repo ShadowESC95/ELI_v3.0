@@ -137,7 +137,7 @@ def test_hygiene_dedups_prunes_and_writes_the_overlay_the_way_a_refresh_does(tmp
         "## Runtime Patterns (Auto-Updated)\n- proactive daemon started\n- this: pipe_12\n",
         encoding="utf-8")
     assert persona.auto_path() == overlay
-    result = persona_hygiene.clean_auto_persona(tmp_path / "not-read")
+    result = persona_hygiene.clean_auto_persona()
     assert result["changed"] is True and result["sections"] == 2
     text = overlay.read_text(encoding="utf-8")
     habits, patterns = text.split("## Runtime Patterns (Auto-Updated)")

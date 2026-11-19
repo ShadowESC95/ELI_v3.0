@@ -164,12 +164,6 @@ def reload() -> str:
     return get_persona()
 
 
-def write_base_persona(text: str) -> str:
-    _PERSONA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PERSONA_FILE.write_text((text or "").rstrip() + "\n", encoding="utf-8")
-    return reload()
-
-
 def write_auto_persona(text: str) -> str:
     auto_path().parent.mkdir(parents=True, exist_ok=True)
     clean = _sanitize_auto_persona_text((text or "").rstrip() + "\n")
@@ -223,7 +217,6 @@ __all__ = [
     "read_auto_persona",
     "get_persona",
     "reload",
-    "write_base_persona",
     "write_auto_persona",
     "update_auto_sections",
 ]

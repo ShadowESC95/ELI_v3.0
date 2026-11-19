@@ -396,6 +396,10 @@ def test_the_mesh_timings_have_one_owner(tokenless_client):
         home_mesh.save_config(before)
     page = tokenless_client.get("/").text
     assert "failover_after_sec||18" not in page and ".value)||18" not in page
+    # and the watcher's fall-backs for an emptied value are the kept defaults, not the figures again
+    import inspect
+    code = inspect.getsource(home_mesh).split("_lock = threading.Lock()", 1)[1]
+    assert "or 18.0" not in code and "or 5.0" not in code
 
 
 def test_the_page_draws_the_controls_each_driver_declares(tokenless_client):

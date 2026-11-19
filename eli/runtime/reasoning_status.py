@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
+
+from eli.utils.jsonio import read_json_dict as _read_json
 
 _ATTRS = (
     "reasoning_mode",
@@ -49,15 +50,6 @@ def _label(key: str) -> str:
     """The public label (Quick/Normal/Advanced/Research/Expert): reasoning_modes.mode_display's."""
     from eli.cognition.reasoning_modes import mode_display
     return str(mode_display(_norm(key) or "quick"))
-
-def _read_json(path: Path) -> dict:
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-    return {}
 
 def _from_settings() -> str:
     from eli.core.paths import project_root

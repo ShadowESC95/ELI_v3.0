@@ -27,6 +27,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from eli.core.secure_io import secure_write_text
+
 log = logging.getLogger(__name__)
 
 _ROLES = {"primary", "secondary", "tertiary", "reflex", "off"}
@@ -127,9 +129,7 @@ def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         })
     cfg["peers"] = peers
     try:
-        tmp = _config_path().with_suffix(".json.part")
-        tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(_config_path())
+        secure_write_text(_config_path(), json.dumps(cfg, indent=2, ensure_ascii=False))
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "config": cfg}
@@ -270,7 +270,7 @@ def _watch_primary(cfg: Dict[str, Any]) -> None:
 
     last_seen = float(_runtime.get("last_primary_seen") or 0)
     gap = now - last_seen if last_seen else now
-    threshold = float(cfg.get("failover_after_sec") or 18.0)
+    threshold = float(cfg.get("failover_after_sec") or _DEFAULT["failover_after_sec"])
     if last_seen and gap < threshold:
         return
     if not cfg.get("auto_takeover"):
@@ -310,7 +310,7 @@ def _watch_loop() -> None:
                     _watch_primary(cfg)
         except Exception:
             log.debug("home_mesh: watch loop error", exc_info=True)
-        interval = float(load_config().get("heartbeat_interval_sec") or 5.0)
+        interval = float(load_config().get("heartbeat_interval_sec") or _DEFAULT["heartbeat_interval_sec"])
         time.sleep(max(2.0, interval))
 
 

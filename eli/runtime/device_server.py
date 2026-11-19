@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from eli.core.secure_io import secure_write_text
+
 log = logging.getLogger(__name__)
 
 _DEVICE_TYPES = {"light", "switch", "fan", "sensor", "climate", "media", "cover", "outlet"}
@@ -627,9 +629,7 @@ class DeviceServer:
 
     def _save_scenes(self, scenes: List[dict]) -> None:
         p = self._scenes_path()
-        tmp = p.with_suffix(".json.part")
-        tmp.write_text(json.dumps(scenes, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(p)
+        secure_write_text(p, json.dumps(scenes, ensure_ascii=False, indent=2))
 
     def add_scene(self, name: str, actions: List[dict]) -> Dict[str, Any]:
         name = (name or "").strip()
@@ -691,9 +691,7 @@ class DeviceServer:
 
     def _save_automations(self, autos: List[dict]) -> None:
         p = self._automations_path()
-        tmp = p.with_suffix(".json.part")
-        tmp.write_text(json.dumps(autos, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(p)
+        secure_write_text(p, json.dumps(autos, ensure_ascii=False, indent=2))
 
     def _auto_label(self, trig: dict, act: dict) -> str:
         when = {"time": "at " + trig.get("time", ""),

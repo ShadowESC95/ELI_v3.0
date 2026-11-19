@@ -22,8 +22,3 @@ def test_core_paths_exports_paths():
     assert path_attrs, f"eli.core.paths exposes no path symbols. Got: {attrs}"
 
 
-def test_core_db_paths_exposes_paths():
-    mod = importlib.import_module("eli.core.db_paths")
-    attrs = dir(mod)
-    assert any("db" in a.lower() or "path" in a.lower() or "sqlite" in a.lower() for a in attrs), \
-        f"eli.core.db_paths looks empty: {attrs}"

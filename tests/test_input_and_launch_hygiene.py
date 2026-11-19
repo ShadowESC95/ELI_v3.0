@@ -53,6 +53,25 @@ def test_x11_selects_xdotool(monkeypatch):
     assert tool == "xdotool" and proto == "x11"
 
 
+def test_the_input_tool_follows_the_one_session_rule(monkeypatch):
+    """It had its own rule (WAYLAND_DISPLAY first), so an X11 session that also carries
+    WAYLAND_DISPLAY typed through ydotool while the window tools and the clipboard used X11."""
+    from eli.system import portable_app_control as pac
+    monkeypatch.setattr(pc.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(pc, "LINUX", True)
+    monkeypatch.setattr(pac, "_system", lambda: "linux")
+    for env, tool in (({"XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}, "xdotool"),
+                      ({"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0"}, "ydotool"),
+                      ({"WAYLAND_DISPLAY": "wayland-0"}, "ydotool"),
+                      ({"DISPLAY": ":0"}, "xdotool"), ({}, "xdotool")):
+        for name in ("XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "DISPLAY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        assert pc._native_input_tool()[0] == tool, env
+        assert (pac.display_server() == "wayland") == (tool == "ydotool"), env
+
+
 def test_native_tool_is_none_off_linux(monkeypatch):
     monkeypatch.setattr(pc, "LINUX", False)
     assert pc._native_input_tool() is None

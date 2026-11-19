@@ -740,8 +740,6 @@ def _classify_query(text: str, action: str) -> str:
         "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_LAST_FAILURE", "EXPLAIN_LAST_RESPONSE",
         "SELF_REPORT",
         "USER_IDENTITY_SUMMARY",
-        "LAST_TRACE_REPORT",
-        "PERSONA_AUTO_REPORT",
         "EXPLAIN_COGNITION_RUNTIME",
     }
     if action.upper() in _grounded_actions:
@@ -7155,8 +7153,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 "USER_IDENTITY_SUMMARY",
                 "EXPLAIN_MEMORY_RUNTIME",
                 "EXPLAIN_COGNITION_RUNTIME",
-                "LAST_TRACE_REPORT",
-                "PERSONA_AUTO_REPORT",
                 "RUNTIME_AUDIT",
                 "IMPORT_AUDIT",
                 "GUI_RUNTIME_AUDIT",
