@@ -256,15 +256,16 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
     if re.match(r"^dictate\b", raw, re.I):
         return _mk("DICTATE", {"action": "start"}, 0.95, matched_by="voice.dictate_bare")
 
+    # the verb, or a transcript of something: "the transcript gives no dates" is about one
     m = re.search(
-        r"\btranscri(?:be|pt)\s+(.+)$", raw, re.I)
+        r"\btranscribe\s+(.+)$|\btranscript\s+(?:of|for|from)\s+(.+)$", raw, re.I)
     if m:
-        src = m.group(1).strip()
+        src = (m.group(1) or m.group(2)).strip()
         src_path = os.path.abspath(os.path.expanduser(src)) if _is_likely_path(src) or "." in src else src
         return _mk("TRANSCRIBE", {"source": src_path},
                    0.95, matched_by="voice.transcribe", entities={"source": src_path})
 
-    if re.search(r"\btranscri(?:be|pt)\b", raw, re.I):
+    if re.search(r"\btranscribe\b|^(?:(?:a|the|my)\s+)?transcript[\s.!]*$", raw.strip(), re.I):
         return _mk("TRANSCRIBE", {}, 0.90, matched_by="voice.transcribe_bare")
 
     # ------------------------------------------------------------

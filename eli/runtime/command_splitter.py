@@ -300,7 +300,24 @@ def read_message(text: str, *, chains: bool = False) -> List[dict]:
     form. A message of one sentence comes back as one entry."""
     parts = [part for s in sentences(text)
              for part in (_instructions_in(s) if chains and instruction(s) else [s])]
-    return [{"said": p, "tells": "" if _asks_rather_than_tells(p) else instruction(p)} for p in parts]
+    alone = len(parts) == 1
+    return [{"said": p, "tells": "" if _asks_rather_than_tells(p) or not (alone or tells_by_form(p)) else instruction(p)}
+            for p in parts]
+
+
+def tells_by_form(sentence: str) -> bool:
+    """Whether a sentence among others is an instruction by how it is made: it asks ELI ("could you
+    ..."), starts with what to do ("open ..."), or is made of command words only ("volume down",
+    or cut short, "vol up").
+    A message of one sentence is read whole; beside other sentences, one that only is not about "you"
+    or "it" was taken for an instruction, so "Note: the red box is not the blue one." before a
+    question wrote a note, and a rule about switches and a lamp was sent to the smart home."""
+    said = _LEAD.sub("", str(sentence or "").strip(), count=1)
+    if _REQUEST.match(said) or _COMMAND_START.match(said):
+        return True
+    words = re.findall(r"[a-z]+", said.lower())
+    vocab = _command_words()
+    return bool(words) and all(w in vocab or len(w) > 2 and any(c.startswith(w) for c in vocab) for w in words)
 
 
 def _asks_rather_than_tells(sentence: str) -> bool:
@@ -415,6 +432,6 @@ def holds_more_than_one(value: str) -> bool:
     return any(brk.start() > 0 and _starts_instruction(value[brk.end():]) for brk in _NEXT_INSTRUCTION.finditer(value))
 
 
-__all__ = ["split_commands", "sentences", "instruction", "read_message", "tells_eli_to_do", "holds_more_than_one",
+__all__ = ["split_commands", "sentences", "instruction", "read_message", "tells_by_form", "tells_eli_to_do", "holds_more_than_one",
            "correction", "without_correction_lead", "misspelt_commands",
            "starts_with_command", "is_request", "COMMAND_VERBS"]

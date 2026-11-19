@@ -243,7 +243,8 @@ def fits(text: Any, intent: Any) -> bool:
     Some actions are asked for in a remark by nature: a game is given up with "I give up", and
     proposed with "let's play". A rule that knows that says so (meta "spoken_as_remark") and its
     own vocabulary is the whole test."""
-    from eli.runtime.command_splitter import instruction, says_rather_than_asks, sentences, starts_with_command
+    from eli.runtime.command_splitter import (instruction, says_rather_than_asks, sentences, starts_with_command,
+                                              tells_by_form)
     if not isinstance(intent, dict):
         return True
     if (intent.get("meta") or {}).get("spoken_as_remark"):
@@ -253,9 +254,16 @@ def fits(text: Any, intent: Any) -> bool:
     own = set(_words(intent.get("args"))) | set(_words((intent.get("meta") or {}).get("entities")))
     own |= set(str(intent.get("action") or "").lower().split("_"))
     said, told_something = [], False
-    for sentence in sentences(str(text or "")):
+    every = sentences(str(text or ""))
+    named = set(str(intent.get("action") or "").lower().split("_"))
+    for sentence in every:
         told = instruction(sentence)
         words = [w for w in _WORD.findall((told or sentence).lower()) if w not in _GRAMMAR]
+        # Beside other sentences an instruction is one by its form, or opens with the action's own
+        # name ("note: ...", "timer 5 minutes"): a statement there is material, not an order.
+        if told and len(every) > 1 and not (tells_by_form(sentence)
+                                             or words[:1] and any(_same_word(words[0], n) for n in named)):
+            told = ""
         if told and (words or starts_with_command(told)):   # "well done." tells nothing; "do it" does
             told_something = True
             own.update(words[:1])                  # the verb the instruction starts with

@@ -223,3 +223,37 @@ def test_a_question_among_sentences_is_talk_not_an_instruction():
     assert said[-1]["tells"] == ""
     assert read_message("thanks for that. can you open the calculator?")[-1]["tells"] == "open the calculator?"
     assert read_message("nice one. play some jazz?")[-1]["tells"] == "play some jazz?"
+
+
+@pytest.mark.parametrize("text, never", [
+    # a labelled remark before a question is material for the answer
+    ("Context: the red crate is not the blue crate. Note: the blue crate holds bolts and the red one "
+     "holds nails. What does the blue crate hold? Reply with one word.", "WRITE_NOTE"),
+    ("The shelf has three boxes. Oak = A1. Birch = B2. Note: Oak is not Birch. Which code belongs to Birch?",
+     "WRITE_NOTE"),
+    # a rule about switches and a lamp is a puzzle, not the smart home
+    ("Use only the facts given. Rules: if switch A is ON and switch B is OFF, the lamp is GREEN; otherwise "
+     "RED. Actual A=ON, B=ON. If B were OFF with A unchanged, what color is the lamp?", "SMART_HOME"),
+    # asked to say words back, not to set the player to repeat
+    ("The list is long. The key is PLUM-7. Repeat exactly the key.", "REPEAT_MEDIA"),
+    # about a transcript, not a request to make one
+    ("The transcript gives no dates for the meeting. Can you tell when it was held? YES or NO.", "TRANSCRIBE"),
+])
+def test_a_statement_among_other_sentences_is_not_carried_out(text, never):
+    from eli.execution.router_enhanced import route
+    out = route(text)
+    agreed = (out.get("args") or {}).get("agreed") or {}
+    assert out["action"] == "CHAT", out
+    assert not agreed.get("commands"), agreed
+
+
+@pytest.mark.parametrize("text, action", [
+    ("note: buy oat milk. and bread", "WRITE_NOTE"),
+    ("nice one. volume up", "VOLUME"),
+    ("repeat", "REPEAT_MEDIA"),
+    ("repeat this song", "REPEAT_MEDIA"),
+    ("transcribe ~/recordings/standup.wav", "TRANSCRIBE"),
+])
+def test_the_command_forms_beside_them_still_run(text, action):
+    from eli.execution.router_enhanced import route
+    assert route(text)["action"] == action

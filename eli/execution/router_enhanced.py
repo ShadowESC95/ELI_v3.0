@@ -3205,7 +3205,8 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    entities={"state": _state} if _state else None)
 
     # "repeat" / "repeat track" / "loop" / "repeat all"
-    if re.match(r"^(?:repeat|loop)(?:\s+(?:one|track|all|playlist|off))?\b", low):
+    # the whole message: "repeat exactly the code above" asks for words, not for the player
+    if re.match(r"^(?:repeat|loop)(?:\s+(?:this|that|the|it))?(?:\s+(?:one|track|song|all|playlist|on|off))?[\s.!]*$", low):
         return _mk("REPEAT_MEDIA", {}, 0.95, matched_by="media.repeat")
 
     # 5) Time / date / capabilities. Before the current-time route: "what time did I first/last
