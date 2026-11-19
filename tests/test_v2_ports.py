@@ -8,8 +8,6 @@ just unreachable.
 from __future__ import annotations
 
 
-import pytest
-
 
 # ── Ollama auto-start ────────────────────────────────────────────────────────
 
@@ -32,38 +30,6 @@ def test_autostart_refuses_a_remote_host(monkeypatch):
     assert client.ensure_server_running() is False
 
 
-# ── TTS prosody + robotic-voice filter ───────────────────────────────────────
-def test_prosody_args_are_emitted_by_default(monkeypatch):
-    from eli.perception.tts_router import _piper_prosody_args
-    monkeypatch.delenv("ELI_TTS_PROSODY", raising=False)
-    args = _piper_prosody_args()
-    assert "--length_scale" in args and "--sentence_silence" in args
-
-
-def test_prosody_can_be_disabled(monkeypatch):
-    from eli.perception.tts_router import _piper_prosody_args
-    monkeypatch.setenv("ELI_TTS_PROSODY", "0")
-    assert _piper_prosody_args() == []
-
-
-def test_robotic_voices_hidden_by_default(monkeypatch):
-    from eli.perception.tts_router import list_voices
-    monkeypatch.delenv("ELI_TTS_ALLOW_ROBOTIC", raising=False)
-    voices = list_voices()
-    if voices:  # only meaningful where voices are installed
-        assert not any("x_low" in v for v in voices), \
-            "low-quality piper voices should be deferred unless explicitly allowed"
-
-
-def test_robotic_voices_can_be_opted_into(monkeypatch):
-    from eli.perception.tts_router import list_voices
-    monkeypatch.delenv("ELI_TTS_ALLOW_ROBOTIC", raising=False)
-    natural = list_voices()
-    monkeypatch.setenv("ELI_TTS_ALLOW_ROBOTIC", "1")
-    everything = list_voices()
-    assert len(everything) >= len(natural)
-
-
 # ── Licence terms ────────────────────────────────────────────────────────────
 def test_license_terms_are_printable_and_distinct_from_activation():
     from eli.runtime.license_info import eula_path, license_path, license_text
@@ -81,27 +47,3 @@ def test_license_flag_does_not_collide_with_license_status():
     assert "--license" not in LICENSE_FLAGS, \
         "--license must fall through to the terms printer, not the activation handler"
     assert "--license-status" in LICENSE_FLAGS
-
-
-# ── XTTS device override ─────────────────────────────────────────────────────
-@pytest.mark.parametrize("forced", ["cpu", "cuda"])
-def test_xtts_device_can_be_forced(monkeypatch, forced):
-    """XTTS shares the GPU with the main model; pinning it to CPU must not
-    require a code edit."""
-    torch = pytest.importorskip("torch")
-    from eli.perception.tts_xtts import _select_device
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)   # the force is checked against the build
-    monkeypatch.setenv("ELI_XTTS_DEVICE", forced)
-    assert _select_device() == forced
-
-
-def test_xtts_device_ignores_a_bogus_value(monkeypatch):
-    from eli.perception.tts_xtts import _select_device
-    monkeypatch.setenv("ELI_XTTS_DEVICE", "gpu-please")
-    assert _select_device() in {"cpu", "cuda"}
-
-
-def test_xtts_device_autodetects_without_the_override(monkeypatch):
-    from eli.perception.tts_xtts import _select_device
-    monkeypatch.delenv("ELI_XTTS_DEVICE", raising=False)
-    assert _select_device() in {"cpu", "cuda"}

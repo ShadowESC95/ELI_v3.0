@@ -137,35 +137,6 @@ def test_phi3_rope_scaling_normalizer_adds_legacy_type():
     assert fixed["rope_type"] == "longrope"
 
 
-def test_phi3_rope_scaling_normalizer_infers_longrope():
-    rope = {
-        "short_factor": [1.0],
-        "long_factor": [1.0],
-    }
-    fixed = lora_trainer._normalize_phi3_rope_scaling_dict(rope)
-    assert fixed["type"] == "longrope"
-
-def test_phi3_rope_scaling_normalizer_forces_longrope_when_factors_exist():
-    rope = {
-        "rope_type": "default",
-        "short_factor": [1.0],
-        "long_factor": [1.0],
-    }
-    fixed = lora_trainer._normalize_phi3_rope_scaling_dict(rope)
-    assert fixed["type"] == "longrope"
-    assert fixed["rope_type"] == "longrope"
-
-
-def test_phi3_rope_scaling_normalizer_nulls_default_4k_rope():
-    rope = {
-        "rope_theta": 10000.0,
-        "rope_type": "default",
-        "type": "dynamic",
-    }
-    fixed = lora_trainer._normalize_phi3_rope_scaling_dict(rope)
-    assert fixed is None
-
-
 def test_peft_trainable_parameter_report_contains_summary():
     from eli.learning.lora_trainer import _peft_trainable_parameter_report
 
@@ -196,7 +167,6 @@ def test_peft_trainable_parameter_report_contains_summary():
 # ---------------------------------------------------------------------
 # Updated Phi-3 RoPE expectations:
 # default 4k RoPE remains default; factor-based long-context RoPE becomes longrope.
-# These override older definitions above.
 # ---------------------------------------------------------------------
 
 def test_phi3_rope_scaling_normalizer_infers_longrope():
@@ -224,7 +194,7 @@ def test_phi3_rope_scaling_normalizer_forces_longrope_when_factors_exist():
     assert fixed["rope_type"] == "longrope"
 
 
-def test_phi3_rope_scaling_normalizer_nulls_default_4k_rope():
+def test_phi3_rope_scaling_normalizer_keeps_default_4k_rope():
     from eli.learning import lora_trainer
 
     rope = {

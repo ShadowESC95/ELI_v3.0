@@ -23,4 +23,4 @@ def test_observability_failure_report():
     except ValueError as e:
         observe(__name__, "integration test", exc=e)
     report = recent_failure_report(limit=4)
-    assert "integration probe" in report or "No suppressed" in report
+    assert "integration probe" in report

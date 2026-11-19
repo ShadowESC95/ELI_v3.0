@@ -41,8 +41,7 @@ FILLER_CONTENT_PAIRS = [
 
 @pytest.mark.parametrize("filler,content", FILLER_CONTENT_PAIRS)
 def test_filler_stripped_content_preserved(filler, content):
-    result = san(f"{filler}{content}")
-    assert content.strip().split()[0] in result
+    assert san(f"{filler}{content}") == content
 
 
 # ── 50 stage prefix variations ────────────────────────────────────────────
@@ -70,8 +69,7 @@ def test_filler_stripped_content_preserved(filler, content):
     ("SOFTLY: ", "Tender response."),
 ])
 def test_stage_prefix_stripped_content_preserved(prefix, content):
-    result = san(f"{prefix}{content}")
-    assert result  # not empty
+    assert san(f"{prefix}{content}") == content
 
 
 # ── 50 placeholder variations ─────────────────────────────────────────────
@@ -162,11 +160,7 @@ TECHNICAL_CONTENT = [
 
 @pytest.mark.parametrize("text", TECHNICAL_CONTENT)
 def test_technical_content_preserved(text):
-    result = san(text)
-    # Key numbers and technical terms should survive
-    words = text.split()
-    key_word = next((w for w in words if any(c.isdigit() for c in w) or len(w) > 5), words[0])
-    assert key_word.rstrip("=.,;:") in result or len(result) > 0
+    assert san(text) == text
 
 
 # ── 30 combined transformation tests ─────────────────────────────────────
@@ -210,6 +204,4 @@ def test_combined_transformations(input_text, expected_fragment):
     "Ellipsis: …",
 ])
 def test_unicode_text_handled(text):
-    result = san(text)
-    assert isinstance(result, str)
-    assert len(result) > 0
+    assert san(text) == text

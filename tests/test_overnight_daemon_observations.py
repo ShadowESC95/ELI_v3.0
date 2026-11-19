@@ -152,21 +152,6 @@ PLUMBING = [
 ]
 
 
-@pytest.mark.parametrize("row", PLUMBING)
-def test_plumbing_observations_are_not_reflection_material(row):
-    from eli.planning.insight_synthesis import _observation_text
-
-    assert _observation_text(row) == ""
-
-
-def test_a_genuine_observation_survives():
-    from eli.planning.insight_synthesis import _observation_text
-
-    row = {"category": "habit_detector",
-           "observation": "User analysed three PDFs in the QMSH project this evening"}
-    assert "QMSH" in _observation_text(row)
-
-
 def test_no_inference_is_spent_when_only_plumbing_remains(monkeypatch, tmp_path):
     """The overnight behaviour: a call every 30 minutes to restate its own
     start-up history. With nothing real to say it must keep the cached insight

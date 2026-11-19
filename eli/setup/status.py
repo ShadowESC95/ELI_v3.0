@@ -30,9 +30,23 @@ def has_venv() -> bool:
     return venv_python().exists()
 
 
+def _chat_model_folders(root: Path) -> List[Path]:
+    """The checkout's own models folder and every folder ELI's model list looks in
+    (eli.core.model_folders: its data folders, the folders of the models the settings name, the
+    folders the user named), so a model kept elsewhere is not reported missing and downloaded
+    again. The loaded model's folder is left out: asking for it imports the inference module."""
+    folders = [root / "models"]
+    try:
+        from eli.core.model_folders import model_folders
+        folders += [f for f in model_folders(include_loaded=False) if f not in folders]
+    except (ImportError, OSError, RuntimeError, ValueError):
+        pass      # before the install is complete only the checkout's own folder can be read
+    return folders
+
+
 def _scan_chat_gguf(root: Path) -> bool:
     """Filesystem scan only — must not import the full GUI (pulls in llama_cpp)."""
-    for base in (root / "models", root / "models" / "gguf"):
+    for base in _chat_model_folders(root):
         if not base.exists():
             continue
         for p in base.rglob("*.gguf"):

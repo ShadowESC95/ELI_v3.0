@@ -21,14 +21,8 @@ PY="$ROOT/.venv/bin/python"
 [ -x "$PY" ] || { echo "[eli-serve] .venv not found — run ./scripts/eli_setup.sh or bash install.sh first."; exit 1; }
 eli_env_ready "$ROOT" || exit 1
 
-# Pin runtime paths to THIS install root so a portable copy stays self-contained,
-# regardless of the shell's working directory.
-export ELI_PROJECT_ROOT="$ROOT"
-export ELI_DATA_DIR="${ELI_DATA_DIR:-$ROOT/artifacts}"
-export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$ROOT/config}"
-export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$ROOT/models}"
-export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# eli_isolate_env (above) has pinned the runtime paths and PYTHONPATH to THIS install root, so a
+# portable copy stays self-contained regardless of the shell's working directory.
 
 HOST="127.0.0.1"
 # Default port: explicit env wins, else the user's saved api_port setting, else 8081.

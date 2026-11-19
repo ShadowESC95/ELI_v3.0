@@ -98,11 +98,6 @@ for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
 done
 if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
-  if [ -x "$ROOT/.venv/bin/python" ] 2>/dev/null || [ -x "$PYTHON" ]; then
-    _GEN_PY="${PYTHON:-python3}"
-    [ -x "$ROOT/.venv/bin/python" ] && _GEN_PY="$ROOT/.venv/bin/python"
-    "$_GEN_PY" "$ROOT/scripts/generate_branding_icons.py" 2>/dev/null || true
-  fi
   cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
   cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
   for _ic in Eli_Icon.ico eli-48.png eli-128.png eli-256.png; do

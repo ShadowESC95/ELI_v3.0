@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from eli.licensing.activation import _parse_iso
 from eli.licensing.machine_id import machine_fingerprint, machine_label
 from eli.licensing.types import ActivationState, MachineBinding
 
@@ -48,16 +49,6 @@ def _utc_now() -> datetime:
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-    except (TypeError, ValueError):
-        return None
 
 
 def trial_duration_days() -> int:

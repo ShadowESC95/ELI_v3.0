@@ -9,12 +9,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
-from asset_release_policy import is_excluded_voice_filename
+from asset_release_policy import DEFAULT_ASSET_REPO, DEFAULT_ASSET_TAG, is_excluded_voice_filename
 from github_asset_manifest import ROOT, build_manifest
 
 
-DEFAULT_REPO = "ShadowESC95/ELI_v3.0"
-DEFAULT_TAG = "local-assets-v3.0"
 DEFAULT_CHUNK_BYTES = 1_900_000_000
 
 
@@ -158,8 +156,8 @@ def upload(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload large ELI local assets directly/chunked to GitHub Release.")
-    parser.add_argument("--repo", default=DEFAULT_REPO)
-    parser.add_argument("--tag", default=DEFAULT_TAG)
+    parser.add_argument("--repo", default=DEFAULT_ASSET_REPO)
+    parser.add_argument("--tag", default=DEFAULT_ASSET_TAG)
     parser.add_argument("--chunk-bytes", type=int, default=DEFAULT_CHUNK_BYTES)
     parser.add_argument("--work-dir", default=str(ROOT / "dist" / "github_assets" / "direct_work"))
     parser.add_argument("--include-runtime", action="store_true",

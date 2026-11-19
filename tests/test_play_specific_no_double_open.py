@@ -238,7 +238,6 @@ def test_artist_album_name_phrasing_reaches_the_album_block_not_track_search(mon
 
     track_search_calls = []
     album_uri_calls = []
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_resolve_track_uri", lambda q: None)
     monkeypatch.setattr(ex, "_spotify_resolve_album_uri",
                          lambda name, artist=None: album_uri_calls.append((name, artist)) or None)
     monkeypatch.setattr(ex, "_spotify_search",

@@ -12,7 +12,6 @@ from eli.perception.tts_router import (
     get_active_voice,
     set_active_voice,
     available_backends,
-    _clean_text,
     _voice_dir,
     _DEFAULT_VOICE,
     _VOICE_SEARCH_DIRS,
@@ -146,50 +145,6 @@ def test_available_backends_active_model_exists():
     result = available_backends()
     if result["active_model"]:
         assert Path(result["active_model"]).exists()
-
-
-# ── _clean_text ───────────────────────────────────────────────────────────
-
-def test_clean_text_strips_markdown():
-    result = _clean_text("**bold** and _italic_ and `code`")
-    assert "**" not in result
-    assert "_" not in result
-    assert "`" not in result
-
-def test_clean_text_strips_headers():
-    result = _clean_text("# Header\n## Sub")
-    assert "#" not in result
-
-def test_clean_text_collapses_whitespace():
-    result = _clean_text("hello   world   there")
-    assert "  " not in result
-
-def test_clean_text_truncates_at_800():
-    long_text = "word " * 200
-    result = _clean_text(long_text)
-    assert len(result) <= 800
-
-def test_clean_text_empty_returns_empty():
-    assert _clean_text("") == ""
-
-def test_clean_text_none_returns_empty():
-    assert _clean_text(None) == ""
-
-def test_clean_text_whitespace_returns_empty():
-    assert _clean_text("   ") == ""
-
-def test_clean_text_strips_pipe():
-    result = _clean_text("col1 | col2 | col3")
-    assert "|" not in result
-
-def test_clean_text_strips_gt():
-    result = _clean_text("> blockquote")
-    assert ">" not in result
-
-def test_clean_text_preserves_content():
-    result = _clean_text("The answer is 42")
-    assert "answer" in result
-    assert "42" in result
 
 
 # ── speak_if_enabled ─────────────────────────────────────────────────────

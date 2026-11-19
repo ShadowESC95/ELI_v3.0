@@ -147,7 +147,10 @@ def test_readme_does_not_call_retrieval_twelve_stage_pipeline():
 
 @pytest.mark.parametrize("fmt", ["pdf", "docx", "odt", "epub"])
 def test_readme_document_formats_are_dispatched(fmt):
-    if fmt not in README.lower():
-        pytest.skip(f"{fmt} not mentioned in README")
+    """A format the README or the reader's own description names is one the reader dispatches
+    (.odt and .epub were advertised while falling through to the binary text branch)."""
+    from eli.plugins.document_reader.plugin import DocumentReaderPlugin
+    if fmt not in README.lower() and fmt not in DocumentReaderPlugin.description.lower():
+        pytest.skip(f"{fmt} is not advertised")
     src = (REPO / "eli" / "plugins" / "document_reader" / "plugin.py").read_text(encoding="utf-8")
-    assert f'".{fmt}"' in src, f"README mentions {fmt} but document_reader does not dispatch it"
+    assert f'".{fmt}"' in src, f"{fmt} is advertised but document_reader does not dispatch it"

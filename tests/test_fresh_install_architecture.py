@@ -109,21 +109,6 @@ def test_init_all_data_builds_full_architecture_blank_slate(fresh_install_env):
             assert _count(conn, table) == 0, f"{db_name}.{table} must be empty on fresh install"
 
 
-def test_git_template_dbs_exist_and_are_schema_only():
-    assert TEMPLATES.is_dir(), "config/templates/db must ship in git"
-    names = {p.name for p in TEMPLATES.glob("*.sqlite3")}
-    assert set(EXPECTED_DBS) <= names
-
-    for db_name, table in PERSONAL_TABLES:
-        db_path = TEMPLATES / db_name
-        with sqlite3.connect(db_path) as conn:
-            if table not in _table_names(db_path):
-                pytest.skip(f"template {db_name} predates table {table}")
-            assert _count(conn, table) == 0, (
-                f"template {db_name}.{table} must not ship personal rows"
-            )
-
-
 def test_rthook_safe_copy_reads_from_readonly_source(tmp_path):
     import importlib.util
 

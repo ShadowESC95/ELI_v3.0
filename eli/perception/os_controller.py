@@ -17,6 +17,7 @@ import shutil
 from typing import Optional, Dict, Any
 from eli.utils import platform_compat as platform
 from eli.utils.platform_compat import LINUX, WINDOWS, MACOS
+from eli.system.portable_app_control import display_server as _display_server
 
 
 from eli.utils.log import get_logger
@@ -25,7 +26,10 @@ log = get_logger(__name__)
 # ----------------------------------------------------------------------
 # Environment detection
 # ----------------------------------------------------------------------
-SESSION_TYPE = os.environ.get('XDG_SESSION_TYPE', 'x11').lower()
+# One rule for the session type (eli.system.portable_app_control.display_server): XDG_SESSION_TYPE,
+# then WAYLAND_DISPLAY, then DISPLAY. Read alone and defaulted to x11, a Wayland session started
+# without XDG_SESSION_TYPE was driven with the X11 tools.
+SESSION_TYPE = _display_server()
 DESKTOP = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
 IS_WAYLAND = SESSION_TYPE == 'wayland'
 IS_X11 = SESSION_TYPE == 'x11'

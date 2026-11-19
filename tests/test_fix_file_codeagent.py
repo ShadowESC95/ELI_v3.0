@@ -4,20 +4,7 @@ Regression for the live run where "fix this file" produced broken code (`def mai
 the Python fix path now goes through eli.coding.solve (syntax+lint+execution+repo-context+
 critique) and writes the verified result with a backup.
 """
-import pathlib
-import shutil
-import tempfile
 
-import pytest
-
-
-@pytest.fixture
-def workspace():
-    from eli.execution import executor_enhanced as EX
-    root = getattr(EX, "PROJECT_ROOT", pathlib.Path(".").resolve())
-    d = pathlib.Path(tempfile.mkdtemp(prefix="fixfile_", dir=str(root / "artifacts")))
-    yield d
-    shutil.rmtree(d, ignore_errors=True)
 
 
 def test_fix_file_uses_codeagent_for_python(workspace, monkeypatch):

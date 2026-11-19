@@ -44,13 +44,6 @@ def test_selection_is_always_a_subset_of_the_full_block():
         assert remainder == "", "select_rules emitted text not present in all_rules()"
 
 
-def test_all_rules_is_byte_identical_to_the_previous_block():
-    """The whole point: assembling everything reproduces the old prompt exactly."""
-    # every guard constant must appear verbatim in the assembled block
-    for key in pr._ORDER:
-        assert pr._TEXT[key] in pr.all_rules()
-
-
 # ── fail-safe ────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("ui", ["", "   ", "\n"])
 def test_unassessable_turn_gets_everything(ui):

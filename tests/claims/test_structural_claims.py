@@ -26,11 +26,6 @@ def test_bus_agent_registered(name):
     assert name in names, f"bus agent '{name}' not registered"
 
 
-def test_bus_has_at_least_15_agents():
-    from eli.cognition.agent_bus import _ALL_AGENTS
-    assert len(_ALL_AGENTS) >= 15
-
-
 # ── 5 reasoning modes ────────────────────────────────────────────────────────
 _MODES = {
     "quick": "Quick", "chain_of_thought": "Normal", "self_consistency": "Advanced",

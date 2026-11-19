@@ -14,7 +14,6 @@
     "Technical Report",
     "Simulation Report"
   ],
-  "policy_module": "eli.editions.coding.policy",
   "requires_core": ">=3.1",
   "suggested_tiers": [
     "personal",

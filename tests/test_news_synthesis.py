@@ -38,6 +38,7 @@ def test_gist_respects_cap():
 
 def test_gist_empty_is_empty():
     assert ns._one_sentence_gist("") == ""
+    assert ns._one_sentence_gist("   \n  ") == ""
     assert ns._one_sentence_gist(None) == ""
 
 
@@ -70,6 +71,7 @@ def test_spread_caps_at_n_and_available():
     arts = [_art("x", "world"), _art("y", "science")]
     assert len(ns._spread_across_domains(arts, 5)) == 2   # only 2 available
     assert len(ns._spread_across_domains(arts, 1)) == 1   # capped at n
+    assert ns._spread_across_domains([], 5) == []
 
 
 # --------------------------------------------------------------------------- #

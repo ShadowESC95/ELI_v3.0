@@ -1,18 +1,12 @@
 import json
 from pathlib import Path
 
+from eli.learning.dataset_filters import write_jsonl
 from eli.learning.lora_eval import (
     build_eval_job,
     inspect_eval_suite,
     score_response,
 )
-
-
-def write_jsonl(path: Path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
 
 
 def make_fake_base(path: Path):

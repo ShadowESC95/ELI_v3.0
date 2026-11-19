@@ -6,7 +6,6 @@ attempt — never as a pre-install gate.
 """
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from typing import Any
@@ -26,11 +25,8 @@ def display_server() -> str:
     if pc.ANDROID:
         return "android"
     if pc.LINUX:
-        if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
-            return "wayland"
-        if os.environ.get("DISPLAY"):
-            return "x11"
-        return "linux-headless"
+        from eli.system.portable_app_control import display_server as _session_type
+        return _session_type() or "linux-headless"
     return "other"
 
 

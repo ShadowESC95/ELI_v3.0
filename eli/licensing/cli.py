@@ -9,7 +9,7 @@ from eli.licensing.products import product_ids
 from eli.licensing.storage import activation_state_path, ensure_license_dir
 
 
-def _cmd_status(_args: argparse.Namespace) -> int:
+def _cmd_status(_args: argparse.Namespace | None) -> int:
     from eli.licensing.flags import status_payload
 
     payload = status_payload()
@@ -24,7 +24,7 @@ def _cmd_trial(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_start_trial(_args: argparse.Namespace) -> int:
+def _cmd_start_trial(_args: argparse.Namespace | None) -> int:
     from eli.licensing.trial import grant_trial, trial_duration_days, trial_state
 
     state = grant_trial()

@@ -3,19 +3,11 @@
 ELI ships as one maintained core plus small, domain-specialised *edition packs*
 (general, research, healthcare, legal, coding, content, vr, enterprise). This is the
 "shared core + edition packs" model: core bugfixes happen once; editions diverge
-only in the capabilities / personas / templates / policy they add on top.
+only in the personas / templates their manifest names.
 
-Two orthogonal axes:
-  • licence *tier*    — trial / personal / pro / enterprise  (seats + commercial
-                        rights + support; see eli.licensing).
-  • *edition*         — the domain pack(s) a licence entitles (this package).
-
-A signed licence carries a tier AND entitles one or more editions. This module
-only *discovers* packs from their manifest.json and resolves which are active;
-gating against real licence entitlements is a documented seam (`active_editions`).
-
-Nothing here is wired into startup yet — the registry is inert until the core
-composes it. That keeps the frozen build and every existing import unaffected.
+Licences name products (eli.licensing.products), not editions. This module only
+*discovers* packs from their manifest.json; the one consumer is
+eli.bundles.bundle_apps, which reads the "app" block of an official bundle's manifest.
 """
 from __future__ import annotations
 
@@ -39,7 +31,6 @@ class Edition:
     default_persona: str
     capability_categories: tuple[str, ...]
     report_templates: tuple[str, ...]
-    policy_module: str
     suggested_tiers: tuple[str, ...]
     manifest: dict[str, Any]
 
@@ -63,7 +54,6 @@ def _load(manifest_path: Path) -> Edition | None:
         default_persona=str(m.get("default_persona") or "eli_neutral"),
         capability_categories=tuple(m.get("adds_capability_categories") or ()),
         report_templates=tuple(m.get("report_templates") or ()),
-        policy_module=str(m.get("policy_module") or f"eli.editions.{pkg}.policy"),
         suggested_tiers=tuple(m.get("suggested_tiers") or ()),
         manifest=m,
     )
@@ -83,30 +73,7 @@ def discover_editions() -> dict[str, Edition]:
     return out
 
 
-def get_edition(name: str) -> Edition | None:
-    return discover_editions().get(str(name).lower().strip())
-
-
-def active_editions(entitled: set[str] | None = None) -> dict[str, Edition]:
-    """Editions the current licence may use.
-
-    `entitled` is the set of edition names a validated licence grants. When None
-    (not yet wired to licence entitlements) we fall back to the always-available
-    'general' pack only, so the default experience is unchanged.
-
-    TODO(v3.1): source `entitled` from the bundle products this machine holds a
-    key for — each official bundle has its own key, checked with
-    eli.licensing.product_status(product). See eli/licensing/products.py.
-    """
-    found = discover_editions()
-    if entitled is None:
-        return {k: v for k, v in found.items() if v.name == "general"}
-    return {k: v for k, v in found.items() if v.name in entitled}
-
-
 __all__ = [
     "Edition",
     "discover_editions",
-    "get_edition",
-    "active_editions",
 ]

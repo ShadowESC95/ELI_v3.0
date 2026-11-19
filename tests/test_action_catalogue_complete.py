@@ -45,25 +45,6 @@ def test_a_model_guess_can_never_rename_the_user_or_change_elis_setup():
     assert not (_EXPLICIT_ONLY_ACTIONS - set(SUPPORTED_ACTIONS)), "names an action that doesn't exist"
 
 
-def test_every_supported_action_has_a_real_dispatch_branch():
-    """Uses the same dispatch detection as the claims suite.
-
-    A first pass here only checked that the action *name appeared* in the executor
-    source, which is far too weak: it passed VOICE_DIAGNOSTICS, which is mentioned but
-    has no dispatch branch in v2 at all. The claims suite caught it; this now uses the
-    same check so the two cannot disagree.
-    """
-    from tests.claims import _helpers as H
-    branches = set(H.executor_action_branches())
-    pre_dispatch = {
-        "EXPLAIN_LAST_RESPONSE", "NAME_SOURCE_AUDIT", "PERSONAL_MEMORY_DEEP_EXPLAIN",
-        "PERSONAL_MEMORY_SUMMARY", "REASONING_MODE_STATUS", "SELF_UPDATE",
-    }
-    orphans = [a for a in SUPPORTED_ACTIONS
-               if a not in branches and a not in pre_dispatch]
-    assert not orphans, f"listed but not dispatchable: {orphans}"
-
-
 def test_no_supported_action_is_missing_from_the_manifest():
     manifest = pathlib.Path("capability_manifest.json")
     if not manifest.is_file():

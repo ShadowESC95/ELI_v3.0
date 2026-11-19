@@ -70,18 +70,3 @@ def test_plus_claims_are_floors_not_ceilings(pattern, actual, label):
         f"README claims {claimed}+ {label} but the repo has {actual()} — "
         f"the floor is no longer true."
     )
-
-
-def test_readme_does_not_claim_formats_the_reader_cannot_open():
-    """.odt and .epub were advertised while falling through to the binary
-    text branch. If a format is named as readable, it must be dispatched."""
-    from eli.plugins.document_reader.plugin import DocumentReaderPlugin
-
-    src = Path(
-        REPO_ROOT / "eli" / "plugins" / "document_reader" / "plugin.py"
-    ).read_text(encoding="utf-8")
-    described = DocumentReaderPlugin.description.lower()
-
-    for fmt in ("pdf", "docx", "odt", "epub"):
-        if fmt in described:
-            assert f'".{fmt}"' in src, f"{fmt} is advertised but never dispatched"

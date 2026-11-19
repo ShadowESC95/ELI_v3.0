@@ -2,11 +2,10 @@
 """
 tts_router.py — TTS router for ELI.
 
-Priority:
-1. Piper (Python API, no binary required) — uses ONNX voices
-2. Piper CLI binary (fallback if Python API fails)
-3. pyttsx3
-4. espeak-ng / espeak
+The active voice decides the path, and there is no fallback from one kind to another:
+- character, cloned and natural voices (char:/clone:/natural:) are rendered by synthesize_wav;
+- a system voice (sys:) is spoken by pyttsx3, only when that voice is the one chosen;
+- every other voice is a Piper ONNX voice.
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ import os
 import re
 import shutil
 import sys
-import threading
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,10 +22,6 @@ from eli.utils.platform_compat import play_wav_blocking as _platform_play_wav_bl
 
 from eli.utils.log import get_logger
 log = get_logger(__name__)
-
-_LOCK = threading.Lock()
-_ENGINE = None  # lazy pyttsx3 engine
-_NO_BACKEND_CONFIRMED = False
 
 # Packaged builds place Piper assets under <project_root>/tts_piper/piper. Keep it as a search
 # location; don't duplicate or move assets. (PHASE13B_V2_PACKAGED_TTS_PIPER_SEARCH)
@@ -255,21 +249,6 @@ def _play_wav_bytes(wav_bytes: bytes) -> bool:
         return _play_wav_blocking(path)
     except Exception:
         return False
-
-
-def _raw_pcm_to_wav(raw_bytes: bytes, sample_rate: int = 22050) -> bytes:
-    """Wrap 16-bit mono PCM bytes from Piper CLI in a WAV container."""
-    if not raw_bytes:
-        return b""
-    import wave
-
-    wav_buf = io.BytesIO()
-    with wave.open(wav_buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(raw_bytes)
-    return wav_buf.getvalue()
 
 
 # Enumerating system voices is done OUT OF PROCESS on purpose — see below.
@@ -536,17 +515,6 @@ def set_active_voice(voice_name: str) -> None:
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     # (Piper Python API voice cache was removed; nothing to clear here)
-
-
-# ── Text cleanup ───────────────────────────────────────────────────────────
-
-def _clean_text(text: str) -> str:
-    text = (text or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"[*_`#>|]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:800]
 
 
 def _find_piper_bin() -> Optional[str]:

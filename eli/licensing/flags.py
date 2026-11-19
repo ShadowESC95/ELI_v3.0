@@ -9,7 +9,6 @@ only reprint the same message. Both entry points now call in here first.
 """
 from __future__ import annotations
 
-import json
 import sys
 
 LICENSE_FLAGS = (
@@ -103,9 +102,9 @@ def handle_license_flags(args: list[str]) -> int | None:
         return 0
 
     if "--license-status" in args:
-        payload = status_payload()
-        print(json.dumps(payload, indent=2))
-        return 0 if payload["active"] or not payload["required"] else 2
+        from eli.licensing.cli import _cmd_status
+
+        return _cmd_status(None)
 
     if "--deactivate-license" in args:
         from eli.licensing.activation import deactivate_license
@@ -117,18 +116,8 @@ def handle_license_flags(args: list[str]) -> int | None:
         return 1
 
     if "--start-trial" in args:
-        from eli.licensing.trial import grant_trial, trial_duration_days, trial_state
+        from eli.licensing.cli import _cmd_start_trial
 
-        state = grant_trial()
-        if state is None:
-            print(
-                f"Trial not available on this machine (state: {trial_state()}).",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"{trial_duration_days()}-day trial started.")
-        print(f"  reference:  {state.customer_ref}")
-        print(f"  expires_at: {state.expires_at}")
-        return 0
+        return _cmd_start_trial(None)
 
     return None

@@ -1,10 +1,8 @@
 """Offscreen GUI widget lane — construct REAL Qt widgets, headless.
 
-The full main window (`gui_eli_original.py`) blocks on device/display init and
-can't be built in CI. But the tab widgets construct standalone under the offscreen
-Qt platform (`QT_QPA_PLATFORM=offscreen`). This lane builds each one for real and
-asserts it wired its UI — recovering the GUI __init__/layout/wiring coverage that the
-mocked suite (PySide6 is a MagicMock there) structurally cannot reach.
+The tab widgets construct standalone under the offscreen Qt platform
+(`QT_QPA_PLATFORM=offscreen`). This lane builds each one for real and asserts it wired
+its UI. (The whole window is built offscreen by tests/_gui_runtime_checks.py.)
 
 Discipline: assertions are STRUCTURAL — the widget constructs, is a QWidget, and
 built child widgets. We don't drive user interactions that would fire real actions.
@@ -80,12 +78,8 @@ def test_coding_tab_constructs(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# labs_tab — every sub-tab constructs standalone
+# labs_tab
 # --------------------------------------------------------------------------- #
-LABS_SUBTABS = [
-    "_NotebookTab", "_JupyterTab", "_CalculatorTab", "_PhysicsTab", "_ReportTab",
-    "_FileChatTab", "_WorkspacesTab", "_SimIDETab", "_OrchestrationTab", "_TestReviewTab",
-]
 
 
 def test_labs_container_builds_full_tree(qapp):
@@ -104,30 +98,12 @@ def test_calculator_tab_has_inputs(qapp):
     fields = (w.findChildren(QLineEdit) + w.findChildren(QTextEdit)
               + w.findChildren(QPlainTextEdit))
     assert isinstance(w, QWidget)
-    assert len(w.findChildren(QWidget)) > 0
+    assert fields, "the calculator has nowhere to type"
 
 
 # --------------------------------------------------------------------------- #
-# panels / tabs / docks / widgets — every other GUI widget that constructs
-# standalone offscreen (the main window is the only piece that can't).
+# panels
 # --------------------------------------------------------------------------- #
-MORE_WIDGETS = [
-    ("eli.gui.panels.settings", "AdvancedSettingsDialog"),
-    ("eli.gui.panels.startup", "HardwareTuningDock"),
-    ("eli.gui.panels.startup", "StartupModelSelectionDialog"),
-    ("eli.gui.panels.startup", "FirstBootWizard"),
-    ("eli.gui.tabs.tasks_tab", "TasksTab"),
-    ("eli.gui.tabs.experimental_tab", "ExperimentalTab"),
-    ("eli.gui.tabs.eli_world_tab", "EliWorldTab"),
-    ("eli.gui.tabs.extensions_tab", "ExtensionsTab"),
-    ("eli.gui.tabs.extensions_tab", "AddMcpServerDialog"),
-    ("eli.gui.docks.operator_console_dock", "OperatorConsoleDock"),
-    ("eli.gui.docks.proactive_dock", "ProactiveDock"),
-    ("eli.gui.widgets.ollama_model_selector", "OllamaModelSelector"),
-    ("eli.gui.widgets.ollama_model_selector", "_StatusDot"),
-]
-
-
 def test_settings_dialog_builds_deep_tree(qapp):
     from eli.gui.panels.settings import AdvancedSettingsDialog
     w = AdvancedSettingsDialog()

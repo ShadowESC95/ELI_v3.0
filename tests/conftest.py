@@ -154,12 +154,16 @@ def _tests_never_launch_apps(monkeypatch, request):
     monkeypatch.setattr("eli.system.portable_app_control._popen", lambda args: False)
 
 
-@pytest.fixture(autouse=True)
-def _tests_never_launch_spotify(monkeypatch):
-    """A test that reached the real launcher started Spotify on the developer's machine and played
-    a song; with no display it would still spawn the process. Tests that need a launch stub it."""
-    monkeypatch.setattr("eli.execution.media_runtime.open_spotify",
-                        lambda: "Could not open Spotify: tests never launch it")
+@pytest.fixture
+def workspace():
+    """A throwaway folder inside the checkout (under artifacts/), for tests of code that only writes
+    inside the project: FIX_FILE and the patch-set engine refuse a path outside it."""
+    import shutil
+    import tempfile
+    from eli.runtime.self_improvement import PROJECT_ROOT
+    d = Path(tempfile.mkdtemp(prefix="workspace_", dir=str(PROJECT_ROOT / "artifacts")))
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture
@@ -361,9 +365,9 @@ def measurements_stay_on_this_machine(monkeypatch, tmp_path):
     monkeypatch.setattr(model_tier, "_speed_ema", 0.0)
 
 
-# ── Auto-updating test-results document ──────────────────────────────────────
-# Every pytest run (re)writes artifacts/test_report.md with the live results, so
-# the report is dynamic — never stale. ELI's RUN_TESTS action reads/summarises it.
+# ── What the run wrote outside its sandbox ───────────────────────────────────
+# (The results document RUN_TESTS, the scheduled audit and the test review read is written by
+# tools/run_test_report.py, not here.)
 def pytest_sessionfinish(session, exitstatus):
     asked = Path(session.config.getoption("xmlpath", None) or ROOT / "-").resolve()   # --junitxml
     escaped = _written_since(_STATE_BEFORE, asked)
@@ -372,54 +376,3 @@ def pytest_sessionfinish(session, exitstatus):
               "state were written or made during the run:", *escaped, sep="\n  ")
         if os.environ.get("CI") or os.environ.get("ELI_TEST_STRICT_ISOLATION"):
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    try:
-        import datetime
-        from collections import defaultdict
-        tr = session.config.pluginmanager.get_plugin("terminalreporter")
-        if tr is None:
-            return
-        stats = tr.stats
-        order = ("passed", "failed", "error", "xfailed", "xpassed", "skipped")
-        totals = {k: len(stats.get(k, [])) for k in order}
-        total = sum(totals.values())
-        per_file = defaultdict(lambda: defaultdict(int))
-        failures = []
-        for outcome in order:
-            for rep in stats.get(outcome, []):
-                nid = getattr(rep, "nodeid", "?")
-                f = nid.split("::", 1)[0]
-                per_file[f][outcome] += 1
-                per_file[f]["total"] += 1
-                if outcome in ("failed", "error"):
-                    failures.append(nid)
-        out = [
-            "# ELI — Test Suite Report (auto-generated)",
-            f"\n*Updated {datetime.datetime.now().isoformat(timespec='seconds')} "
-            f"on every `pytest` run.*\n",
-            "## Totals\n",
-            f"- **Total:** {total}",
-            f"- **Passed:** {totals['passed']}",
-            f"- **Failed:** {totals['failed'] + totals['error']}",
-            f"- **xfailed (known gaps):** {totals['xfailed']}",
-            f"- **xpassed (gap fixed?):** {totals['xpassed']}",
-            f"- **Skipped:** {totals['skipped']}",
-            f"\n**Verdict:** {'✅ GREEN' if (totals['failed'] + totals['error']) == 0 else '❌ FAILURES'}\n",
-            "## Per-file\n",
-            "| Test file | Total | Pass | Fail | xfail | skip |",
-            "|---|---|---|---|---|---|",
-        ]
-        for f in sorted(per_file):
-            c = per_file[f]
-            out.append(f"| `{f}` | {c['total']} | {c.get('passed',0)} | "
-                       f"{c.get('failed',0)+c.get('error',0)} | {c.get('xfailed',0)} | "
-                       f"{c.get('skipped',0)} |")
-        if failures:
-            out.append("\n## Failures\n")
-            out += [f"- `{x}`" for x in failures[:200]]
-        _adir = os.environ.get("ELI_ARTIFACTS_DIR")
-        _base = Path(_adir).expanduser() if _adir else (ROOT / "artifacts")
-        rep_path = _base / "test_report.md"
-        rep_path.parent.mkdir(parents=True, exist_ok=True)
-        rep_path.write_text("\n".join(out) + "\n", encoding="utf-8")
-    except Exception:
-        pass

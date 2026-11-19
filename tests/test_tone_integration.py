@@ -14,8 +14,8 @@ def test_build_situation_brief_includes_tone_directive(monkeypatch):
         "I'm furious about this bug",
         include_timeline=False,
     )
-    assert "[Tone —" in brief or "calm" in brief.lower()
-    assert "furious" in brief.lower() or "Speaker voice cue" in brief
+    assert "[Tone — calm:" in brief
+    assert "[Speaker voice cue — the user sounds angry" in brief
 
 
 def test_voice_and_text_share_current_tone(monkeypatch):

@@ -9,7 +9,6 @@
     "Document",
     "Technical Report"
   ],
-  "policy_module": "eli.editions.base.policy",
   "requires_core": ">=3.1",
   "suggested_tiers": [
     "trial",

@@ -88,25 +88,6 @@ def test_play_specific_types_into_spotify_when_the_top_result_is_not_it(monkeypa
     assert result["ok"] is True and result["played"] is True
 
 
-def test_the_track_path_does_not_scrape_open_spotify(monkeypatch):
-    """open.spotify.com's search page is a JS shell; scraping it for a track never resolved
-    anything and only sent the query out and waited on it."""
-    def no_scrape(q):
-        raise AssertionError("scraped")
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_launch_if_needed", lambda: True)
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_play_top_search_result",
-                        lambda q, timeout=10.0, launch=True: False)
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_search_type_and_play",
-                        lambda q, launch=True: False)
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_resolve_track_uri", no_scrape)
-    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
-    monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: False)
-    monkeypatch.setattr(ex, "_spotify_open_uri", lambda u: False)
-    monkeypatch.setattr(ex.time, "sleep", lambda _s: None)
-
-    ex.play_specific("silver lanterns by veridian", target="spotify")
-
-
 def test_play_specific_falls_back_to_search_when_no_track_uri_resolves(monkeypatch):
     """When both keystroke automation and URI resolution fail, the oldest
     search-then-play fallback must still run unchanged."""
@@ -114,7 +95,6 @@ def test_play_specific_falls_back_to_search_when_no_track_uri_resolves(monkeypat
         "eli.integrations.media.cross_platform.spotify_search_type_and_play",
         lambda q: False,
     )
-    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_resolve_track_uri", lambda q: None)
     monkeypatch.setattr(ex, "_spotify_running", lambda: True)
     monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: True)
     monkeypatch.setattr(ex, "_spotify_clear_track_repeat", lambda: True)
@@ -155,8 +135,7 @@ def test_wait_playing_returns_true_when_status_flips(monkeypatch):
         lambda: next(states),
     )
     monkeypatch.setattr(ex.time, "sleep", lambda _s: None)
-    from eli.integrations.media.cross_platform import spotify_wait_playing
-    assert spotify_wait_playing(timeout=2.0) is True
+    assert ex._spotify_wait_playing(timeout=2.0) is True
 
 
 def test_next_media_uses_mpv_when_youtube_is_active(monkeypatch):

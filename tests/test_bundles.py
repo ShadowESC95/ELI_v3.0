@@ -361,11 +361,21 @@ def test_eli_vr_has_an_edition_pack_like_the_others():
     packs = discover_editions()
     assert {"legal", "vr"} <= set(packs)
     vr = packs["vr"]
-    assert vr.label == "ELI VR" and vr.policy_module == "eli.editions.vr.policy"
-    import importlib
+    assert vr.label == "ELI VR" and vr.manifest.get("app", {}).get("files")
 
-    policy = importlib.import_module(vr.policy_module)
-    assert policy.blocked_actions() == set() and policy.output_disclaimer() is None
+
+def test_the_desktop_searched_is_the_one_this_machine_names(tmp_path, monkeypatch):
+    """A desktop named in another language (XDG user dirs) was never looked in: the search named
+    ~/Desktop and ~/Downloads literally."""
+    if sys.platform != "linux":
+        pytest.skip("XDG user dirs are a Linux desktop's")
+    bureau, telechargements = tmp_path / "Bureau", tmp_path / "Téléchargements"
+    bureau.mkdir()
+    telechargements.mkdir()
+    monkeypatch.setenv("XDG_DESKTOP_DIR", str(bureau))
+    monkeypatch.setenv("XDG_DOWNLOAD_DIR", str(telechargements))
+    folders = bundles._search_folders()
+    assert bureau in folders and telechargements in folders
 
 
 def test_eli_vr_on_the_desktop_is_found_without_being_registered(isolated, monkeypatch):

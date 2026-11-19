@@ -4,14 +4,6 @@ from __future__ import annotations
 import argparse
 
 
-def _has_venv() -> bool:
-    try:
-        from eli.setup.status import has_venv
-        return has_venv()
-    except Exception:
-        return False
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="ELI v2.0 setup wizard and status checks")
     parser.add_argument("--wizard", action="store_true", help="Open the graphical setup wizard")

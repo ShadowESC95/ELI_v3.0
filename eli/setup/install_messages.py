@@ -82,12 +82,6 @@ INSTALL_MESSAGES: Dict[str, List[str]] = {
     ],
 }
 
-_PHASE_ORDER = (
-    "welcome", "system", "venv", "torch", "llama", "eli",
-    "database", "model", "assets", "desktop", "finish",
-)
-
-
 def messages_for_phase(phase: str) -> List[str]:
     pool = list(INSTALL_MESSAGES.get(phase, []))
     pool.extend(INSTALL_MESSAGES.get("witty", []))

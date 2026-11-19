@@ -44,6 +44,43 @@ def test_a_request_never_stands_in_for_the_loaded_window(monkeypatch):
     assert G._effective_ctx_limit(object()) == 0               # unknown, not 12000 and not 4096
 
 
+# A live session's streaming preflight sized a prompt against the 12200 that was asked for while the
+# model had loaded at 6144: llm.n_ctx() is cross-checked against what load_model() recorded, and a
+# larger live read never overrides the smaller recorded figure.
+def test_stale_larger_live_read_is_capped_by_the_recorded_effective_ctx(monkeypatch):
+    """The exact field case: llm.n_ctx() says 12200, load_model()'s own
+    record says the true effective ctx was 6144 -- 6144 must win."""
+    monkeypatch.setattr(G, "_model_train_ctx", lambda: 32768)
+    monkeypatch.setattr(
+        G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"effective": {"n_ctx": 6144}}, raising=False,
+    )
+    assert G._effective_ctx_limit(_Loaded(12200)) == 6144
+
+
+def test_agreeing_values_are_unaffected(monkeypatch):
+    monkeypatch.setattr(G, "_model_train_ctx", lambda: 32768)
+    monkeypatch.setattr(
+        G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"effective": {"n_ctx": 6144}}, raising=False,
+    )
+    assert G._effective_ctx_limit(_Loaded(6144)) == 6144
+
+
+def test_no_recorded_report_yet_falls_back_to_live_read(monkeypatch):
+    """Must not regress the normal case (no report published yet, e.g. very
+    first load) -- min(loaded, train) still applies with nothing to cross-check."""
+    monkeypatch.setattr(G, "_model_train_ctx", lambda: 32768)
+    monkeypatch.setattr(G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {}, raising=False)
+    assert G._effective_ctx_limit(_Loaded(6144)) == 6144
+
+
+def test_trained_window_smaller_than_both_still_wins(monkeypatch):
+    monkeypatch.setattr(G, "_model_train_ctx", lambda: 4096)
+    monkeypatch.setattr(
+        G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"effective": {"n_ctx": 6144}}, raising=False,
+    )
+    assert G._effective_ctx_limit(_Loaded(12200)) == 4096
+
+
 def test_context_window_prefers_what_loaded_then_what_was_published(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_llm", _Loaded(6144), raising=False)
     monkeypatch.setattr(G, "_model_train_ctx", lambda *a: 0)

@@ -11,7 +11,7 @@ from pathlib import Path
 from eli.licensing.products import PLATFORM, default_major, parse_includes, product_ids, product_label
 from eli.licensing.signature import issue_license_key
 from eli.licensing.tiers import default_expires_at, default_seats, eula_path, tier_config
-from eli.licensing.types import LicensePayload, key_format_version
+from eli.licensing.types import VALID_TIERS, LicensePayload, key_format_version
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,7 +30,7 @@ def main() -> int:
                     help="an official bundle this ELI v3 key includes (a bundled sale); repeatable")
     ap.add_argument("--major-version", type=int, default=0,
                     help="major version line the key covers (0 = 3 for eli, 1 for a bundle)")
-    ap.add_argument("--tier", required=True, choices=["trial", "personal", "pro", "enterprise"])
+    ap.add_argument("--tier", required=True, choices=sorted(VALID_TIERS))
     ap.add_argument("--customer-ref", required=True, help="Order id (Ko-fi, Stripe, invoice #)")
     ap.add_argument("--seats", type=int, default=0, help="Override seats (0 = tier default)")
     ap.add_argument("--expires", help="Override expiry ISO date")

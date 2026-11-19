@@ -78,8 +78,9 @@ def test_dir_size_gib_sums_every_file_under_the_directory(tmp_path):
     assert round(mem_units.dir_size_gib(d), 3) == 1.0
 
 
-def test_discover_models_agrees_with_moe_plan_for_load_for_the_same_file(tmp_path, monkeypatch):
-    """The exact incident: two code paths measuring the same file must now agree."""
+def test_discover_models_agrees_with_the_load_plan_for_the_same_file(tmp_path):
+    """The exact incident: two code paths measuring the same file must now agree. The load plan
+    (eli/core/load_plan.py) sizes a model with mem_units.file_size_gib."""
     model = tmp_path / "qwen-moe.gguf"
     _sparse(model, int(19.71 * 1024 ** 3))
 
@@ -87,10 +88,6 @@ def test_discover_models_agrees_with_moe_plan_for_load_for_the_same_file(tmp_pat
     assert len(models) == 1
     from_tuning_pass = models[0]["size_gb"]
 
-    monkeypatch.setattr(
-        "eli.core.hardware_profile.get_live_gpu_telemetry", lambda: {"free_mb": 6000},
-    )
-    monkeypatch.setattr("eli.core.moe_offload.profile", lambda *_a, **_k: None)  # not MoE, just size math
     from_load_time = mem_units.file_size_gib(model)
 
     assert round(from_tuning_pass, 4) == round(from_load_time, 4)

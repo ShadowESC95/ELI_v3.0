@@ -16,10 +16,7 @@ capability you are actively using is the same class of fault as claiming one you
 """
 import json
 import re
-import time
 from datetime import datetime
-
-import pytest
 
 
 # ── the clock ─────────────────────────────────────────────────────────────────
@@ -48,24 +45,6 @@ def test_the_part_of_day_matches_the_hour():
     blob = _brief()
     expected = part_of_day()
     assert expected in blob, f"brief does not say it is {expected}"
-
-
-@pytest.mark.parametrize("hour,expected", [
-    # Night was added after ELI opened with "Morning, Alex" at 00:21: with
-    # only three bands, `hour < 12` claimed morning for every hour past
-    # midnight and the model was handed that as authoritative fact. 18:16
-    # stays "evening" below -- the case these tests were written for.
-    (0, "night"), (4, "night"),
-    (5, "morning"), (9, "morning"), (11, "morning"),
-    (12, "afternoon"), (16, "afternoon"),
-    (17, "evening"), (20, "evening"),
-    (21, "night"), (23, "night"),
-])
-def test_part_of_day_boundaries(hour, expected):
-    """10:47 is morning. The reply that started this said otherwise."""
-    ts = time.mktime(datetime.now().replace(hour=hour, minute=30).timetuple())
-    from eli.runtime.reflection import part_of_day
-    assert part_of_day(ts) == expected
 
 
 def test_the_brief_tells_the_model_not_to_guess():

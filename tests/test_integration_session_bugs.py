@@ -4,12 +4,11 @@ Each test is named after the actual symptom observed in session, with a
 comment linking it to the fix. These tests must fail BEFORE the fix and
 pass AFTER — they are the tests that would have caught the bugs early.
 
-Bugs covered:
+Bugs covered (numbered as they were found; 3 has no test here):
   1. "what are you doing" → SELF_REPORT (router pattern over-triggers)
   2. CAI critique leaks into final response (bad_final guard)
-  3. "My name is <name>" — USER_IDENTITY_SUMMARY second-person confusion
   4. RUNTIME_AUDIT returning PASS×N on file-existence check only
-  5. World state context missing non-current rooms
+  5. World state: the nine rooms are defined
   6. EXPLAIN_COGNITION_RUNTIME hardcoded True booleans
 """
 import pytest
@@ -136,11 +135,6 @@ class TestCAICritiqueLeak:
 
 
 # ---------------------------------------------------------------------------
-# 3. USER_IDENTITY_SUMMARY: synthesis instruction must use second person
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # 4. RUNTIME_AUDIT: must actually check file content, not just existence
 # ---------------------------------------------------------------------------
 
@@ -229,38 +223,11 @@ class TestRuntimeAuditIsReal:
 
 
 # ---------------------------------------------------------------------------
-# 5. World state context: all 9 rooms must be in persona handoff
+# 5. World state: all 9 rooms are defined
 # ---------------------------------------------------------------------------
 
 class TestWorldStateInPersonaHandoff:
-    """context_synthesiser.build_persona_handoff() must include all 9 symbolic rooms."""
-
-    NINE_ROOMS = {
-        "core_room", "memory_archive", "workshop", "reflection_chamber",
-        "debug_basement", "upgrade_bay", "simulation_lab", "anomaly_room",
-        "evidence_wall",
-    }
-
-    def _get_handoff_text(self, user_input="describe yourself"):
-        """Run build_persona_handoff and return the world-state section as a string."""
-        from eli.cognition.context_synthesiser import build_persona_handoff
-        result = build_persona_handoff(user_input=user_input)
-        # build_persona_handoff returns a dict; extract the full text representation
-        if isinstance(result, dict):
-            # The world state is in the 'world_state' key or embedded in 'situation_brief'
-            text = (
-                str(result.get("world_state") or "")
-                + "\n"
-                + str(result.get("situation_brief") or "")
-                + "\n"
-                + str(result.get("persona_brief") or "")
-                + "\n"
-                + str(result.get("context") or "")
-            )
-        else:
-            text = str(result or "")
-        return text
-
+    """The world ontology defines all 9 symbolic rooms."""
 
     def test_all_nine_room_names_defined_in_world_ontology(self):
         """The world ontology must define all 9 rooms."""

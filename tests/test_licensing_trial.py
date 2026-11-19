@@ -461,8 +461,15 @@ def test_license_flags_are_handled_before_any_gate(retail_env, signing, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["required"] is True
     assert payload["trial"]["state"] == "available"
+    # The flag and the eli-license command are one implementation: same code, same answer.
+    from eli.licensing import cli
+    assert cli.main(["status"]) == 2
+    assert json.loads(capsys.readouterr().out) == payload
 
     assert handle_license_flags(["--start-trial"]) == 0
+    assert "trial started" in capsys.readouterr().out
+    assert cli.main(["start-trial"]) == 1, "a trial already started is not started again"
+    capsys.readouterr()
     assert T.trial_state() == "active"
 
     assert handle_license_flags(["--activate-key", _paid_key(signing)]) == 0

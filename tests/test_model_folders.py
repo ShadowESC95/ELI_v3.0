@@ -172,3 +172,18 @@ def test_the_home_and_temporary_folders_and_what_holds_them_are_never_model_fold
     with pytest.raises(ValueError, match="home folder"):
         mf.add_model_folder(home)
     assert mf.remember_folder_of(home / "loose.gguf") is False
+
+
+def test_setup_finds_a_chat_model_kept_in_a_folder_the_user_named(own, settings, tmp_path, monkeypatch):
+    """Setup scanned only <checkout>/models, said the chat model was missing and downloaded another
+    for a user whose models were in a folder they had named."""
+    from eli.setup import status
+    monkeypatch.setenv("ELI_PROJECT_ROOT", str(tmp_path / "project"))
+    assert status.has_chat_model() is False
+    named = tmp_path / "elsewhere"
+    named.mkdir()
+    (named / "nomic-embed-text.gguf").write_bytes(b"")           # an embedder is not a chat model
+    monkeypatch.setenv(mf.ENV, str(named))
+    assert status.has_chat_model() is False
+    (named / "a-chat-model.gguf").write_bytes(b"")
+    assert status.has_chat_model() is True

@@ -7,27 +7,40 @@ stop. Purging the text doesn't help: the mechanism just latches onto a new phras
 
 The output-side echo guard cannot fire on the streaming path (it lives in finalize,
 which streaming never reaches), so the contract has to be stated in the prompt, where
-it applies to every path. This tests the block the engine appends after chat history.
+it applies to every path. This tests the block the engine puts ahead of the persona handoff.
 """
 from __future__ import annotations
+
+from eli.kernel.engine import CognitiveEngine
 
 LOOP = ("I'm standing by, still got that post-breakfast haze and Puffin Cove "
         "on repeat. Everything's fine. How are you?")
 
 
+class _NoStore:
+    """No stored conversation: only the turns the test hands over are read."""
+    def get_recent_conversation(self, **_kw):
+        return []
+
+
+class _Engine:
+    """The engine's own contract builder and reply collector, with nothing else of the engine."""
+    memory = _NoStore()
+    _collect_recent_assistant_replies = CognitiveEngine._collect_recent_assistant_replies
+    _inject_anti_repeat_contract = CognitiveEngine._inject_anti_repeat_contract
+
+
 def _build_contract(conversations):
-    """Mirror of the engine's anti-repeat block (kernel/engine.py, chat-history build)."""
-    said = [str(t.get("content") or "").strip()
-            for t in conversations
-            if str(t.get("role") or "").lower() in ("assistant", "eli")
-            and str(t.get("content") or "").strip()]
-    if not said:
-        return ""
-    quoted = "\n".join(f"  - {s[:220]}" for s in said[:3])
-    return ("YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of it, and do not "
-            "re-ask a question the user has already answered:\n" + quoted +
-            "\nRespond to what the user just said. If you have already described your own "
-            "state or mood, do not describe it again unless they ask.")
+    return _Engine()._inject_anti_repeat_contract("what happens next?", "", recent_turns=conversations)
+
+
+def test_the_retry_can_find_the_contract_to_take_it_out():
+    """The retry strips this block by its wording (guards._ANTI_REPEAT_BLOCK_RE): the two must agree."""
+    from eli.kernel.stages.guards import _ANTI_REPEAT_BLOCK_RE
+    c = _build_contract([{"role": "assistant", "content": LOOP}])
+    assert _ANTI_REPEAT_BLOCK_RE.search(c)
+    assert _Engine()._inject_anti_repeat_contract("what happens next?", c, recent_turns=[
+        {"role": "assistant", "content": LOOP}]) == c, "a brief that already holds it gets no second one"
 
 
 def test_contract_is_emitted_when_eli_has_spoken():

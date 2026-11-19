@@ -11,19 +11,7 @@ carve-out, no import verification after writing, no automatic rollback.
 from __future__ import annotations
 
 import pathlib
-import shutil
-import tempfile
 
-import pytest
-
-
-@pytest.fixture
-def workspace():
-    from eli.execution import executor_enhanced as EX
-    root = getattr(EX, "PROJECT_ROOT", pathlib.Path(".").resolve())
-    d = pathlib.Path(tempfile.mkdtemp(prefix="fixfile_safety_", dir=str(root / "artifacts")))
-    yield d
-    shutil.rmtree(d, ignore_errors=True)
 
 
 # ── is_protected_patch_path() ────────────────────────────────────────────────

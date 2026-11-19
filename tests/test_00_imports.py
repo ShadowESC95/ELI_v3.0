@@ -1,7 +1,9 @@
 """
 test_00_imports.py
 ==================
-Parametrised import test for EVERY Python module in the eli package.
+Parametrised import test over the listed eli modules: the one import sweep (the runtime
+and claims suites' own lists were folded into it). The list is kept true to what is on disk;
+it does not name every module.
 If a module can't be imported its error is shown; the rest keep running.
 
 Run:  pytest tests/test_00_imports.py -v
@@ -60,10 +62,6 @@ ALL_MODULES = [
     "eli.gui.widgets.ollama_model_selector",
     # ── integrations ──────────────────────────────────────────────────────────
     "eli.integrations",
-    "eli.integrations.local_gguf",
-    "eli.integrations.local_gguf.config",
-    "eli.integrations.local_gguf.inference",
-    "eli.integrations.local_gguf.paths",
     "eli.integrations.mpris",
     "eli.integrations.mpris.playerctl_backend",
     "eli.integrations.ollama",
@@ -184,6 +182,23 @@ ALL_MODULES = [
     "eli.utils.platform_compat",
     # ── top-level ─────────────────────────────────────────────────────────────
     "eli",
+    # load-bearing modules the runtime and claims suites used to import in lists of their own
+    "eli.cognition.reasoning_modes",
+    "eli.runtime.evidence_planner",
+    "eli.runtime.report_pipeline",
+    "eli.runtime.grounding_escalation",
+    "eli.runtime.code_examiner",
+    "eli.runtime.scheduled_tasks",
+    "eli.runtime.background_tasks",
+    "eli.runtime.background_deepening",
+    "eli.runtime.deterministic_grounding_gate",
+    "eli.runtime.evidence_ledger",
+    "eli.runtime.state_providers",
+    "eli.runtime.active_project",
+    "eli.core.dag",
+    "eli.core.model_tier",
+    "eli.perception.vision",
+    "eli.tools.registry.capabilities_doc",
 ]
 
 
@@ -197,8 +212,3 @@ def test_module_imports(module_path):
         pytest.fail(f"ImportError in {module_path}: {exc}")
     except Exception as exc:
         pytest.fail(f"Unexpected error in {module_path}: {type(exc).__name__}: {exc}")
-
-
-def test_import_count():
-    """Sanity: we are testing the expected number of modules."""
-    assert len(ALL_MODULES) >= 120, "Module list seems incomplete"

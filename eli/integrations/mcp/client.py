@@ -21,6 +21,7 @@ Design constraints that shaped this:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shutil
@@ -336,3 +337,7 @@ def shutdown_all() -> None:
         for sess in list(_SESSIONS.values()):
             sess.stop()
         _SESSIONS.clear()
+
+
+# The servers ELI started are stopped when ELI exits, instead of being left to notice their stdin close.
+atexit.register(shutdown_all)

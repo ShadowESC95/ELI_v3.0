@@ -3,14 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from eli.learning.dataset_filters import write_jsonl
 from eli.learning.export_trainable_dataset import export_for_target
-
-
-def write_jsonl(path: Path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
 
 
 def read_jsonl(path: Path):

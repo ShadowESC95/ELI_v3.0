@@ -100,11 +100,6 @@ def build_install_command(root: Optional[Path] = None) -> List[str]:
     return cmd
 
 
-def shutil_which(name: str) -> Optional[str]:
-    import shutil
-    return shutil.which(name)
-
-
 def run_install_streaming(
     *,
     on_line: Callable[[str], None],
@@ -175,11 +170,3 @@ def python3_available() -> Tuple[bool, str]:
         return True, out
     except Exception as exc:
         return False, str(exc)
-
-
-def qt_available() -> bool:
-    try:
-        from eli.gui.qt_compat import QApplication  # noqa: F401
-        return True
-    except Exception:
-        return False

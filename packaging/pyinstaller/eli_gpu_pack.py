@@ -537,14 +537,6 @@ def _libdir_has_vulkan_natives(libdir: Path) -> bool:
     return bool(list(libdir.glob("libggml-vulkan.so*")))
 
 
-def _libdir_has_cudart(libdir: Path) -> bool:
-    if not libdir.is_dir():
-        return False
-    if sys.platform == "win32":
-        return bool(list(libdir.glob("cudart64*.dll")))
-    return bool(list(libdir.glob("libcudart.so*")))
-
-
 def _assert_cuda_runtime_complete(libdir: Path) -> None:
     """Fail closed when a CUDA ggml backend is present without vendored cudart/cublas."""
     if not _libdir_has_cuda_natives(libdir):
@@ -1436,10 +1428,6 @@ def _shared_memory_gpu() -> bool:
         return bool(getattr(hw, "gpu_integrated", False))
     except Exception:
         return False
-
-
-def _intel_integrated_gpu() -> bool:
-    return _shared_memory_gpu()
 
 
 def _verify(dest: Path, *, require_offload: bool = True) -> tuple[bool, str]:

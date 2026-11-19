@@ -1,6 +1,4 @@
 """Coding advancements D (self-critique) + E (atomic multi-file patch set)."""
-import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -21,14 +19,6 @@ def test_critique_empty_when_ok_or_no_model():
 
 
 # ── E — atomic multi-file patch set ─────────────────────────────────────────
-@pytest.fixture
-def workspace():
-    from eli.runtime.self_improvement import PROJECT_ROOT
-    d = Path(tempfile.mkdtemp(prefix="patchset_", dir=str(PROJECT_ROOT / "artifacts")))
-    yield d
-    shutil.rmtree(d, ignore_errors=True)
-
-
 def _eng():
     from eli.runtime.self_improvement import get_self_improvement
     return get_self_improvement()

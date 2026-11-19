@@ -428,8 +428,6 @@ GUARDED_EXACT = {
     "settings", "spotify", "terminal", "browser", "chrome", "firefox",
 }
 
-DUCK_LEVEL = os.environ.get("ELI_STT_DUCK_LEVEL", "15%")
-RESTORE_DELAY_S = float(os.environ.get("ELI_STT_RESTORE_DELAY", "0.20"))
 MAIN_TIMEOUT = float(os.environ.get("ELI_STT_MAIN_TIMEOUT", "1.2"))
 ARMED_MAIN_TIMEOUT = float(os.environ.get("ELI_STT_ARMED_MAIN_TIMEOUT", "4.0"))
 PHRASE_TIME_LIMIT = float(os.environ.get("ELI_STT_PHRASE_TIME_LIMIT", "6.0"))
@@ -872,64 +870,6 @@ def _is_guarded_command(text: str) -> bool:
     if t in GUARDED_EXACT:
         return True
     return any(t.startswith(prefix) for prefix in GUARDED_PREFIXES)
-
-
-_VOL_RE = re.compile(r"(\d+)%")
-
-
-def _get_current_volume() -> Optional[str]:
-    from eli.utils import platform_compat as _pc
-    try:
-        vol = _pc.get_volume()
-        if vol is not None:
-            return f"{int(vol)}%"
-    except Exception:
-        log.debug("[AUDIO] platform volume read failed", exc_info=True)
-    if _pc.LINUX:
-        try:
-            out = subprocess.check_output(
-                ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            m = _VOL_RE.search(out)
-            if m:
-                return f"{m.group(1)}%"
-        except Exception:
-            log.debug("[AUDIO] pactl volume read failed", exc_info=True)
-    return None
-
-
-def _set_volume(level: str) -> None:
-    from eli.utils import platform_compat as _pc
-    try:
-        pct = str(level).strip().rstrip("%")
-        if pct.isdigit() and _pc.set_volume(int(pct)):
-            return
-    except Exception:
-        log.debug("[AUDIO] platform volume set failed", exc_info=True)
-    if _pc.LINUX:
-        try:
-            subprocess.Popen(
-                ["pactl", "set-sink-volume", "@DEFAULT_SINK@", str(level)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            log.debug("[AUDIO] pactl volume set failed", exc_info=True)
-
-
-def _duck(prev_vol: Optional[str]) -> None:
-    _set_volume(DUCK_LEVEL)
-
-
-def _restore(prev_vol: Optional[str]) -> None:
-    if prev_vol:
-        _set_volume(prev_vol)
-
-
-def _restore_later(prev_vol: Optional[str], delay_s: float = RESTORE_DELAY_S) -> None:
-    threading.Timer(delay_s, _restore, args=(prev_vol,)).start()
 
 
 def _mic_resolver_diagnostics() -> dict:
@@ -1545,7 +1485,6 @@ class ELIAudioSTT:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._voice_gate = VoiceGate()
-        self._ducked_vol = None  # stored during wake word duck
         self._eli_duck_snapshot = None
         self._eli_ignore_until = 0.0
         self._eli_ignore_reason = ""

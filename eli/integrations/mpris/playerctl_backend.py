@@ -670,10 +670,9 @@ def toggle_mute() -> Dict[str, Any]:
 
 def _clipboard_backend() -> str:
     """Detect best available clipboard backend."""
-    session = os.environ.get("XDG_SESSION_TYPE", "").lower()
-    wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+    from eli.system.portable_app_control import display_server
 
-    if wayland_display or session == "wayland":
+    if display_server() == "wayland":
         if _has("wl-copy"):
             return "wayland"
 

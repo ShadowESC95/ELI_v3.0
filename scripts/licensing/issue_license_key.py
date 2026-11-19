@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from eli.licensing.products import default_major, parse_includes, product_ids, product_label
 from eli.licensing.signature import issue_license_key
 from eli.licensing.tiers import default_expires_at, default_seats, tier_config
-from eli.licensing.types import LicensePayload, key_format_version
+from eli.licensing.types import VALID_TIERS, LicensePayload, key_format_version
 
 
 def main() -> int:
@@ -20,7 +20,7 @@ def main() -> int:
                     help="an official bundle this ELI v3 key includes (a bundled sale); repeatable")
     parser.add_argument("--major-version", type=int, default=0,
                         help="major version line the key covers (0 = 3 for eli, 1 for a bundle)")
-    parser.add_argument("--tier", required=True, choices=["trial", "personal", "pro", "enterprise"])
+    parser.add_argument("--tier", required=True, choices=sorted(VALID_TIERS))
     parser.add_argument("--seats", type=int, default=0, help="0 = tier default from tier_policy.json")
     parser.add_argument("--expires", help="ISO date expiry (optional; trial defaults from policy)")
     parser.add_argument("--customer-ref", help="Optional order id or customer reference")

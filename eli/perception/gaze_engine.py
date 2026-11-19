@@ -43,7 +43,6 @@ log = get_logger(__name__)
 # The kit lives in experimental/; inject it once, lazily.
 _GAZE_CORE_CANDIDATES: list[Path] = [
     Path(__file__).resolve().parents[2] / "experimental" / "eli_ar_avatar_kit" / "eli_gaze_core",
-    Path(__file__).resolve().parents[2] / "experimental" / "eli_ar_avatar_kit_v5_bad_calibration_backup_20260510_223039" / "eli_gaze_core",
 ]
 
 _gaze_core_injected = False

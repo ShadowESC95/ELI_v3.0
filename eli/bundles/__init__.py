@@ -162,8 +162,10 @@ def bundle_apps() -> dict[str, dict[str, Any]]:
 
 def _search_folders() -> list[Path]:
     """Where a downloaded application is usually put: the desktop, downloads, an applications folder."""
+    from eli.utils.platform_compat import user_dirs
     home = Path.home()
-    out = [home / "Desktop", home / "Downloads", home / "Applications"]
+    dirs = user_dirs()      # the desktop and downloads folders as this machine names them (XDG user dirs)
+    out = [Path(dirs["desktop"]), Path(dirs["downloads"]), home / "Applications"]
     if sys.platform == "darwin":
         out.append(Path("/Applications"))
     if sys.platform == "win32":

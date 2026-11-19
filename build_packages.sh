@@ -307,13 +307,14 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
             ;;
         macos)
             echo ""
-            if [ -f "$PROJECT_ROOT/packaging/macos/build-macos-app.sh" ]; then
-                echo "[macos] Invoking packaging/macos/build-macos-app.sh…"
-                bash "$PROJECT_ROOT/packaging/macos/build-macos-app.sh" "$VERSION" || \
-                    echo "[macos] macOS builder failed (run on macOS for a real .dmg)."
+            # The release build's own two steps (.github/workflows/release.yml): freeze the app, then the .dmg.
+            if [ "$(uname -s)" = "Darwin" ]; then
+                echo "[macos] pyinstaller ELI.spec, then packaging/macos/build-dmg.sh…"
+                ( cd "$PROJECT_ROOT" && pyinstaller --noconfirm --clean ELI.spec \
+                    && bash packaging/macos/build-dmg.sh ) || echo "[macos] macOS build failed."
             else
-                echo "[macos] No macOS builder yet (packaging/macos/ does not exist)."
-                echo "[macos] macOS users: install from source — bash install.sh (Metal auto-detected)."
+                echo "[macos] The .dmg is built on a Mac (pyinstaller ELI.spec, then packaging/macos/build-dmg.sh)."
+                echo "[macos] macOS users can also install from source — bash install.sh (Metal auto-detected)."
             fi
             ;;
         windows-lean)
@@ -415,8 +416,7 @@ echo "[finalise] Computing SHA-256 checksums…"
                           eli-mkxi_*_amd64.deb 2>/dev/null \
                           ELI_v3-*-windows-portable*.zip 2>/dev/null \
                           ELI_v3-*-windows-arm64-portable*.zip 2>/dev/null \
-                          ELI_v3-*-linux-portable.tar.gz 2>/dev/null \
-                          ELI_v3-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
+                          ELI_v3-*-linux-portable.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
 
 cat > "$DIST/RELEASE_NOTES.md" <<EOF
 # ELI v3 ${VERSION}
