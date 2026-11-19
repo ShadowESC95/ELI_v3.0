@@ -270,8 +270,9 @@ def _tracks_in(rows, lines_fmt) -> str:
     a row written before results did is read from the executor's own result formats: “query”,
     (Artist — Title), "Playing: Artist — Title"."""
     import re as _re
-    seen: Dict[frozenset, List[Any]] = {}     # words -> [time, title, confirmed]
+    seen: Dict[frozenset, List[Any]] = {}     # words -> [time, title, confirmed, failed every time]
     for ts, text, _is_action, _name, track in rows:
+        failed = bool(track and track.get("failed")) or (not track and " (failed): " in text)
         if track:
             title, confirmed = _track_named(track)
             if not title:
@@ -292,16 +293,19 @@ def _tracks_in(rows, lines_fmt) -> str:
             continue
         entry = seen.get(key)
         if entry is None:
-            seen[key] = [ts, title, confirmed]
+            seen[key] = [ts, title, confirmed, failed]
             continue
+        entry[3] = entry[3] and failed
         if confirmed and not entry[2]:
             entry[0], entry[2] = ts, True     # timed from when it actually played
         if title[0] != "“" and entry[1][0] == "“":
             entry[1] = title                  # the player's own "Artist — Title" over the search words
     if not seen:
         return ""
-    items = "; ".join(f"{lines_fmt(ts)} {title}" + ("" if ok else " (search opened, playback not confirmed)")
-                      for ts, title, ok in sorted(seen.values()))
+    # a play that failed opened nothing: it read "search opened", as an unconfirmed one does
+    items = "; ".join(f"{lines_fmt(ts)} {title}" + ("" if ok else " (asked for; it did not play)" if failed
+                                                    else " (search opened, playback not confirmed)")
+                      for ts, title, ok, failed in sorted(seen.values()))
     return f"Distinct tracks in those actions ({len(seen)}): {items}."
 
 
@@ -370,6 +374,8 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
         txt = " ".join(str(a.get("content") or "").split())[:140]
         failed = "" if str(a.get("outcome") or "ok") == "ok" else " (failed)"
         track = a.get("track") if isinstance(a.get("track"), dict) else None
+        if track and failed:
+            track = dict(track, failed=True)     # nothing opened: not "a search opened" in the track list
         rows.append((float(a["ts"]), f"ELI ran {a['action']}{failed}: {txt}", True, str(a["action"]), track))
     if not rows:
         return ""

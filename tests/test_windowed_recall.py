@@ -198,12 +198,15 @@ def test_the_tracks_played_are_read_from_their_results_fields_before_the_wording
          "track": {"source": "youtube", "query": "rain sounds for sleeping", "confirmed": False}},
         {"ts": start + 1200, "action": "NOW_PLAYING", "outcome": "ok",
          "content": "Now playing — spotify (Northern Fields — Glass River)"},
+        {"ts": start + 1500, "action": "PLAY_MEDIA", "outcome": "failed", "content": "Couldn't open the player.",
+         "track": {"source": "youtube", "query": "harbour bells", "confirmed": False}},
     ]
     tr = SimpleNamespace(window_stats={"since": start, "until": start + 3600}, actions=actions,
                          conv_hits=[{"content": "put some music on", "timestamp": start + 30, "session_id": "desk"}])
     out = format_period_log(tr, "what songs did i play?")
     tracks = next(line for line in out.splitlines() if line.startswith("Distinct tracks"))
-    assert tracks.startswith("Distinct tracks in those actions (3):")
+    assert tracks.startswith("Distinct tracks in those actions (4):")
+    assert "“harbour bells” (asked for; it did not play)" in tracks, "a failed play opened no search"
     assert "Harbour Lights — Slow Tide" in tracks and "Slow Tide (search opened" not in tracks
     assert "“rain sounds for sleeping” (search opened, playback not confirmed)" in tracks
     assert "Northern Fields — Glass River" in tracks, "a row from before results carried fields"
