@@ -1272,110 +1272,6 @@ def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> di
     }
 
 
-def write_session_summary_from_recent(
-    db_path: Path | None = None,
-    session_id: str | None = None,
-    user_id: str | None = None,
-    source: str = "runtime_profile_extractor",
-    max_turns: int = 40,
-) -> dict[str, Any]:
-    ensure_profile_tables(db_path)
-
-    db = db_path or _user_db()
-    con = sqlite3.connect(str(db))
-    con.row_factory = sqlite3.Row
-    cur = con.cursor()
-
-    if not _table_exists(cur, "conversation_turns"):
-        con.close()
-        return {"db": str(db), "inserted": False, "reason": "conversation_turns missing"}
-
-    where = ""
-    params: list[Any] = []
-
-    if session_id:
-        where = "WHERE session_id = ?"
-        params.append(session_id)
-
-    rows = cur.execute(
-        f"""
-        SELECT id, session_id, user_id, role, content, ts, timestamp
-        FROM conversation_turns
-        {where}
-        ORDER BY COALESCE(ts, timestamp, 0) DESC
-        LIMIT ?
-        """,
-        (*params, int(max_turns)),
-    ).fetchall()
-
-    if not rows:
-        con.close()
-        return {"db": str(db), "inserted": False, "reason": "no turns"}
-
-    rows = list(reversed(rows))
-    sid = str(session_id or rows[-1]["session_id"] or "unknown")
-    uid = str(user_id or rows[-1]["user_id"] or "unknown")
-
-    user_msgs = [_clean(r["content"], 220) for r in rows if str(r["role"]).lower() == "user"]
-    assistant_msgs = [_clean(r["content"], 180) for r in rows if str(r["role"]).lower() == "assistant"]
-
-    pattern_counts: dict[str, int] = {}
-    for msg in user_msgs:
-        for ptype, _pdata in extract_patterns_from_text(msg):
-            pattern_counts[ptype] = pattern_counts.get(ptype, 0) + 1
-
-    topics = sorted(pattern_counts, key=pattern_counts.get, reverse=True)[:8]
-
-    if topics:
-        summary = (
-            f"Session {sid}: {len(rows)} turns. "
-            f"Detected user profile/project topics: {', '.join(topics)}."
-        )
-    else:
-        sample = "; ".join(user_msgs[:4])
-        summary = f"Session {sid}: {len(rows)} turns. Recent user prompts: {sample}"
-
-    started = min(float(r["ts"] or r["timestamp"] or time.time()) for r in rows)
-    ended = max(float(r["ts"] or r["timestamp"] or time.time()) for r in rows)
-    now = time.time()
-
-    exists = cur.execute(
-        """
-        SELECT 1 FROM session_summaries
-        WHERE session_id = ? AND source = ?
-        LIMIT 1
-        """,
-        (sid, source),
-    ).fetchone()
-
-    if exists:
-        con.close()
-        return {"db": str(db), "inserted": False, "reason": "already summarized", "session_id": sid}
-
-    cur.execute(
-        """
-        INSERT INTO session_summaries(
-            session_id, user_id, summary, turns_count, started_at, ended_at, source, timestamp, ts
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (sid, uid, summary, len(rows), started, ended, source, now, now),
-    )
-
-    con.commit()
-    total = cur.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0]
-    con.close()
-
-    return {
-        "db": str(db),
-        "inserted": True,
-        "session_id": sid,
-        "turns_count": len(rows),
-        "session_summaries_total": total,
-        "summary": summary,
-    }
-
-
 _SUMMARY_SECTION_RE = re.compile(
     r"^\s*(SUMMARY|DECISIONS|OPEN\s+THREADS|USER\s+PREFERENCES|CURRENT\s+WORK|USER\s+FACTS)\s*:\s*"
     r"([\s\S]*?)(?=^\s*(?:SUMMARY|DECISIONS|OPEN\s+THREADS|USER\s+PREFERENCES|CURRENT\s+WORK|USER\s+FACTS)\s*:|\Z)",
@@ -1845,8 +1741,7 @@ def write_llm_session_summary(
     the broker isn't ready/offline or returns nothing usable. Idempotent: a
     second call for the same session replaces the prior end-of-session row.
 
-    Unlike write_session_summary_from_recent (which writes once, early, from the
-    first turn), this is called at shutdown so it sees the whole conversation."""
+    Called at shutdown, so it sees the whole conversation."""
     ensure_profile_tables(db_path)
     db = db_path or _user_db()
     con = sqlite3.connect(str(db))
@@ -2154,32 +2049,3 @@ def backfill_facts_from_sessions(
              out["sessions_processed"], out["sessions_seen"], out["patterns_added"])
     return out
 
-
-def after_process_hook(engine: Any, user_input: Any, output: Any = None) -> dict[str, Any]:
-    db = _user_db()
-    ensure_profile_tables(db)
-
-    inserted_patterns = 0
-    try:
-        inserted_patterns = write_patterns_from_turn(user_input, db_path=db)
-    except Exception:
-        inserted_patterns = 0
-
-    summary_result: dict[str, Any] = {}
-    try:
-        sid = str(getattr(engine, "session_id", "") or "")
-        uid = str(getattr(engine, "user_id", "") or "")
-        summary_result = write_session_summary_from_recent(
-            db_path=db,
-            session_id=sid or None,
-            user_id=uid or None,
-            source="runtime_profile_extractor",
-            max_turns=30,
-        )
-    except Exception as e:
-        summary_result = {"inserted": False, "reason": repr(e)}
-
-    return {
-        "inserted_patterns": inserted_patterns,
-        "summary": summary_result,
-    }

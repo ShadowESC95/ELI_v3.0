@@ -35,3 +35,19 @@ def test_unknown_emitter_locked_to_observe():
 
 def test_remediation_may_run_shell():
     assert ae.can_emitter_propose("grounded_remediation", "shell-exec")[0] is True
+
+
+def test_every_class_is_auto_or_needs_the_users_yes(monkeypatch):
+    """evaluate_record has no third path: a class is auto-approved or waits for confirmation."""
+    from eli.planning.proposal_models import ProposalRecord
+
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    assert ae.AUTO_APPROVE | ae.MANUAL_APPROVE == ae.ACTION_CLASSES
+    assert not (ae.AUTO_APPROVE & ae.MANUAL_APPROVE)
+    for cls in sorted(ae.MANUAL_APPROVE):
+        emitter = next(e for e, allowed in ae.EMITTER_POLICY.items() if cls in allowed)
+        base = {"emitter": emitter, "action_class": cls}
+        waiting = ae.evaluate_record(ProposalRecord.from_dict(dict(base)))
+        assert (waiting.approval_state, waiting.requires_confirmation) == ("pending_confirmation", True)
+        agreed = ae.evaluate_record(ProposalRecord.from_dict(dict(base)), user_confirmed=True)
+        assert (agreed.approval_state, agreed.requires_confirmation) == ("approved", False)

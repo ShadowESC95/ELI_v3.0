@@ -5,20 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-# Public labels (Quick/Normal/Advanced/Research/Expert). This is only a fallback —
-# the canonical source is reasoning_modes.mode_display(); kept in sync so even the
-# fallback never shows an internal strategy name.
-_MODE_LABELS = {
-    "quick": "Quick",
-    "chain_of_thought": "Normal",
-    "cot": "Normal",
-    "self_consistency": "Advanced",
-    "tree_of_thoughts": "Research",
-    "tot": "Research",
-    "constitutional_ai": "Expert",
-    "const_ai": "Expert",
-}
-
 _ATTRS = (
     "reasoning_mode",
     "active_reasoning_mode",
@@ -60,18 +46,9 @@ def _norm(value: Any) -> str:
     return low
 
 def _label(key: str) -> str:
-    key = _norm(key) or "quick"
-    try:
-        from eli.cognition.reasoning_modes import mode_display
-        val = mode_display(key)
-        if val:
-            return str(val)
-    except Exception:
-        pass
-    return _MODE_LABELS.get(key, key.replace("_", " ").title())
-
-def _project_root() -> Path:
-    return Path(os.environ.get("ELI_PROJECT_ROOT", Path.cwd())).resolve()
+    """The public label (Quick/Normal/Advanced/Research/Expert): reasoning_modes.mode_display's."""
+    from eli.cognition.reasoning_modes import mode_display
+    return str(mode_display(_norm(key) or "quick"))
 
 def _read_json(path: Path) -> dict:
     try:
@@ -82,44 +59,18 @@ def _read_json(path: Path) -> dict:
         return {}
     return {}
 
-def _from_trace_files() -> str:
-    root = _project_root()
-    candidates = [
-        root / "artifacts" / "runtime" / "last_trace.json",
-        root / "artifacts" / "runtime" / "state.json",
-        root / "artifacts" / "runtime_snapshot.json",
-    ]
-    for path in candidates:
-        data = _read_json(path)
-        stack = [data]
-        while stack:
-            obj = stack.pop()
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    lk = str(k).lower()
-                    if ("reasoning" in lk and "mode" in lk) or lk in {"mode", "reasoning_mode"}:
-                        n = _norm(v)
-                        if n:
-                            return n
-                    if isinstance(v, (dict, list)):
-                        stack.append(v)
-            elif isinstance(obj, list):
-                stack.extend(obj)
-    return ""
-
 def _from_settings() -> str:
-    root = _project_root()
-    for path in [root / "config" / "settings.json", Path.cwd() / "config" / "settings.json"]:
-        data = _read_json(path)
-        for key in _SETTING_KEYS:
-            n = _norm(data.get(key))
-            if n:
-                return n
-        modes = data.get("reasoning_modes")
-        if isinstance(modes, dict):
-            n = _norm(modes.get("active") or modes.get("default"))
-            if n:
-                return n
+    from eli.core.paths import project_root
+    data = _read_json(Path(project_root()) / "config" / "settings.json")
+    for key in _SETTING_KEYS:
+        n = _norm(data.get(key))
+        if n:
+            return n
+    modes = data.get("reasoning_modes")
+    if isinstance(modes, dict):
+        n = _norm(modes.get("active") or modes.get("default"))
+        if n:
+            return n
     return ""
 
 def _from_engine(engine: Any) -> str:
@@ -161,10 +112,6 @@ def current_reasoning_mode(engine: Any = None, override: Any = None) -> str:
         n = _norm(os.environ.get(env_key))
         if n:
             return n
-
-    n = _from_trace_files()
-    if n:
-        return n
 
     n = _from_settings()
     if n:

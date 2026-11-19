@@ -8,19 +8,9 @@ from __future__ import annotations
 import re
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-
-def _sh(args: List[str], timeout: float = 25.0) -> Tuple[int, str]:
-    import subprocess
-
-    try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
-    except FileNotFoundError:
-        return 127, "tool-not-found"
-    except Exception as e:
-        return 1, str(e)
+from eli.runtime.bt_platform import _sh  # the one run-a-tool helper of the device modules
 
 
 _A2DP_PROFILES = ("a2dp-sink", "a2dp")
@@ -402,18 +392,6 @@ def audio_status() -> Dict[str, Any]:
     }
 
 
-def load_audio_aliases() -> Dict[str, str]:
-    """User-chosen names for outputs: {sink_id: 'Kitchen speaker'}."""
-    try:
-        from eli.core.runtime_settings import load_settings
-        raw = (load_settings() or {}).get("audio_output_aliases") or {}
-        if not isinstance(raw, dict):
-            return {}
-        return {str(k): str(v).strip() for k, v in raw.items() if str(v).strip()}
-    except Exception:
-        return {}
-
-
 def save_audio_alias(sink_id: str, name: str) -> Dict[str, Any]:
     """Set or clear a friendly name for one audio output."""
     from eli.runtime.device_names import save_custom_name, sink_key
@@ -431,7 +409,7 @@ def _enrich_sinks_with_aliases(result: Dict[str, Any]) -> Dict[str, Any]:
     """Attach alias, display_name, device_number for UI + voice."""
     if not result.get("ok"):
         return result
-    from eli.runtime.device_names import apply_name, load_custom_names, sink_key
+    from eli.runtime.device_names import _voice_tokens, apply_name, load_custom_names, sink_key
     names = load_custom_names()
     sinks = result.get("sinks") or []
     for i, s in enumerate(sinks):
@@ -446,31 +424,9 @@ def _enrich_sinks_with_aliases(result: Dict[str, Any]) -> Dict[str, Any]:
             s["custom_name"] = legacy
             s["alias"] = legacy
             s["display_name"] = legacy
-        s["voice_names"] = _voice_names_for_sink(
-            s.get("custom_name") or s.get("alias") or "", os_name, i + 1)
+        s["voice_names"] = _voice_tokens(s.get("custom_name") or s.get("alias") or "", os_name, i + 1)
     result["aliases"] = {k: v for k, v in names.items() if k.startswith("sink")}
     return result
-
-
-def _voice_names_for_sink(alias: str, os_name: str, device_number: int) -> List[str]:
-    names: List[str] = []
-    if alias:
-        names.append(alias.lower())
-        for part in re.split(r"[\s/,-]+", alias.lower()):
-            if len(part) > 2:
-                names.append(part)
-    if os_name:
-        names.append(os_name.lower())
-    names.append(f"device {device_number}")
-    names.append(f"device{device_number}")
-    # dedupe preserve order
-    seen: set = set()
-    out: List[str] = []
-    for n in names:
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
 
 
 def _sink_full_names(s: Dict[str, Any]) -> List[str]:
@@ -484,7 +440,7 @@ def resolve_audio_sink(query: str) -> Optional[Dict[str, Any]]:
     """Match a spoken/UI label to a sink — alias, device N, or OS name.
 
     Matching is tiered, and every tier is evaluated across ALL sinks before the
-    next one runs. That ordering is the whole point: _voice_names_for_sink splits
+    next one runs. That ordering is the whole point: device_names._voice_tokens splits
     an alias into bare tokens, so a sink called "small speaker" also answers to
     "speaker" — and the old first-sink-wins loop let that generic token swallow
     "kitchen speaker", routing audio to the wrong device while reporting success.

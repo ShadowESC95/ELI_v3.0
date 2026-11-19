@@ -37,6 +37,10 @@ def _valid_mac(addr: str) -> bool:
     return bool(a and a != _ZERO_MAC and _MAC_RE.match(a))
 
 
+# The colour codes bluetoothctl writes around its listings.
+_ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _sh(args: List[str], timeout: float = 25.0, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
@@ -309,23 +313,10 @@ def _linux_hci_down() -> List[str]:
 
 
 def adapter_display_alias() -> str:
-    """Hub label shown on Bluetooth pairing screens — from user settings, never hard-coded."""
-    try:
-        from eli.runtime.device_drivers import BluetoothDriver
-        return BluetoothDriver.resolve_adapter_alias()
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    try:
-        from eli.core.runtime_settings import load_settings
-        s = load_settings() or {}
-        override = str(s.get("bluetooth_display_name") or "").strip()
-        if override:
-            return override[:48]
-        zone = str(s.get("hub_zone") or "").strip() or "Home"
-        brand = str(s.get("hub_brand") or "").strip() or "Eli"
-        return f"{brand} · {zone}"[:48]
-    except Exception:
-        return "Eli"
+    """Hub label shown on Bluetooth pairing screens — from user settings, never hard-coded
+    (BluetoothDriver.resolve_adapter_alias, the one builder of it)."""
+    from eli.runtime.device_drivers import BluetoothDriver
+    return BluetoothDriver.resolve_adapter_alias()
 
 
 def _linux_try_recover() -> None:
@@ -349,14 +340,11 @@ def try_recover_radio() -> None:
 
 
 def _linux_pick_controller(addrs: List[str], adapters: List[BtAdapter]) -> str:
-    """Prefer a BlueZ controller with a real MAC; fall back to any listed."""
+    """Prefer a BlueZ controller with a real MAC, a USB one first; fall back to any listed."""
     valid = [a for a in addrs if _valid_mac(a)]
     if valid:
-        usb_addrs = {a.address for a in adapters if a.bus == "usb" and a.bluez}
-        for addr in valid:
-            if addr.upper() in usb_addrs or addr in valid[:1]:
-                return addr
-        return valid[0]
+        usb_addrs = {str(a.address).upper() for a in adapters if a.bus == "usb" and a.bluez}
+        return next((addr for addr in valid if addr.upper() in usb_addrs), valid[0])
     return addrs[0] if addrs else ""
 
 
@@ -586,7 +574,7 @@ def _linux_classic_discover(
         return
 
     def _ingest(text: str) -> None:
-        for line in re.sub(r"\x1b\[[0-9;]*m", "", text or "").splitlines():
+        for line in _ANSI_COLOUR.sub("", text or "").splitlines():
             _ingest_bt_line(line, found, seen, entry_fn)
 
     try:
@@ -777,7 +765,7 @@ def list_known_devices() -> List[Dict[str, Any]]:
 
     if kind == "linux" and shutil.which("bluetoothctl"):
         _, listing = _sh(["bluetoothctl", "devices"], timeout=8)
-        for line in re.sub(r"\x1b\[[0-9;]*m", "", listing or "").splitlines():
+        for line in _ANSI_COLOUR.sub("", listing or "").splitlines():
             m = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s*(.*)", line.strip())
             if not m:
                 continue
@@ -870,7 +858,7 @@ def _linux_list_devices() -> List[Dict[str, str]]:
     if not shutil.which("bluetoothctl"):
         return rows
     _, listing = _sh(["bluetoothctl", "devices"], timeout=8)
-    for line in re.sub(r"\x1b\[[0-9;]*m", "", listing or "").splitlines():
+    for line in _ANSI_COLOUR.sub("", listing or "").splitlines():
         m = re.search(r"Device\s+([0-9A-Fa-f:]{17})\s*(.*)", line.strip())
         if not m:
             continue
@@ -1053,7 +1041,7 @@ def _bluetoothctl_quote(value: str) -> str:
 def _linux_bluez_default_controller_mac() -> str:
     """MAC of BlueZ's [default] controller, or the first powered controller."""
     _, listing = _sh(["bluetoothctl", "list"], timeout=8)
-    lines = re.sub(r"\x1b\[[0-9;]*m", "", listing or "").splitlines()
+    lines = _ANSI_COLOUR.sub("", listing or "").splitlines()
     first_mac = ""
     default_mac = ""
     for line in lines:
@@ -1072,7 +1060,7 @@ def _linux_bluez_default_controller_mac() -> str:
     if default_mac:
         return default_mac
     _, show = _sh(["bluetoothctl", "show"], timeout=8)
-    for line in re.sub(r"\x1b\[[0-9;]*m", "", show or "").splitlines():
+    for line in _ANSI_COLOUR.sub("", show or "").splitlines():
         s = line.strip()
         if s.lower().startswith("controller"):
             parts = s.split()
@@ -1309,12 +1297,6 @@ def linux_pair_session(
         return False, f"bluetoothctl timed out after {int(timeout)}s", "timeout"
     except Exception as e:
         return False, str(e), "error"
-
-
-def wait_for_device(addr: str, timeout: float = 18.0, name: str = "") -> bool:
-    """Scan until the device appears (headphones must be in pairing mode)."""
-    res = resolve_device(addr, name, timeout=timeout)
-    return bool(res.get("found"))
 
 
 # What Windows' pairing call answers when the device is paired (Windows.Devices.Enumeration

@@ -33,10 +33,6 @@ def _artifacts() -> Path:
     return _artifacts_dir()
 
 
-def _runtime_dir() -> Path:
-    return _artifacts() / "runtime"
-
-
 def _db_path() -> Path:
     return _artifacts() / "db" / "user.sqlite3"
 
@@ -46,10 +42,6 @@ from eli.utils.jsonio import read_json_dict as _read_json
 
 def runtime_snapshot() -> Dict[str, Any]:
     return _read_json(_artifacts() / "runtime_snapshot.json")
-
-
-def last_trace() -> Dict[str, Any]:
-    return _read_json(_runtime_dir() / "last_trace.json")
 
 
 def _active_user_id() -> str:
@@ -369,58 +361,6 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
         content = "\n".join(lines)
         return {"ok": True, "action": act, "report": report, "content": content, "response": content}
 
-    if act == "LAST_TRACE_REPORT":
-        tr = last_trace()
-        agents = tr.get("agents_used") or tr.get("agents") or []
-        report = {
-            "ok": True,
-            "trace_available": bool(tr),
-            "request_id": tr.get("request_id"),
-            "reasoning_mode": tr.get("reasoning_mode"),
-            "route_action": tr.get("route_action"),
-            "result_action": tr.get("result_action"),
-            "confidence": tr.get("confidence"),
-            "agents": agents,
-            "plan": tr.get("plan") or "none",
-            "route_meta": tr.get("route_meta") or {},
-            "result_meta": tr.get("result_meta") or {},
-        }
-        content = _format_lines(
-            "Last trace:",
-            [
-                ("trace_available", report["trace_available"]),
-                ("request_id", report["request_id"]),
-                ("reasoning_mode", report["reasoning_mode"]),
-                ("route_action", report["route_action"]),
-                ("result_action", report["result_action"]),
-                ("confidence", report["confidence"]),
-                ("agents", report["agents"]),
-                ("plan", report["plan"]),
-                ("route_meta", report["route_meta"]),
-                ("result_meta", report["result_meta"]),
-            ],
-        )
-        return {"ok": True, "action": act, "report": report, "content": content, "response": content}
-
-    if act == "PERSONA_AUTO_REPORT":
-        p = _root() / "eli/cognition/persona.auto.txt"
-        body = ""
-        if p.exists():
-            try:
-                body = p.read_text(encoding="utf-8", errors="replace").strip()
-            except Exception as e:
-                body = f"<read_error: {e}>"
-        report = {"ok": True, "path": str(p), "exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
-        content = "\n".join(
-            [
-                f"persona.auto.txt exists: {report['exists']}",
-                f"path: {report['path']}",
-                f"size_bytes: {report['size_bytes']}",
-                body[:4000],
-            ]
-        ).strip()
-        return {"ok": True, "action": act, "report": report, "content": content, "response": content}
-
     if act == "IMPORT_AUDIT":
         modules = [
             "eli.kernel.engine",
@@ -677,26 +617,6 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
         )
         return {"ok": True, "action": act, "report": report, "content": content, "response": content}
 
-    if act == "SMALL_TALK_GREETING":
-        content = f"Online. identity=ELI; user={stored_user_name() or 'unknown'}; model={rt['model_name']}; ctx={rt['n_ctx']}; gpu_layer_param={rt['n_gpu_layers']}."
-        return {"ok": True, "action": act, "report": {"ok": True}, "content": content, "response": content}
-
     content = f"Unhandled live introspection action: {act}"
     return {"ok": False, "action": act, "report": {"ok": False}, "content": content, "response": content}
 
-
-def agents_for_action(action: str) -> List[str]:
-    act = str(action or "").strip().upper()
-    if act in {"SELF_REPORT", "RUNTIME_STATUS", "IMPORT_AUDIT", "RUNTIME_AUDIT"}:
-        return ["introspection", "file_code"]
-    if act in {"USER_IDENTITY_SUMMARY", "EXPLAIN_MEMORY_RUNTIME"}:
-        return ["introspection", "memory", "file_code"]
-    if act == "EXPLAIN_COGNITION_RUNTIME":
-        return ["introspection", "file_code", "reflection"]
-    if act == "LAST_TRACE_REPORT":
-        return ["introspection"]
-    if act == "PERSONA_AUTO_REPORT":
-        return ["introspection", "file_code"]
-    if act == "SMALL_TALK_GREETING":
-        return ["introspection"]
-    return ["introspection"]

@@ -198,13 +198,20 @@ def list_nameable_devices() -> List[Dict[str, Any]]:
     return rows
 
 
+# A word that names a kind of device, not one device: "headphones", "the speaker". Said alone it means
+# the nearest such device; inside a longer name ("kitchen speaker") it is not what tells devices apart.
+GENERIC_DEVICE_WORDS = frozenset({
+    "headphones", "headphone", "headset", "earbuds", "earphones", "earphone", "buds", "airpods",
+    "speaker", "speakers", "soundbar", "bluetooth", "device", "it", "music",
+})
+
+
 def match_bluetooth_name(name_l: str, devices: List[dict]) -> Optional[dict]:
     """Resolve spoken name against OS names and user custom labels."""
     if not name_l:
         return None
     names = load_custom_names()
-    _GENERIC = {"headphones", "headphone", "headset", "earbuds", "speaker", "speakers",
-                "bluetooth", "device", "it", "music"}
+    _GENERIC = GENERIC_DEVICE_WORDS
     if name_l not in _GENERIC:
         for d in devices:
             addr = str(d.get("host") or d.get("address") or "")

@@ -30,7 +30,6 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 _ROLES = {"primary", "secondary", "tertiary", "reflex", "off"}
-_ROLE_PRIORITY = {"primary": 3, "secondary": 2, "tertiary": 1, "reflex": 0, "off": -1}
 _DEFAULT = {
     "enabled": False,
     "role": "off",
@@ -204,34 +203,6 @@ def ping_payload() -> Dict[str, Any]:
         "device_count": _device_count(),
         "hostname": socket.gethostname(),
     }
-
-
-def record_peer_heartbeat(peer_id: str, payload: Dict[str, Any]) -> None:
-    if not peer_id:
-        return
-    with _lock:
-        _runtime["peers_seen"][peer_id] = {
-            "ts": time.time(),
-            "role": payload.get("role"),
-            "mode": payload.get("mode"),
-            "node_name": payload.get("node_name"),
-        }
-
-
-def _pick_acting_backup(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Highest-priority local backup role wins (secondary before tertiary)."""
-    role = str(cfg.get("role") or "off")
-    if role in ("secondary", "tertiary") and cfg.get("enabled"):
-        return {"node_id": cfg.get("node_id"), "role": role, "local": True}
-    best = None
-    best_pri = -1
-    for peer in cfg.get("peers") or []:
-        pr = str(peer.get("role") or "secondary")
-        pri = _ROLE_PRIORITY.get(pr, 0)
-        if pri > best_pri:
-            best_pri = pri
-            best = peer
-    return best
 
 
 def _set_mode(mode: str, acting: str = "", reason: str = "") -> None:

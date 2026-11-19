@@ -406,7 +406,6 @@ def _engine_with_one_fix(tmp_path, monkeypatch):
     target.write_text("def f():\n    return 1\n")
     failure = {"error": "ValueError: f returned 1", "user_input": "F_ACTION (x)", "occurrence_count": 3}
     monkeypatch.setattr(eng, "analyze_failures", lambda *a, **k: [failure])
-    monkeypatch.setattr(eng, "_try_deterministic_patch", lambda failure: {"ok": False})
     monkeypatch.setattr(eng, "generate_code_patch", lambda failure: {
         "ok": True, "file": str(target), "old": "    return 1\n", "new": "    return 2\n",
         "description": "f returns the count"})

@@ -187,16 +187,6 @@ def describe_component(name: str) -> Dict[str, object]:
     }
 
 
-def neighbors(name: str) -> Dict[str, List[str]]:
-    d = describe_component(name)
-    if not d.get("ok"):
-        return {"depends_on": [], "used_by": []}
-    return {
-        "depends_on": [c for c, _ in d["depends_on"]],  # type: ignore[index]
-        "used_by": [c for c, _ in d["used_by"]],        # type: ignore[index]
-    }
-
-
 def paths(src: str, dst: str, max_depth: int = 4) -> List[List[str]]:
     """All simple directed dependency paths src -> … -> dst up to max_depth (BFS)."""
     src, dst = (src or "").strip().lower(), (dst or "").strip().lower()

@@ -1,8 +1,7 @@
-"""Measured reliability per action, success predictions scored against what happened, and honest absence wording."""
+"""Measured reliability per action, success predictions scored against what happened."""
 import pytest
 
 from eli.runtime import evidence_ledger as led
-from eli.runtime.evidence_arbitration import EvidenceState, absence_statement
 
 
 @pytest.fixture()
@@ -79,13 +78,6 @@ def test_calibration_scores_predictions_against_outcomes(db):
     assert rep["n"] == 20 and 0.0 < rep["brier"] < 0.5
     band = [b for b in rep["bands"] if b["range"].startswith("0.80")][0]
     assert band["predicted"] == 0.9 and band["observed"] == 0.75
-
-
-def test_absence_is_worded_by_why_it_is_absent():
-    assert "looked for" in absence_statement(EvidenceState.NOT_FOUND, "the lighthouse code")
-    assert "have not looked" in absence_statement(EvidenceState.NOT_INSPECTED, "your screen")
-    assert "failed" in absence_statement(EvidenceState.INSPECTION_FAILED, "the GPU")
-    assert absence_statement("something else", "x") == ""
 
 
 def test_the_scope_of_a_search_is_stated_so_a_denial_covers_only_that(monkeypatch):

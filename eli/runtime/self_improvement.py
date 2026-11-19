@@ -412,11 +412,8 @@ def failure_capsule(action: str, args: Any, result: Any, *, request_id: str = ""
         model = str(snap.get("model_name") or "")
     except Exception:
         model = ""
-    try:
-        from importlib.metadata import version
-        eli_version = version("eli-v2.0")
-    except Exception:
-        eli_version = ""
+    from eli.runtime.self_facts import _version
+    eli_version = _version()
     return {"action": str(action or "").upper(), "args": args if isinstance(args, dict) else {}, "error": err,
             "classification": classify(err, command=str(action or "")), "eli_version": eli_version, "model": model,
             "python": sys.version.split()[0], "request_id": request_id, "captured_at": time.time()}
@@ -474,8 +471,8 @@ def _change_in_workspace(path: Path, old: str, new: str) -> bool:
 
 
 # Colour codes inside "FAILED tests/x.py::t" hid every failure from the parse below when the user's
-# shell sets FORCE_COLOR: a regression read as "unchanged".
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# shell sets FORCE_COLOR: a regression read as "unchanged". Stripped by the one stripper
+# (autopilot_debugger._strip_ansi).
 
 
 def _run_cmd(cmd: List[str], cwd: Path, timeout: float) -> Dict[str, Any]:
@@ -489,7 +486,8 @@ def _run_cmd(cmd: List[str], cwd: Path, timeout: float) -> Dict[str, Any]:
         return {"status": "timeout", "seconds": round(time.time() - t0, 1), "failed": []}
     except Exception as exc:
         return {"status": "error", "error": str(exc), "seconds": round(time.time() - t0, 1), "failed": []}
-    out = _ANSI.sub("", proc.stdout or "")
+    from eli.runtime.autopilot_debugger import _strip_ansi
+    out = _strip_ansi(proc.stdout or "")
     failed = sorted(set(re.findall(r"^FAILED (\S+)", out, re.M)))
     if proc.returncode == 5:
         status = "no_tests"
@@ -498,7 +496,7 @@ def _run_cmd(cmd: List[str], cwd: Path, timeout: float) -> Dict[str, Any]:
     else:
         status = "error"
     return {"status": status, "returncode": proc.returncode, "seconds": round(time.time() - t0, 1), "failed": failed,
-            "tail": "\n".join((out or _ANSI.sub("", proc.stderr or "")).strip().splitlines()[-4:])}
+            "tail": "\n".join((out or _strip_ansi(proc.stderr or "")).strip().splitlines()[-4:])}
 
 
 def compare_runs(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> str:
@@ -1665,16 +1663,6 @@ class SelfImprovementEngine:
         except Exception as exc:
             return {"ok": False, "message": f"Revert failed: {exc}"}
 
-    def _try_deterministic_patch(self, failure: dict) -> dict:
-        """Apply a known rule-based fix when the failure pattern is unambiguous."""
-        try:
-            from eli.runtime.deterministic_failure_patches import propose_deterministic_patch
-            patch = propose_deterministic_patch(failure)
-            return patch if patch else {"ok": False}
-        except Exception as exc:
-            log.debug("[SELF-IMPROVE] deterministic patch lookup failed: %s", exc)
-            return {"ok": False, "error": str(exc)}
-
     def _test_verify_patch(self, patch: dict) -> dict:
         """Run the affected file's tests after a patch — the TEST-verify gate that
         import-verify alone can't give. Returns {verified: True|False|None, target}.
@@ -1855,18 +1843,7 @@ class SelfImprovementEngine:
                 log.debug("actionable filter skipped", exc_info=True)
 
             try:
-                patch = self._try_deterministic_patch(failure)
-                if patch.get("already_applied"):
-                    results["patches_skipped"] += 1
-                    results["details"].append({
-                        "failure": err_preview,
-                        "count": count,
-                        "status": "already_fixed_in_codebase",
-                        "reason": patch.get("description") or "fix already present",
-                    })
-                    continue
-                if not patch or not patch.get("ok"):
-                    patch = self.generate_code_patch(failure)
+                patch = self.generate_code_patch(failure)
                 if not patch.get("ok"):
                     reason = patch.get("error") or patch.get("reason") or "unknown"
                     results["patches_skipped"] += 1
@@ -1879,8 +1856,7 @@ class SelfImprovementEngine:
                     if reason == "no_groundable_file":
                         detail["hint"] = (
                             "No Python traceback in this failure: it is a parameter or routing bug, not a crash. "
-                            "Deterministic patches are tried first; if none matched, say which failure to fix "
-                            "or run EXAMINE_CODE."
+                            "Say which failure to fix or run EXAMINE_CODE."
                         )
                     results["details"].append(detail)
                     log.debug(f"[SELF-IMPROVE] Skipped (generation failed): {err_preview[:60]} — {reason}")
@@ -1992,55 +1968,6 @@ class SelfImprovementEngine:
             conn.close()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Plugin stub generators
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _generate_plugin_name(self, text):
-        return self.generate_plugin_name(text)
-
-    def _generate_plugin_stub(self, name, description="", examples=None):
-        return self.generate_plugin_stub(name, description=description, examples=examples)
-
-    def generate_plugin_name(self, idea: str) -> str:
-        base = "".join(ch.lower() if ch.isalnum() else "_" for ch in (idea or "plugin").strip())
-        base = "_".join([p for p in base.split("_") if p])
-        if not base:
-            base = "plugin"
-        if base[0].isdigit():
-            base = "p_" + base
-        return base
-
-    def generate_plugin_stub(self, name: str, description: str = "", examples: list = None) -> str:
-        mod = self.generate_plugin_name(name)
-        desc = description or "Auto-generated plugin"
-        examples_str = f"    examples = {examples!r}\n" if examples else ""
-        return (
-            f"# Auto-generated plugin: {mod}\n"
-            "from eli.plugins.base import BasePlugin\n"
-            "from eli.memory import get_memory\n\n"
-            f"class Plugin(BasePlugin):\n"
-            f"    name = '{mod}'\n"
-            f"    description = '{desc}'\n"
-            f"{examples_str}"
-            "\n"
-            "    def run(self, args: dict) -> dict:\n"
-            "        try:\n"
-            f"            # Plugin logic for: {desc}\n"
-            "            query = args.get('query', args.get('text', ''))\n"
-            "            mem = get_memory()\n"
-            "            results = mem.recall_memory(query, limit=5) if query else []\n"
-            "            context = '; '.join(r.get('text', '') for r in results[:3])\n"
-            "            return {\n"
-            "                'ok': True,\n"
-            "                'content': f'[{mod}] Processed: {query}. Context: {context or \"none\"}',\n"
-            "                'response': f'[{mod}] Done.',\n"
-            "                'results': results,\n"
-            "            }\n"
-            "        except Exception as e:\n"
-            "            return {'ok': False, 'error': str(e), 'content': f'Plugin error: {e}'}\n"
-        )
-
-    # ─────────────────────────────────────────────────────────────────────────
     # Background loop
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -2135,10 +2062,6 @@ def get_self_improvement() -> SelfImprovementEngine:
     if _self_engine is None:
         _self_engine = SelfImprovementEngine(memory=get_agent_memory())
     return _self_engine
-
-
-def run_improvement_cycle() -> Dict[str, Any]:
-    return get_self_improvement().analyze_and_improve()
 
 
 def candidate_lines(candidates: List[dict]) -> List[str]:

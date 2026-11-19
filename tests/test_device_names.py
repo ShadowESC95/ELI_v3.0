@@ -60,3 +60,23 @@ def test_a_name_is_saved_without_the_rest_of_the_settings_view(monkeypatch):
     assert dn.save_custom_name("sink:B9:08:A1:EF:CD:23", "Desk speaker")["ok"] is True
     assert saved and set(saved[0]) <= {"device_custom_names", "audio_output_aliases"}
     assert saved[0]["device_custom_names"] == {"sink:B9:08:A1:EF:CD:23": "Desk speaker"}
+
+
+def test_one_list_of_kind_words_and_one_token_builder_for_every_device():
+    """The Bluetooth resolver and the name matcher each kept a list of kind words ("soundbar" and
+    "airpods" in one only, "music" in the other only), and audio outputs had a copy of the token builder."""
+    from eli.runtime import device_server, local_connectivity
+    for word in ("headphones", "headset", "earbuds", "earphones", "buds", "airpods", "speaker", "speakers",
+                 "soundbar", "bluetooth", "device", "it", "music"):
+        assert word in dn.GENERIC_DEVICE_WORDS, word
+    assert not hasattr(local_connectivity, "_voice_names_for_sink")
+    assert "_GENERIC = {" not in __import__("inspect").getsource(device_server.bluetooth_control_by_name)
+    # a kind word inside a longer name is not what picks the device
+    devices = [{"name": "Lounge Soundbar", "host": "AA:BB:CC:00:00:01"},
+               {"name": "Kitchen JBL", "host": "AA:BB:CC:00:00:02"}]
+    assert dn.match_bluetooth_name("kitchen soundbar", devices)["name"] == "Kitchen JBL"
+    assert dn.match_bluetooth_name("soundbar", devices) is None      # said alone: the caller's nearest-device rule
+    # the tokens an output answers to: its name, the words of it, its number
+    assert dn._voice_tokens("Desk speaker", "alsa_output.usb", 2) == [
+        "desk speaker", "desk", "speaker", "alsa_output.usb", "device 2", "device2"]
+    assert dn._voice_tokens("", "alsa_output.usb", 1) == ["alsa_output.usb", "device 1", "device1"]

@@ -331,13 +331,6 @@ def handle_diagnostic_action(action: str, text: str, engine: Any = None) -> Opti
     if action not in DIAGNOSTIC_ACTIONS:
         return None
 
-    if action == "REASONING_MODE_STATUS":
-        try:
-            from eli.runtime.reasoning_status import current_reasoning_mode_text
-            return current_reasoning_mode_text(engine)
-        except Exception:
-            return "Current reasoning mode: Quick"
-
     if action in {"SELF_REPORT", "RUNTIME_STATUS", "GUI_RUNTIME_AUDIT"}:
         from eli.runtime.truth_report import runtime_truth_report, format_runtime_truth
         from eli.runtime.user_visible_response_surface import coerce_user_visible

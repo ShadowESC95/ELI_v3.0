@@ -78,26 +78,16 @@ def evaluate_record(record: ProposalRecord, user_confirmed: bool = False, approv
         record.policy_reason = f"auto-approved: {record.action_class}"
         return record
 
-    if record.action_class in MANUAL_APPROVE:
-        if user_confirmed:
-            record.approval_state = "approved"
-            record.requires_confirmation = False
-            record.approved_by = approver
-            record.policy_reason = f"manually approved: {record.action_class}"
-            return record
-
-        record.approval_state = "pending_confirmation"
-        record.requires_confirmation = True
-        record.policy_reason = f"manual approval required: {record.action_class}"
+    # Every class that is not auto-approved needs the user's yes (MANUAL_APPROVE is the rest of
+    # ACTION_CLASSES; test_approval_engine holds the two sets to exactly that).
+    if user_confirmed:
+        record.approval_state = "approved"
+        record.requires_confirmation = False
+        record.approved_by = approver
+        record.policy_reason = f"manually approved: {record.action_class}"
         return record
 
-    record.approval_state = "pending"
+    record.approval_state = "pending_confirmation"
     record.requires_confirmation = True
-    record.policy_reason = "unknown approval path"
+    record.policy_reason = f"manual approval required: {record.action_class}"
     return record
-
-
-def evaluate_dict(obj: Dict, user_confirmed: bool = False, approver: str = "user") -> Dict:
-    rec = ProposalRecord.from_dict(obj)
-    rec = evaluate_record(rec, user_confirmed=user_confirmed, approver=approver)
-    return rec.to_dict()

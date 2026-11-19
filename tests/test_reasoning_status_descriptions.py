@@ -37,3 +37,23 @@ def test_reasoning_status_uses_mode_specific_description():
         text = current_reasoning_mode_text(override=mode, explain=True)
         assert "Current reasoning mode:" in text
         assert mode_description(mode) in text
+
+
+def test_the_mode_is_never_read_out_of_an_old_trace_or_snapshot_file(tmp_path, monkeypatch):
+    """With no turn, engine or setting to say, it took the value of any key named "mode" in a
+    trace, state or snapshot file under the working directory: a past run's, or another fact's."""
+    import json
+    from eli.runtime import reasoning_status as rs
+    (tmp_path / "artifacts" / "runtime").mkdir(parents=True)
+    (tmp_path / "artifacts" / "runtime" / "last_trace.json").write_text(json.dumps({"reasoning_mode": "tree_of_thoughts"}))
+    (tmp_path / "artifacts" / "runtime_snapshot.json").write_text(json.dumps({"mode": "constitutional_ai"}))
+    monkeypatch.setenv("ELI_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    for name in ("ELI_REASONING_MODE", "ELI_ACTIVE_REASONING_MODE", "ELI_CURRENT_REASONING_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    assert rs.current_reasoning_mode() == "quick"
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.json").write_text(json.dumps({"reasoning_mode": "Self Consistency"}))
+    assert rs.current_reasoning_mode() == "self_consistency"
+    assert rs.current_reasoning_mode_label() == "Advanced"
+    assert rs.current_reasoning_mode_label(override="tot") == "Research"

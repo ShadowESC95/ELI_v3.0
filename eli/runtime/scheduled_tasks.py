@@ -273,9 +273,10 @@ def _worker_lora(request: str):
         return {"ok": False, "error": f"lora training failed: {e}"}
 
 
+# The kinds the scheduler runs, in the order the Tasks tab lists them (task_admin.KNOWN_KINDS).
 _WORKERS = {
-    "code": _worker_code,
     "research": _worker_research,
+    "code": _worker_code,
     "self_upgrade": _worker_self_upgrade,
     "reflection": _worker_reflection,
     "eval": _worker_eval,
@@ -312,16 +313,6 @@ def _result_preview(kind: str, res: Any) -> str:
     if kind == "lora":
         lr = res.get("lora") or {}
         return str(lr.get("summary") or lr)[:400]
-    if kind == "self_improve":
-        props = res.get("proposals") or []
-        if not props:
-            return f"no fix proposals ({res.get('reason') or 'nothing to propose'})"
-        head = "; ".join(
-            f"{str(p.get('failure'))[:60]} → "
-            f"{'VERIFIED' if p.get('verified') else 'best-effort'} (score {p.get('score')})"
-            for p in props[:3] if isinstance(p, dict)
-        )
-        return f"{len(props)} fix proposal(s), none applied: {head}"
     return str(res)[:300]
 
 

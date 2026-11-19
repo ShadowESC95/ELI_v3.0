@@ -58,7 +58,6 @@ def test_who_am_i_does_not_point_inside_the_install_tree(packaged):
 # ── the snapshot readers (the 2.1.82 self-report failure class) ────────────
 @pytest.mark.parametrize("module,attr", [
     ("eli.runtime.deterministic_grounding_gate", "_artifacts_dir"),
-    ("eli.runtime.user_visible_response_surface", "_artifacts_dir"),
 ])
 def test_snapshot_readers_use_the_data_dir(packaged, module, attr):
     import importlib

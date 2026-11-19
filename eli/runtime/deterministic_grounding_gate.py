@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import importlib
 import json
 import re
 import sqlite3
-import subprocess
 
 # Logger for safety-wrapper suppressed-exception reporting (used before the
 # module's main logger exists; must be defined at the top of the file).
@@ -21,31 +19,6 @@ try:
     PROJECT_ROOT = canonical_root(Path(__file__).resolve().parents[2])
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-DETERMINISTIC_ACTIONS = {
-    "SELF_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "GUI_RUNTIME_AUDIT",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_LAST_RESPONSE",
-    "SELF_IMPROVE",
-    "SELF_ANALYZE",
-}
-
-IMPORT_TARGETS = [
-    "eli.kernel.engine",
-    "eli.cognition.gguf_inference",
-    "eli.memory.memory",
-    "eli.execution.router_enhanced",
-    "eli.execution.executor_enhanced",
-    "eli.gui.gui_eli_original",
-    "eli.core.runtime_settings",
-    "eli.core.paths",
-    "eli.planning.proactive_daemon",
-]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -74,100 +47,6 @@ def _artifacts_dir() -> Path:
 def _runtime_snapshot() -> dict[str, Any]:
     return _read_json(_artifacts_dir() / "runtime_snapshot.json")
 
-
-def _route_text(text: str) -> dict[str, Any] | None:
-    try:
-        router = importlib.import_module("eli.execution.router_enhanced")
-        fn = getattr(router, "route", None)
-        if callable(fn):
-            r = fn(text)
-            if isinstance(r, dict):
-                return r
-    except Exception:
-        return None
-    return None
-
-
-
-def _current_mode_label(engine: Any = None) -> str:
-    """Best-effort reasoning-mode detection.
-
-    Critical rule:
-    - Live engine/GUI-published mode may be trusted.
-    - Helper-reported Quick is not trusted because it can be stale/default.
-    """
-
-    attr_names = (
-        "reasoning_mode",
-        "current_reasoning_mode",
-        "_reasoning_mode",
-        "mode",
-        "current_mode",
-        "selected_reasoning_mode",
-        "reasoning_mode_key",
-        "reasoning_mode_label",
-        "_current_mode_label",
-        "_selected_reasoning_mode",
-        "_eli_reasoning_mode",
-        "_eli_reasoning_mode_label",
-        "eli_reasoning_mode",
-        "eli_reasoning_mode_label",
-    )
-
-    # 1. Live engine attributes are authoritative.
-    for name in attr_names:
-        try:
-            val = getattr(engine, name, None)
-            if val:
-                s = str(val).strip()
-                if s:
-                    return s
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    # 2. Nested engine dicts.
-    for obj_name in ("settings", "config", "runtime_settings", "_settings", "state", "_state"):
-        try:
-            obj = getattr(engine, obj_name, None)
-            if isinstance(obj, dict):
-                for key in (
-                    "reasoning_mode",
-                    "mode",
-                    "current_mode",
-                    "selected_reasoning_mode",
-                    "reasoning_mode_label",
-                    "eli_reasoning_mode",
-                ):
-                    val = obj.get(key)
-                    if val:
-                        s = str(val).strip()
-                        if s:
-                            return s
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    # 3. Helper fallback LAST. If it says Quick, treat it as unknown unless
-    # the live engine already confirmed Quick above.
-    try:
-        from eli.runtime.reasoning_status import current_reasoning_mode_label
-        try:
-            val = current_reasoning_mode_label(engine)
-        except TypeError:
-            val = current_reasoning_mode_label()
-
-        if val:
-            s = str(val).strip()
-            low = s.lower()
-
-            if low in {"quick", "quick mode", "fast", "fast mode", "direct", "direct mode"}:
-                log.debug("[GROUNDING_GATE] ignoring stale helper Quick; no live engine mode published")
-                return ""
-
-            return s
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return ""
 
 def _is_quick_mode(label: str) -> bool:
     low = str(label or "").lower().strip()
@@ -206,21 +85,6 @@ def _is_quick_mode(label: str) -> bool:
     }
 
 
-def _build_synthesis_prompt(user_text: str, action: str, evidence: str, mode_label: str) -> str:
-    return (
-        "SYNTHESISE_FROM_DETERMINISTIC_EVIDENCE\n\n"
-        "The user asked:\n"
-        f"{user_text}\n\n"
-        "Authoritative deterministic evidence follows. Treat it as ground truth. "
-        "Do not invent missing runtime details. Do not contradict this evidence. "
-        "Answer in ELI's normal voice for the current reasoning mode, not as a raw diagnostic dump.\n\n"
-        f"Current reasoning mode: {mode_label or 'unknown'}\n"
-        f"Action: {action}\n\n"
-        "DETERMINISTIC_EVIDENCE:\n"
-        f"{evidence}\n"
-    )
-
-
 # Response surface contract v2: the final authority separating diagnostic evidence from the
 # user-facing answer surface.
 
@@ -228,25 +92,8 @@ import os as _eli_os
 import re as _eli_re
 import json as _eli_json
 import sqlite3 as _eli_sqlite3
-import subprocess as _eli_subprocess
 from pathlib import Path as _EliPath
 from typing import Any as _EliAny, Mapping as _EliMapping
-
-
-_RESPONSE_SURFACE_ACTIONS_V2 = {
-    "SELF_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "GUI_RUNTIME_AUDIT",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "MEMORY_STATUS",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_LAST_RESPONSE",
-    "SELF_ANALYZE",
-    "SELF_IMPROVE",
-}
 
 
 def _eli_project_root_v2() -> _EliPath:
@@ -260,10 +107,6 @@ def _eli_json_file_v2(path: _EliPath) -> dict:
     except Exception:
         _SWLOG.debug("suppressed exception", exc_info=True)
     return {}
-
-
-def _eli_runtime_snapshot_v2() -> dict:
-    return _eli_json_file_v2(_eli_project_root_v2() / "artifacts" / "runtime_snapshot.json")
 
 
 def _eli_settings_v2() -> dict:
@@ -301,37 +144,6 @@ def _eli_count_rows_v2(db: _EliPath) -> dict[str, int]:
     return out
 
 
-def _eli_mode_label_v2(engine: _EliAny = None, kwargs: dict | None = None) -> str:
-    kwargs = kwargs or {}
-    kw_mode = str(kwargs.get("reasoning_mode") or "").strip()
-    if kw_mode:
-        return kw_mode
-
-    for attr in (
-        "reasoning_mode",
-        "current_reasoning_mode",
-        "_reasoning_mode",
-        "mode",
-        "current_mode",
-        "selected_reasoning_mode",
-        "reasoning_mode_key",
-        "reasoning_mode_label",
-    ):
-        try:
-            v = getattr(engine, attr, None)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-    return ""
-
-
-def _eli_is_quick_v2(label: str) -> bool:
-    low = str(label or "").lower()
-    return low in {"quick", "quick mode", "⚡ quick"} or low.endswith(" quick")
-
-
 def _eli_is_runtime_probe_v2(text: str) -> bool:
     low = str(text or "").lower()
     return bool(
@@ -366,7 +178,7 @@ def _eli_wants_personal_memory_v2(text: str) -> bool:
 
 def _eli_runtime_truth_v2(mode_label: str = "") -> str:
     root = _eli_project_root_v2()
-    snap = _eli_runtime_snapshot_v2()
+    snap = _runtime_snapshot()
     settings = _eli_settings_v2()
 
     model_path = (
@@ -636,7 +448,7 @@ _COGNITION_PIPELINE_TEXT = """Cognition pipeline, input to output:
 
 def _eli_runtime_audit_v2() -> str:
     root = _eli_project_root_v2()
-    snap = _eli_runtime_snapshot_v2()
+    snap = _runtime_snapshot()
     settings = _eli_settings_v2()
     paths = _eli_db_paths_v2()
 
@@ -764,102 +576,7 @@ def _render_v2(action: str, args: _EliMapping[str, _EliAny] | None = None, user_
     )
 
 
-
-
-
 # Personal memory noise filter v3: overrides the v2 sampler/name handling without touching routing.
-
-_PERSONAL_MEMORY_NOISE_V3 = (
-    "Reflection (24h):",
-    "Session context:",
-    "SYNTHESISE_FROM_DETERMINISTIC_EVIDENCE",
-    "runtime_truth_evidence",
-    "Memory internals report:",
-    "Database:",
-    "table                                                        rows",
-    "Capability inventory updated",
-    "[news synthesis offline:",
-    "[HackerNews/",
-    "[Reddit/",
-    "HackerNews/tech",
-    "Reddit/r/",
-    "news_articles",
-    "news_fts",
-    "Generated Python script failed syntax validation",
-    "What imports are failing",
-    "Run a full runtime audit",
-    "Who are you and what are you actually running",
-    "Explain exactly how your memory system works internally",
-    "Explain your cognition pipeline",
-    "What's your confidence",
-    "quarantine_",
-    "sqlite_master",
-)
-
-_PERSONAL_MEMORY_POSITIVE_HINTS_V3 = (
-    "user wants",
-    "user prefers",
-    "user is",
-    "user has",
-    "user uses",
-    "user works",
-    "eli",
-    "mkxi",
-    "local assistant",
-    "gguf",
-    "memory",
-    "persona",
-    "physics",
-    "simulation",
-    "latex",
-    "direct",
-    "truth",
-    "no lies",
-    "bullshit",
-    "runtime",
-    "gpu",
-    "linux",
-)
-
-
-def _eli_is_bad_personal_memory_row_v3(s: str) -> bool:
-    if not s or len(s.strip()) < 12:
-        return True
-
-    low = s.lower()
-    if any(n.lower() in low for n in _PERSONAL_MEMORY_NOISE_V3):
-        return True
-
-    # Reject rows that are just recent prompt echoes rather than remembered facts.
-    if low.endswith("?") and not any(h in low for h in ("prefers", "wants", "uses", "works", "has")):
-        return True
-
-    # Reject generic operational traces.
-    if low.startswith(("ok ", "route:", "input:", "mode:", "render_preview:", "script generated:")):
-        return True
-
-    return False
-
-
-def _eli_memory_fact_score_v3(s: str) -> int:
-    low = s.lower()
-    score = 0
-
-    for hint in _PERSONAL_MEMORY_POSITIVE_HINTS_V3:
-        if hint in low:
-            score += 2
-
-    # Prefer durable preference/project facts over transient logs.
-    if any(k in low for k in ("prefers", "wants", "does not want", "from now on", "moving forward")):
-        score += 4
-
-    if any(k in low for k in ("currently", "today", "last 24h", "recent", "conversation volume")):
-        score -= 2
-
-    if any(k in low for k in ("news", "hackernews", "reddit", "generated script", "runtime truth")):
-        score -= 5
-
-    return score
 
 
 def _eli_known_user_name_v2() -> str:  # type: ignore[override]
@@ -887,327 +604,6 @@ def _eli_known_user_name_v2() -> str:  # type: ignore[override]
         return env_user[:1].upper() + env_user[1:]
 
     return "the local user"
-
-
-# Personal memory fact-clause filter v4: replaces broad row sampling with stable user-fact
-# extraction.
-
-_PERSONAL_MEMORY_ROW_REJECT_V4 = (
-    "conversation volume:",
-    "top topics:",
-    "a full runtime audit has been requested",
-    "passed agents:",
-    "failed agents:",
-    "runtime truth report",
-    "configured/requested:",
-    "effective loaded snapshot:",
-    "i'm running the",
-    "i am currently running",
-    "my identity emerges from memory",
-    "my runtime evidence is stored",
-    "model is custom_gguf",
-    "context size of",
-    "gpu layers",
-    "n_ctx",
-    "n_gpu_layers",
-    "n_batch",
-    "grounded user identity:",
-    "memory internals report:",
-    "database:",
-    "hackernews",
-    "reddit/",
-    "news synthesis",
-    "generated python script failed",
-    "script generated:",
-    "route:",
-    "render_preview:",
-    "input:",
-    "mode:",
-    "synthesise_from_deterministic_evidence",
-)
-
-_PERSONAL_MEMORY_CLAUSE_REJECT_V4 = (
-    "conversation volume",
-    "top topics",
-    "full runtime audit",
-    "passed agents",
-    "failed agents",
-    "runtime truth",
-    "configured/requested",
-    "effective loaded",
-    "gpu layers",
-    "context size",
-    "model is",
-    "i'm running",
-    "i am running",
-    "my runtime",
-    "hackernews",
-    "reddit",
-    "news synthesis",
-    "generated python script",
-    "route:",
-    "input:",
-    "render_preview",
-)
-
-_PERSONAL_MEMORY_FACT_PATTERNS_V4 = (
-    r"\buser\s+(?:prefers|wants|does not want|doesn't want|has|uses|is using|is running|is|works|values|likes|confirmed|completed|asked|requests)\b",
-    r"\buser'?s\s+(?:preferred name|name|tone|preference|project|hardware|runtime|model|workflow)\b",
-    r"\bpreferred_name\s*[:=]\s*",
-    r"\bname\s*[:=]\s*[A-Za-z][A-Za-z0-9 _.\-]{1,40}",
-)
-
-
-def _eli_row_is_noise_v4(s: str) -> bool:
-    low = " ".join(str(s or "").lower().split())
-    if not low:
-        return True
-    return any(bad in low for bad in _PERSONAL_MEMORY_ROW_REJECT_V4)
-
-
-def _eli_clause_is_noise_v4(s: str) -> bool:
-    low = " ".join(str(s or "").lower().split())
-    if not low or len(low) < 16:
-        return True
-    return any(bad in low for bad in _PERSONAL_MEMORY_CLAUSE_REJECT_V4)
-
-
-def _eli_clause_is_user_fact_v4(s: str) -> bool:
-    low = " ".join(str(s or "").lower().split())
-    if _eli_clause_is_noise_v4(low):
-        return False
-    return any(_eli_re.search(pat, low) for pat in _PERSONAL_MEMORY_FACT_PATTERNS_V4)
-
-
-def _eli_split_fact_clauses_v4(s: str) -> list[str]:
-    # Split long assistant summaries into smaller fact candidates.
-    raw = str(s or "")
-    raw = raw.replace(" | ", ". ")
-    raw = raw.replace(" - ", ". ")
-    raw = raw.replace("; ", ". ")
-    raw = raw.replace("\n", ". ")
-
-    parts = _eli_re.split(r"(?<=[.!?])\s+|\s+\d+\.\s+", raw)
-    out: list[str] = []
-
-    for part in parts:
-        part = " ".join(part.strip(" -•\t\r\n").split())
-        if not part:
-            continue
-
-        # Extract embedded "User ..." facts from longer clauses (name-agnostic).
-        hits = _eli_re.findall(
-            r"\bUser\s+(?:prefers|wants|does not want|doesn't want|has|uses|is using|is running|is|works|values|likes|confirmed|completed|asked|requests)\b.{0,220}",
-            part,
-            flags=_eli_re.I,
-        )
-        if hits:
-            for h in hits:
-                h = " ".join(h.strip(" .;:-").split())
-                if _eli_clause_is_user_fact_v4(h):
-                    out.append(h[:260])
-            continue
-
-        if _eli_clause_is_user_fact_v4(part):
-            out.append(part[:260])
-
-    return out
-
-
-def _eli_memory_fact_score_v4(s: str, source_table: str = "") -> int:
-    low = s.lower()
-    score = 0
-
-    if source_table == "memories":
-        score += 8
-    elif source_table == "observations":
-        score += 4
-    elif source_table in {"conversation_turns", "conversations"}:
-        score -= 3
-
-    if any(k in low for k in ("prefers", "does not want", "doesn't want", "wants", "values")):
-        score += 6
-    if any(k in low for k in ("eli", "eli_v2_0", "local assistant", "gguf", "runtime", "memory", "persona")):
-        score += 3
-    if any(k in low for k in ("physics", "simulation", "latex", "paper")):
-        score += 3
-    if any(k in low for k in ("ubuntu", "fedora", "linux", "gpu", "nvidia", "wine", "steam")):
-        score += 2
-
-    if any(k in low for k in ("recent", "last 24", "today", "currently")):
-        score -= 2
-
-    return score
-
-
-# Personal memory durable-profile filter v5: rejects transient interaction facts and keeps durable
-# user-profile facts only.
-
-_PERSONAL_MEMORY_TRANSIENT_REJECT_V5 = (
-    "binary file:",
-    "[binary file:",
-    "user question:",
-    "what's this",
-    "whats this",
-    "user has loaded",
-    "loaded the following file",
-    "file/folder content",
-    "user is asking",
-    "asking for help",
-    "without more context",
-    "phrase or idiom",
-    "i've detected",
-    "i have detected",
-    "detected a few patterns",
-    "recently:",
-    "last 24 hours",
-    "conversation volume",
-    "top topics",
-    "active topics",
-    "session context",
-    "reflection (24h)",
-    "runtime truth report",
-    "full runtime audit",
-    "passed agents",
-    "failed agents",
-    "hackernews",
-    "reddit",
-    "news synthesis",
-    "generated python script",
-    "script generated",
-    "route:",
-    "render_preview",
-    "bad_markers",
-)
-
-_PERSONAL_MEMORY_DURABLE_PATTERNS_V5 = (
-    r"\buser\s+(?:prefers|wants|does not want|doesn't want|values|likes|uses|is using|is running|works on|is working on|is actively working on|is developing|is building|is debugging|is tuning|confirmed|completed|has completed|has successfully)\b",
-    r"\buser'?s\s+(?:preferred name|name|tone|preference|preferences|project|projects|hardware|workflow|style)\b",
-    r"\bpreferred_name\s*[:=]\s*",
-    r"\bname\s*[:=]\s*[A-Za-z][A-Za-z0-9 _.\-]{1,40}",
-)
-
-
-def _eli_v5_norm(s: str) -> str:
-    return " ".join(str(s or "").strip().split())
-
-
-def _eli_v5_low(s: str) -> str:
-    return _eli_v5_norm(s).lower()
-
-
-def _eli_clause_is_noise_v5(s: str) -> bool:
-    low = _eli_v5_low(s)
-    if not low or len(low) < 18:
-        return True
-    if any(bad in low for bad in _PERSONAL_MEMORY_TRANSIENT_REJECT_V5):
-        return True
-    if any(bad in low for bad in _PERSONAL_MEMORY_ROW_REJECT_V4):
-        return True
-    if any(bad in low for bad in _PERSONAL_MEMORY_CLAUSE_REJECT_V4):
-        return True
-    return False
-
-
-def _eli_clause_is_user_fact_v5(s: str) -> bool:
-    low = _eli_v5_low(s)
-    if _eli_clause_is_noise_v5(low):
-        return False
-
-    # Explicitly reject transient verbs even if they mention "user".
-    if _eli_re.search(r"\b(?:user|current user|active user)\s+(?:asked|asks|is asking|requested|requests|said|sent|uploaded|loaded|provided)\b", low):
-        return False
-
-    return any(_eli_re.search(pat, low, flags=_eli_re.I) for pat in _PERSONAL_MEMORY_DURABLE_PATTERNS_V5)
-
-
-def _eli_split_fact_clauses_v5(s: str) -> list[str]:
-    raw = str(s or "")
-    raw = raw.replace(" | ", ". ")
-    raw = raw.replace(" - ", ". ")
-    raw = raw.replace("; ", ". ")
-    raw = raw.replace("\n", ". ")
-
-    parts = _eli_re.split(r"(?<=[.!?])\s+|\s+\d+\.\s+", raw)
-    out: list[str] = []
-
-    durable_regex = (
-        r"\bUser\s+"
-        r"(?:prefers|wants|does not want|doesn't want|values|likes|uses|is using|is running|"
-        r"works on|is working on|is actively working on|is developing|is building|is debugging|"
-        r"is tuning|confirmed|completed|has completed|has successfully)\b.{0,220}"
-    )
-
-    for part in parts:
-        part = _eli_v5_norm(part.strip(" -•\t\r\n"))
-        if not part:
-            continue
-
-        hits = _eli_re.findall(durable_regex, part, flags=_eli_re.I)
-        if hits:
-            for h in hits:
-                h = _eli_v5_norm(h.strip(" .;:-"))
-                if _eli_clause_is_user_fact_v5(h):
-                    out.append(h[:260])
-            continue
-
-        if _eli_clause_is_user_fact_v5(part):
-            out.append(part[:260])
-
-    return out
-
-
-def _eli_tokens_v5(s: str) -> set[str]:
-    stop = {
-        "user",   "is", "are", "the", "and", "or", "to", "of", "a", "an",
-        "with", "for", "on", "in", "their", "his", "her", "this", "that", "currently",
-    }
-    return {
-        w for w in _eli_re.sub(r"[^a-z0-9]+", " ", s.lower()).split()
-        if len(w) > 2 and w not in stop
-    }
-
-
-def _eli_is_near_duplicate_v5(candidate: str, existing: list[str]) -> bool:
-    c = _eli_tokens_v5(candidate)
-    if not c:
-        return True
-
-    for old in existing:
-        o = _eli_tokens_v5(old)
-        if not o:
-            continue
-        overlap = len(c & o) / max(1, min(len(c), len(o)))
-        if overlap >= 0.72:
-            return True
-
-    return False
-
-
-def _eli_memory_fact_score_v5(s: str, source_table: str = "") -> int:
-    low = s.lower()
-    score = 0
-
-    if source_table == "memories":
-        score += 10
-    elif source_table == "observations":
-        score += 6
-    else:
-        score -= 8
-
-    if any(k in low for k in ("prefers", "does not want", "doesn't want", "wants", "values")):
-        score += 8
-    if any(k in low for k in ("eli", "eli_v2_0", "local assistant", "gguf", "memory", "persona", "cognition", "orchestrator")):
-        score += 5
-    if any(k in low for k in ("physics", "simulation", "latex", "paper")):
-        score += 4
-    if any(k in low for k in ("ubuntu", "fedora", "linux", "gpu", "nvidia", "wine", "steam")):
-        score += 3
-
-    if any(k in low for k in ("recent", "last 24", "today", "currently", "loaded", "asked", "asking")):
-        score -= 6
-
-    return score
 
 
 # Personal memory clause-first profile filter v6: fixes v5 over-filtering by extracting valid
@@ -1508,7 +904,6 @@ def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[o
 # Dynamic user profile filter v8: portable profile surface with no shipped/static user profile
 # files. Reads durable facts only from the local installation's own DB/memory.
 
-import getpass as _eli_getpass
 import re as _eli_v8_re
 import sqlite3 as _eli_v8_sqlite3
 from pathlib import Path as _EliV8Path
@@ -1734,15 +1129,6 @@ def _eli_v8_bucket_for_fact(fact: str) -> str:
         return "runtime / hardware / OS"
 
     return "other stable memory"
-
-
-def _eli_v8_fallback_identity() -> str:
-    # Portable fallback only. This is the OS account name, not a shipped human identity.
-    try:
-        name = _eli_getpass.getuser()
-    except Exception:
-        name = "local user"
-    return f"Local account: {name}"
 
 
 # The portable user-profile surface. No static profile files, no dev-specific identity
@@ -2282,22 +1668,6 @@ import getpass as _eli_v11_getpass
 import re as _eli_v11_re
 
 
-_ELI_V11_RESPONSE_SURFACE_ACTIONS = {
-    "SELF_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "GUI_RUNTIME_AUDIT",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "MEMORY_STATUS",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_LAST_RESPONSE",
-    "SELF_ANALYZE",
-    "SELF_IMPROVE",
-}
-
-
 def _eli_v11_user_tokens() -> list[str]:
     toks = []
     try:
@@ -2462,10 +1832,6 @@ def _render_v11(prev, action, args=None, user_input="", mode_label=""):
     return _eli_v11_redact_user_identity(prev(a, args, user_input, mode_label=mode_label))
 
 
-_ELI_V11_PREVIOUS_INSTALL = globals().get("install")
-
-
-
 # Tightens the layer above. Quick can still use the short deterministic surfaces, but non-quick
 # identity/runtime actions must not go back to the older wrappers, which let the model
 # hallucinate its role, model size, names or paths. User identity is never exposed, home paths
@@ -2475,22 +1841,6 @@ import getpass as _eli_v12_getpass
 import re as _eli_v12_re
 import sqlite3 as _eli_v12_sqlite3
 from pathlib import Path as _EliV12Path
-
-
-_ELI_V12_SURFACE_ACTIONS = {
-    "SELF_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "GUI_RUNTIME_AUDIT",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "MEMORY_STATUS",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_LAST_RESPONSE",
-    "SELF_ANALYZE",
-    "SELF_IMPROVE",
-}
 
 
 def _eli_v12_root() -> _EliV12Path:
@@ -2718,19 +2068,6 @@ def _render_v12(prev, action: str, args=None, user_input="", mode_label="") -> s
     return _eli_v12_redact(prev(a, args, user_input, mode_label=mode_label))
 
 
-def _eli_v12_forced_self_report_from_chat(text: object) -> bool:
-    low = str(text or "").lower()
-    return bool(
-        ("answer the question" in low and "you are eli" in low)
-        or ("i am not eli" in low and "you are eli" in low)
-        or ("who are you" in low and "who am i" in low)
-    )
-
-
-_ELI_V12_PREVIOUS_INSTALL = globals().get("install")
-
-
-
 # Fixes a surface issue in the layer above. Quick gets a short deterministic answer; deeper
 # modes get a persona answer built from the exact deterministic runtime evidence. No personal
 # name exposure, no "You are <user> local user" prose, and SELF_REPORT/runtime-identity
@@ -2917,35 +2254,15 @@ def _render_v13(prev, action, args=None, user_input="", mode_label="") -> str:
     return _eli_v13_safe_redact(prev(a, args, text, mode_label=mode_label))
 
 
-_ELI_V13_SURFACE_ACTIONS = set(globals().get("_ELI_V12_SURFACE_ACTIONS", set())) | {
-    "SELF_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "GUI_RUNTIME_AUDIT",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "MEMORY_STATUS",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_LAST_RESPONSE",
-    "SELF_ANALYZE",
-    "SELF_IMPROVE",
-}
-
-
-
 # Quick-only bypass rules. The direct deterministic bypass is allowed only in quick mode;
 # deeper modes go through CognitiveEngine.process / the persona pipeline. Runtime/identity
 # answers are post-validated so nothing hallucinated slips out, and redaction is path/name-safe
 # without mangling prose. No "<user>" in prose.
 
 import getpass as _eli_v14_getpass
-import json as _eli_v14_json
 import re as _eli_v14_re
 import socket as _eli_v14_socket
-import subprocess as _eli_v14_subprocess
 from pathlib import Path as _EliV14Path
-
 
 
 from eli.utils.log import get_logger
@@ -2958,43 +2275,6 @@ def _eli_v14_project_root() -> _EliV14Path:
         return _EliV14Path.cwd()
 
 
-def _eli_v14_read_json(path: _EliV14Path) -> dict:
-    try:
-        if path.exists():
-            return _eli_v14_json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return {}
-
-
-def _eli_v14_runtime_snapshot() -> dict:
-    root = _eli_v14_project_root()
-    snap = _eli_v14_read_json(root / "artifacts" / "runtime_snapshot.json")
-    if isinstance(snap, dict):
-        return snap
-    return {}
-
-
-def _eli_v14_settings() -> dict:
-    root = _eli_v14_project_root()
-    settings = _eli_v14_read_json(root / "config" / "settings.json")
-    if isinstance(settings, dict):
-        return settings
-    return {}
-
-
-def _eli_v14_get_runtime_value(data: dict, *keys, default="unknown"):
-    cur = data
-    for key in keys:
-        if isinstance(cur, dict) and key in cur:
-            cur = cur[key]
-        else:
-            return default
-    if cur is None or cur == "":
-        return default
-    return cur
-
-
 def _eli_v14_context_window():
     try:
         from eli.cognition.gguf_inference import context_window
@@ -3005,8 +2285,8 @@ def _eli_v14_context_window():
 
 def _eli_v14_runtime_data() -> dict:
     root = _eli_v14_project_root()
-    snap = _eli_v14_runtime_snapshot()
-    settings = _eli_v14_settings()
+    snap = _runtime_snapshot()
+    settings = _eli_settings_v2()
 
     configured = {
         "provider": settings.get("provider") or settings.get("llm_provider") or "custom_gguf",
@@ -3218,20 +2498,6 @@ def _eli_v14_identity_answer(mode_label: str = "") -> str:
     ))
 
 
-def _eli_v14_bad_self_report_output(text: object) -> bool:
-    low = str(text or "").lower()
-    return bool(
-        not low.strip()
-        or "you are eli" in low
-        or "180gb" in low
-        or "model size is about" in low
-        or "<user> local" in low
-        or "my god is yahweh" in low
-        or "elijah" in low
-        or "biblical" in low
-    )
-
-
 def _render_v14(prev, action, args=None, user_input="", mode_label=""):
     a = str(action or "").upper().strip()
     text = str(user_input or "")
@@ -3269,18 +2535,6 @@ _ELI_V14_SURFACE_ACTIONS = {
     "SELF_ANALYZE",
     "SELF_IMPROVE",
 }
-
-
-def install(CognitiveEngine):  # type: ignore[override]
-    """
-    Retired public installer.
-
-    This module previously installed global CognitiveEngine.process wrappers.
-    That mutation path is now retired. Routing, execution, grounding, and
-    user-visible coercion must live in explicit router/executor/engine
-    contracts or consumer-boundary helpers, not import-time process wrapping.
-    """
-    return CognitiveEngine
 
 
 # ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1: render_action is one explicit, ordered pipeline. Each layer takes

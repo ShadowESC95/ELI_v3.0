@@ -111,3 +111,28 @@ def test_connect_autodetect_can_be_turned_off():
     sig = inspect.signature(device_server.DeviceServer.connect)
     assert "autodetect" in sig.parameters
     assert sig.parameters["autodetect"].default is True
+
+
+def test_the_broker_search_runs_the_one_mdns_sweep(monkeypatch):
+    """It had its own copy of the zeroconf sweep beside the device discovery's."""
+    from eli.runtime import device_server
+    asked = {}
+
+    def sweep(timeout, found, errors, *, services=None, resolve_ms=None):
+        asked.update(timeout=timeout, services=tuple(services), resolve_ms=resolve_ms)
+        found.extend([
+            {"name": "broker-one.extra", "service": "_mqtt._tcp.local.", "host": "192.0.2.10", "port": 1883},
+            {"name": "broker-one.extra", "service": "_mqtt._tcp.local.", "host": "192.0.2.10", "port": 1883},
+            {"name": "broker-two", "service": "_secure-mqtt._tcp.local.", "host": "192.0.2.11", "port": 8883},
+            {"name": "no-address", "service": "_mqtt._tcp.local.", "host": "", "port": 1883},
+            {"name": "no-port", "service": "_mqtt._tcp.local.", "host": "192.0.2.12", "port": None},
+        ])
+
+    monkeypatch.setattr(device_server, "_mdns_discover", sweep)
+    assert mqtt_setup.discover_brokers_mdns(timeout=2.5) == [
+        {"host": "192.0.2.10", "port": 1883, "name": "broker-one", "tls": False, "source": "mdns"},
+        {"host": "192.0.2.11", "port": 8883, "name": "broker-two", "tls": True, "source": "mdns"},
+        {"host": "192.0.2.12", "port": 1883, "name": "no-port", "tls": False, "source": "mdns"},
+    ]
+    assert asked == {"timeout": 2.5, "resolve_ms": 2500,
+                     "services": ("_mqtt._tcp.local.", "_secure-mqtt._tcp.local.")}

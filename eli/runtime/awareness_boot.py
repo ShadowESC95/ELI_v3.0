@@ -86,19 +86,8 @@ class AwarenessState:
 
     @staticmethod
     def _running_version() -> str:
-        try:
-            import re as _re
-            from eli.core.paths import project_root
-            m = _re.search(r'^version\s*=\s*"([^"]+)"', (project_root() / "pyproject.toml").read_text(encoding="utf-8"), _re.M)
-            if m:
-                return m.group(1)
-        except Exception:
-            log.debug("pyproject version unreadable", exc_info=True)
-        try:
-            from importlib.metadata import version
-            return version("eli-v2.0")
-        except Exception:
-            return ""
+        from eli.runtime.self_facts import _version
+        return _version()
 
     @staticmethod
     def _reliability_line() -> str:

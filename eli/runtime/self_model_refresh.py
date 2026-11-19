@@ -38,14 +38,6 @@ def refresh_all_overlays_nonfatal(reason: str = "manual") -> Dict[str, Any]:
     return out
 
 
-def safe_goal_summary():
-    try:
-        from eli.planning.goal_store import summarize_goals
-        return summarize_goals()
-    except Exception as exc:
-        return {"ok": False, "kind": "safe_goal_summary", "error": str(exc)}
-
-
 def refresh_world_model_runtime(snapshot=None):
     try:
         from eli.kernel.world_model import merge_runtime_snapshot

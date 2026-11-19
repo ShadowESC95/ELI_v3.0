@@ -17,10 +17,8 @@ from eli.runtime import grounded_remediation as gr
 @pytest.fixture(autouse=True)
 def _clean_pending():
     gr.clear_pending()
-    gr.set_busy(False)
     yield
     gr.clear_pending()
-    gr.set_busy(False)
 
 
 # --------------------------------------------------------------------------- #
@@ -58,15 +56,8 @@ def test_platform_matches_host():
 
 
 # --------------------------------------------------------------------------- #
-# busy / pending / failure state
+# pending / failure state
 # --------------------------------------------------------------------------- #
-def test_busy_toggle():
-    gr.set_busy(True)
-    assert gr.is_busy() is True
-    gr.set_busy(False)
-    assert gr.is_busy() is False
-
-
 def test_pending_set_get_clear():
     assert not gr.get_pending()
     gr.set_pending_for_test({"steps": ["install"]}, {"ok": False, "error": "not found"})

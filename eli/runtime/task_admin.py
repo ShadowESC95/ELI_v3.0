@@ -16,13 +16,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from eli.runtime.scheduled_tasks import _WORKERS
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-# Every kind the scheduler can actually dispatch (see scheduled_tasks._WORKERS).
-KNOWN_KINDS = ("auto", "research", "code", "self_upgrade", "reflection",
-               "eval", "testgen", "lora")
+# Every kind the scheduler can actually dispatch, plus "auto" (the kind is read from the request).
+KNOWN_KINDS = ("auto", *_WORKERS)
 
 
 def _bt():

@@ -153,3 +153,11 @@ def test_describe_tasks_is_never_silently_empty():
     the model fill the gap with an invented answer."""
     from eli.runtime.task_admin import describe_tasks
     assert describe_tasks().strip() != ""
+
+
+def test_the_kinds_the_tasks_tab_offers_are_the_kinds_the_scheduler_runs():
+    """The list was written out a second time by hand beside the worker table."""
+    from eli.runtime.scheduled_tasks import _WORKERS
+    from eli.runtime.task_admin import KNOWN_KINDS
+    assert KNOWN_KINDS == ("auto", *_WORKERS)
+    assert KNOWN_KINDS[:3] == ("auto", "research", "code")

@@ -20,20 +20,18 @@ SEEN_FILE = "versions_seen.json"
 
 
 def current_version() -> str:
-    """The version in pyproject.toml beside the package; else the package's metadata; else ""."""
-    root = Path(__file__).resolve().parents[2]
-    for candidate in (root / "pyproject.toml", Path.cwd() / "pyproject.toml"):
-        try:
-            m = re.search(r'^version\s*=\s*"([^"]+)"', candidate.read_text(encoding="utf-8"), re.M)
-            if m:
-                return m.group(1)
-        except OSError:
-            continue
+    """The version in pyproject.toml beside the package (where a frozen build carries it); else the
+    one reader every other report uses (self_facts._version: the project's pyproject, then this
+    product's own package metadata); else ""."""
     try:
-        from importlib.metadata import version
-        return version("eli")
-    except Exception:
-        return os.environ.get("ELI_VERSION", "")
+        m = re.search(r'^version\s*=\s*"([^"]+)"',
+                      (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        log.debug("no pyproject.toml beside the package", exc_info=True)
+    from eli.runtime.self_facts import _version
+    return _version() or os.environ.get("ELI_VERSION", "")
 
 
 def _seen_path() -> Path:

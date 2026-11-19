@@ -23,7 +23,6 @@ except Exception:  # pragma: no cover
         return ""
 
 _LOCK = threading.RLock()
-_BUSY = False
 _PENDING = None
 _LAST_FAILURE = None
 
@@ -119,15 +118,6 @@ def _save_pending_state(payload: dict | None) -> None:
         return
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def is_busy() -> bool:
-    with _LOCK:
-        return bool(_BUSY)
-
-def set_busy(value: bool) -> None:
-    global _BUSY
-    with _LOCK:
-        _BUSY = bool(value)
-
 _PENDING_TTL_SECONDS = 300  # 5 minutes — stale repair offers auto-expire
 
 def get_pending():
@@ -209,10 +199,6 @@ def _needs_privileged_terminal(cmd: str) -> bool:
     if _platform() == "windows":
         return bool(re.search(r"(^|\s)(choco|winget)\b", c, re.I))
     return bool(re.search(r"(^|\s)sudo(\s|$)", c))
-
-def _sudo_cached() -> bool:
-    check = _run("sudo -n true")
-    return check["rc"] == 0
 
 def _terminal_script_unix(cmd: str, log_path: Path, rc_path: Path, sh_path: Path):
     """Write the POSIX shell runner (Linux + macOS; Windows uses the PowerShell path
@@ -1347,29 +1333,25 @@ def execute_pending_plan() -> str:
 
     runs = []
 
-    set_busy(True)
-    try:
-        for cmd in plan.get("commands", []):
-            # A step the shell gate refuses is reported as refused and never run. Every step here is
-            # one the owner was shown and said yes to (_runs_on_first_yes / the preview).
-            why = _refused(cmd, approved=cmd)
-            if why:
-                runs.append({"cmd": cmd, "rc": 1, "out": "",
-                             "err": why if why.startswith("Not run") else f"Not run: {why}", "handoff": "refused",
-                             "blocked": True})
-                continue
-            if _needs_privileged_terminal(cmd):
-                run_result = _run_in_terminal(cmd)
-                run_result["handoff"] = "terminal"
-                runs.append(run_result)
-            else:
-                # Non-privileged installs (flatpak/brew/user-scope) run headless —
-                # give them an install-grade timeout instead of the 30s default.
-                run_result = _run(cmd, timeout=900)
-                run_result["handoff"] = "direct"
-                runs.append(run_result)
-    finally:
-        set_busy(False)
+    for cmd in plan.get("commands", []):
+        # A step the shell gate refuses is reported as refused and never run. Every step here is
+        # one the owner was shown and said yes to (_runs_on_first_yes / the preview).
+        why = _refused(cmd, approved=cmd)
+        if why:
+            runs.append({"cmd": cmd, "rc": 1, "out": "",
+                         "err": why if why.startswith("Not run") else f"Not run: {why}", "handoff": "refused",
+                         "blocked": True})
+            continue
+        if _needs_privileged_terminal(cmd):
+            run_result = _run_in_terminal(cmd)
+            run_result["handoff"] = "terminal"
+            runs.append(run_result)
+        else:
+            # Non-privileged installs (flatpak/brew/user-scope) run headless —
+            # give them an install-grade timeout instead of the 30s default.
+            run_result = _run(cmd, timeout=900)
+            run_result["handoff"] = "direct"
+            runs.append(run_result)
 
     for run in runs:
         if _is_pkg_lock_error(run):
@@ -1476,40 +1458,6 @@ def status_message_for_app(app: str) -> str:
     if result["ok"]:
         return render_failure_message(result)
     return offer_for_result(result)
-
-def is_operational_query(query: str) -> bool:
-    q = (query or "").strip().lower()
-    patterns = [
-        r"^(open|run|launch|start)\b",
-        r"^(is|check|confirm)\b",
-        r"^why\b.*\b(open|run|failed|error)\b",
-        r"^(fix|repair|resolve)\b",
-        r"\binstalled\b",
-        r"\berror\b",
-        r"\btraceback\b",
-        r"\bmodule\b",
-        r"\bimport\b",
-        r"\bpackage\b",
-    ]
-    return any(re.search(p, q) for p in patterns)
-
-def block_ungrounded_operational_output(query: str, text: str) -> str | None:
-    q = query or ""
-    t = text or ""
-    if not is_operational_query(q):
-        return None
-    allowed_prefixes = (
-        "Could not ",
-        "Status:",
-        "Cancelled.",
-        "Planned repair",
-        "Repair completed.",
-        "Repair failed.",
-        "I cannot verify",
-    )
-    if t.startswith(allowed_prefixes):
-        return None
-    return "I cannot verify that yet because no grounded system check has been completed."
 
 def capture_executor_failure(action: str, args: dict | None, result) -> str | None:
     """Record a grounded failure and return an offer string when remediation is available."""

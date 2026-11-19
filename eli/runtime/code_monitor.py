@@ -15,7 +15,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from eli.runtime.proposal_adapters import safe_git_completed
+from eli.planning.proposal_adapters import safe_git_completed
 
 log = logging.getLogger(__name__)
 

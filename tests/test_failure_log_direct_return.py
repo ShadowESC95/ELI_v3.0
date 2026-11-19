@@ -41,23 +41,6 @@ def test_create_doc_alias_routes_to_create_document(monkeypatch):
     assert "alias smoke test" in str(result.get("document_content") or result.get("content") or "").lower()
 
 
-def test_deterministic_patch_for_missing_document_topic():
-    from eli.runtime.deterministic_failure_patches import propose_deterministic_patch
-
-    patch = propose_deterministic_patch(
-        {
-            "error": "Missing topic for document generation",
-            "command": 'CREATE_DOCUMENT {"name": "new agent"}',
-        }
-    )
-    # After the executor fix is applied, the patch may already be present (returns None).
-    # Before apply, it should propose the alias expansion.
-    if patch and not patch.get("already_applied"):
-        assert patch.get("ok") is True
-        assert "name" in patch.get("new", "")
-        assert patch.get("file") == "eli/execution/executor_enhanced.py"
-
-
 def test_self_fix_routes_to_self_patch():
     from eli.execution.router_enhanced import route
 

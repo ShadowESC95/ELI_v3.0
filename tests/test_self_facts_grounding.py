@@ -218,3 +218,20 @@ def test_multi_valued_facts_still_accumulate(tmp_path):
 def test_raw_utterances_are_not_replayed_as_profile_facts(value, rejected):
     from eli.runtime.user_model import _looks_like_raw_utterance
     assert _looks_like_raw_utterance(value) is rejected, value
+
+
+def test_every_runtime_report_of_the_version_reads_the_one_reader(monkeypatch, tmp_path):
+    """The boot self-model and the failure capsule each asked for the metadata of the package
+    'eli-v2.0', another product's, and the version record for 'eli', one this product never installs."""
+    from eli.runtime import self_improvement, version_record
+    from eli.runtime.awareness_boot import AwarenessState
+    monkeypatch.setattr(self_facts, "_version", lambda: "9.8.7")
+    assert AwarenessState._running_version() == "9.8.7"
+    assert self_improvement.failure_capsule("OPEN_APP", {}, {"ok": False, "error": "x"})["eli_version"] == "9.8.7"
+    # the version record reads the pyproject beside the package first, and the one reader when there is none
+    import tomllib
+    from pathlib import Path
+    beside = Path(version_record.__file__).resolve().parents[2] / "pyproject.toml"
+    assert version_record.current_version() == tomllib.loads(beside.read_text())["project"]["version"]
+    monkeypatch.setattr(version_record, "__file__", str(tmp_path / "a" / "b" / "version_record.py"))
+    assert version_record.current_version() == "9.8.7"

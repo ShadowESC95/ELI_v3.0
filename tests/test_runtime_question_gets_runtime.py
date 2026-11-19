@@ -139,3 +139,11 @@ def test_moe_explanation_names_ram_and_cpu_not_the_rest_run_on_cpu(monkeypatch):
     assert "the rest run on CPU" not in out, "there is no 'rest' — MoE raised the count, it did not reduce it"
     assert "mixture-of-experts" in out
     assert "21.54GB" in out and "system RAM" in out and "CPU" in out
+
+
+def test_every_reader_in_the_gate_reads_the_one_snapshot(live_snapshot):
+    """Two more readers looked for the snapshot under the install tree, which a shipped build does
+    not write to, and reported the configured values as the loaded ones."""
+    assert G._eli_v14_runtime_data()["effective"]["n_ctx"] == 12192
+    assert G._eli_v14_runtime_data()["effective"]["n_gpu_layers"] == 8
+    assert not hasattr(G, "_eli_runtime_snapshot_v2") and not hasattr(G, "_eli_v14_runtime_snapshot")

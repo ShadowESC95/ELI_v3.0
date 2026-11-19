@@ -1,6 +1,6 @@
 """Behaviour lock: a named speaker never falls through to a different one.
 
-_voice_names_for_sink splits an alias into bare tokens, so a sink called
+device_names._voice_tokens splits an alias into bare tokens, so a sink called
 "small speaker" also answers to "speaker". The old resolver walked sinks in
 order and accepted `voice_name in query`, so that generic token swallowed
 "kitchen speaker" — audio went to the wrong device and ELI reported success.
@@ -12,12 +12,13 @@ or refused, never quietly swapped.
 import pytest
 
 import eli.runtime.local_connectivity as lc
+from eli.runtime.device_names import _voice_tokens
 
 
 def _sink(alias: str, sid: str, number: int) -> dict:
     s = {"id": sid, "name": sid, "alias": alias, "display_name": alias,
          "custom_name": alias, "device_number": number}
-    s["voice_names"] = lc._voice_names_for_sink(alias, sid, number)
+    s["voice_names"] = _voice_tokens(alias, sid, number)
     return s
 
 

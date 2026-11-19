@@ -25,8 +25,6 @@ log = logging.getLogger(__name__)
 # Default Piper voice to fetch when the box has none. Hosted on rhasspy/piper-voices.
 # (This is the same default tts_router falls back to: en_US-amy-medium.)
 _PIPER_VOICE = "en_US-amy-medium"
-_PIPER_BASE = ("https://huggingface.co/rhasspy/piper-voices/resolve/main/"
-               "en/en_US/amy/medium/")
 
 # Voice catalog. Upstream publishes an index of every voice it hosts (166 voices / 45 languages
 # when written) with exact paths, sizes and md5 digests. Fetching it beats hardcoding ids: the

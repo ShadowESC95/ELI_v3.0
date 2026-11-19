@@ -24,7 +24,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -901,10 +901,17 @@ _CONTROL_LIVE = {"mqtt", "upnp", "bluetooth"}   # genuinely actionable right now
 _CONTROL_ROADMAP = {"cast", "airplay", "adb", "atvremote", "hue"}  # detectable, driver pending
 # "cloud" (Spotify) intentionally excluded — not local-first.
 
+# How long one service record may take to resolve in a whole-network sweep, so a slow record cannot
+# stall it (milliseconds). A sweep for a few named service types passes its own.
+_MDNS_RESOLVE_MS = 900
 
-def _mdns_discover(timeout: float, found: List[dict], errors: List[str]) -> None:
+
+def _mdns_discover(timeout: float, found: List[dict], errors: List[str], *,
+                   services: Optional[Iterable[str]] = None, resolve_ms: int = _MDNS_RESOLVE_MS) -> None:
     """One mDNS/Bonjour sweep. Appends raw hits to ``found`` (thread-safe: caller owns the
-    list and only reads it after join). Degrades cleanly if zeroconf isn't installed."""
+    list and only reads it after join). Degrades cleanly if zeroconf isn't installed.
+    `services` names the service types to browse (every kind in _MDNS_KINDS when not given); it is the
+    one sweep, so the MQTT setup's broker search (mqtt_setup.discover_brokers_mdns) runs it too."""
     try:
         from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
     except Exception as e:
@@ -916,7 +923,7 @@ def _mdns_discover(timeout: float, found: List[dict], errors: List[str]) -> None
             try:
                 # Short per-service resolve so one slow record can't stall the sweep; the
                 # ServiceBrowser keeps firing add_service as records arrive.
-                info = zc.get_service_info(type_, name, timeout=900)
+                info = zc.get_service_info(type_, name, timeout=int(resolve_ms))
                 if not info:
                     return
                 try:
@@ -954,7 +961,7 @@ def _mdns_discover(timeout: float, found: List[dict], errors: List[str]) -> None
         errors.append(f"mDNS: {e}")
         return
     try:
-        _browsers = [ServiceBrowser(zc, t, _L()) for t in _MDNS_KINDS]
+        _browsers = [ServiceBrowser(zc, t, _L()) for t in (services or _MDNS_KINDS)]
         time.sleep(max(1.0, float(timeout)))
     except Exception as e:
         errors.append(f"mDNS: {e}")
@@ -987,10 +994,6 @@ def _bt_discover_entry(addr: str, name: str = "", rssi: Optional[int] = None) ->
         "transport": "bluetooth",
         "rssi": rssi,
     }
-
-
-def _strip_ansi(text: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
 
 
 def _classic_bt_discover(timeout: float, found: List[dict], seen: set, errors: List[str]) -> None:
@@ -1319,11 +1322,9 @@ def bluetooth_control_by_name(name: str, command: str, scan_timeout: float = 3.0
     # Resolve: a specific spoken name wins; generic words ("headphones") match the
     # strongest-signal device; a two-word name ("kitchen speaker") matches on its non-generic
     # word ("kitchen") so it doesn't collide with every speaker.
-    _GENERIC = {"headphones", "headphone", "headset", "earbuds", "earphones", "earphone",
-                "buds", "airpods", "speaker", "speakers", "soundbar", "bluetooth", "device", "it"}
+    from eli.runtime.device_names import GENERIC_DEVICE_WORDS as _GENERIC, match_bluetooth_name
     match = None
     if name_l and name_l not in _GENERIC:
-        from eli.runtime.device_names import match_bluetooth_name
         match = match_bluetooth_name(name_l, uniq)
         if match is None:
             match = next((d for d in uniq if name_l in str(d.get("name", "")).lower()), None)

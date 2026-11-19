@@ -44,6 +44,15 @@ def test_linux_pick_controller_prefers_valid_mac():
     assert pick == "AA:BB:CC:DD:EE:FF"
 
 
+def test_linux_pick_controller_takes_the_usb_one_over_a_built_in_listed_first():
+    """The first valid address always won, so the USB preference never applied."""
+    adapters = [bp.BtAdapter(id="hci0", address="11:22:33:44:55:66", bus="pci", bluez=True),
+                bp.BtAdapter(id="hci1", address="aa:bb:cc:dd:ee:ff", bus="usb", bluez=True)]
+    listed = ["11:22:33:44:55:66", "AA:BB:CC:DD:EE:FF"]
+    assert bp._linux_pick_controller(listed, adapters) == "AA:BB:CC:DD:EE:FF"
+    assert bp._linux_pick_controller(listed, adapters[:1]) == "11:22:33:44:55:66"   # no USB one: the first
+
+
 def test_linux_default_hci_id_uses_busctl_not_hardcoded(monkeypatch):
     monkeypatch.setattr(bp, "_linux_bluez_default_controller_mac", lambda: "AA:BB:CC:DD:EE:FF")
     monkeypatch.setattr(bp, "_linux_hci_for_controller_mac", lambda m: "hci2" if m == "AA:BB:CC:DD:EE:FF" else "")

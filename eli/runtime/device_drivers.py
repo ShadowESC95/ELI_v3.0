@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.runtime.bt_platform import _sh as _run_tool
+
 log = logging.getLogger(__name__)
 
 
@@ -547,16 +549,7 @@ class BluetoothDriver(Driver):
             a = str(dev["id"])[4:]
         return a
 
-    @staticmethod
-    def _sh(args, timeout: float = 25.0):
-        import subprocess
-        try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-            return r.returncode, (r.stdout or "") + (r.stderr or "")
-        except FileNotFoundError:
-            return 127, "tool-not-found"
-        except Exception as e:  # timeout / permission / anything — stay graceful
-            return 1, str(e)
+    _sh = staticmethod(_run_tool)   # bt_platform._sh, the one run-a-tool helper of the device modules
 
     def pair(self, dev, code=None):
         return self.control(dev, "pair")
@@ -611,19 +604,6 @@ class BluetoothDriver(Driver):
         return bp.set_adapter_alias(name)
 
     @classmethod
-    def _bt_hci_interfaces(cls) -> List[Dict[str, str]]:
-        from eli.runtime import bt_platform as bp
-        return [
-            {"name": a.id, "address": a.address, "state": a.state}
-            for a in bp.list_adapters() if a.source == "kernel"
-        ]
-
-    @classmethod
-    def _bt_try_recover_radio(cls) -> None:
-        from eli.runtime import bt_platform as bp
-        bp.try_recover_radio()
-
-    @classmethod
     def _bt_recovery_hint(cls) -> str:
         from eli.runtime import bt_platform as bp
         return bp.recovery_hint()
@@ -656,16 +636,6 @@ class BluetoothDriver(Driver):
             )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-
-    @classmethod
-    def _device_in_cache(cls, addr: str) -> bool:
-        from eli.runtime import bt_platform as bp
-        return bp.device_known(addr)
-
-    @classmethod
-    def _wait_for_bt_device(cls, addr: str, timeout: float = 18.0) -> bool:
-        from eli.runtime import bt_platform as bp
-        return bp.wait_for_device(addr, timeout=timeout)
 
     @classmethod
     def _is_paired(cls, addr: str) -> bool:
@@ -755,7 +725,7 @@ class BluetoothDriver(Driver):
         return (tail[-1][:140] if tail else "Bluetooth command failed")
 
     @staticmethod
-    def _btctl_batch(addr: str, steps: List[str], timeout: float = 45.0, agent: str = "NoInputNoOutput"):
+    def _btctl_batch(addr: str, steps: List[str], timeout: float = 45.0):
         """Run bluetoothctl steps (no agent — uses the system/desktop pairing agent)."""
         import subprocess
         BluetoothDriver._bt_ensure_controller()

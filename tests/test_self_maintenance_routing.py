@@ -42,17 +42,6 @@ def test_close_app_empty_args_not_actionable():
     assert not is_actionable(tags["category"])
 
 
-def test_deterministic_patch_already_applied():
-    from eli.runtime.deterministic_failure_patches import propose_deterministic_patch
-
-    patch = propose_deterministic_patch({
-        "error": "Missing topic for document generation",
-        "command": 'CREATE_DOCUMENT {"name": "new agent"}',
-    })
-    assert patch is not None
-    assert patch.get("already_applied") is True
-
-
 def test_a_request_to_fix_the_users_own_text_is_not_a_self_patch():
     """Both ran ELI's patch cycle on its own source, unconfirmed."""
     for said in ("can you fix the errors in this paragraph", "please fix the issues with my cv",

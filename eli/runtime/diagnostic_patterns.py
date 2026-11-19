@@ -20,12 +20,6 @@ _VAGUE_DYNAMIC_STATUS_RE = re.compile(
     r")\b"
 )
 
-_IMAGE_STATUS_RE = re.compile(
-    r"(?is)\b(?:image|images|picture|visual|render)\b.{0,120}\b(?:"
-    r"update|processed|processing|go\s+live|ready|status|generated|job"
-    r")\b"
-)
-
 # A message challenging ELI ("what the hell", "not what i asked"): one reader,
 # eli/cognition/correction_patterns.
 from eli.cognition.correction_patterns import is_user_challenge  # noqa: E402,F401
@@ -49,11 +43,6 @@ _POISONED_ASSISTANT_TURN_RE = re.compile(
 
 def is_vague_dynamic_status_claim(text: Any) -> bool:
     return bool(_VAGUE_DYNAMIC_STATUS_RE.search(str(text or "")))
-
-
-def is_image_status_claim(text: Any) -> bool:
-    value = str(text or "")
-    return bool(_IMAGE_STATUS_RE.search(value) and _VAGUE_DYNAMIC_STATUS_RE.search(value))
 
 
 def should_exclude_turn_from_prompt(role: Any, content: Any) -> bool:

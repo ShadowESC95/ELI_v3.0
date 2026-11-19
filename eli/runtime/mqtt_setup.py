@@ -301,58 +301,18 @@ def discover_brokers_mdns(timeout: float = 2.5) -> List[Dict[str, Any]]:
     _mqtt._tcp, so this finds the broker without the user knowing its address.
     Returns [] when zeroconf is unavailable or nothing answers — never raises.
     """
-    found: List[Dict[str, Any]] = []
+    from eli.runtime.device_server import _mdns_discover
+    hits: List[Dict[str, Any]] = []
+    errors: List[str] = []
     try:
-        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
-    except Exception:
-        return found
-
-    import time as _t
-
-    class _Listener(ServiceListener):
-        def add_service(self, zc, type_, name):
-            try:
-                info = zc.get_service_info(type_, name, timeout=int(timeout * 1000))
-            except Exception:
-                return
-            if not info:
-                return
-            for raw in (info.parsed_addresses() or []):
-                if not raw:
-                    continue
-                found.append({
-                    "host": raw,
-                    "port": int(info.port or 1883),
-                    "name": str(name).split(".")[0],
-                    "tls": "secure-mqtt" in str(type_),
-                    "source": "mdns",
-                })
-                break
-
-        def update_service(self, *a, **k):
-            pass
-
-        def remove_service(self, *a, **k):
-            pass
-
-    zc = None
-    try:
-        zc = Zeroconf()
-        listener = _Listener()
-        for svc in _MDNS_MQTT_SERVICES:
-            try:
-                ServiceBrowser(zc, svc, listener)
-            except Exception:
-                continue
-        _t.sleep(max(0.5, float(timeout)))
+        _mdns_discover(timeout, hits, errors, services=_MDNS_MQTT_SERVICES, resolve_ms=int(timeout * 1000))
     except Exception:
         log.debug("mqtt_setup: mDNS discovery failed", exc_info=True)
-    finally:
-        try:
-            if zc is not None:
-                zc.close()
-        except Exception:
-            log.debug("mqtt_setup: zeroconf close failed", exc_info=True)
+    if errors:
+        log.debug("mqtt_setup: mDNS discovery: %s", "; ".join(errors))
+    found = [{"host": h["host"], "port": int(h.get("port") or 1883), "name": str(h.get("name") or "").split(".")[0],
+              "tls": "secure-mqtt" in str(h.get("service") or ""), "source": "mdns"}
+             for h in hits if h.get("host")]
     # De-duplicate on host:port, preserving discovery order.
     seen, unique = set(), []
     for b in found:

@@ -75,13 +75,12 @@ def test_discovered_at_is_set_on_first_build_and_kept_on_the_next():
     assert first is not None and _status("OPEN_APP")["discovered_at"] == first
 
 
-def test_regenerating_does_not_reset_a_real_probe_result():
+def test_regenerating_does_not_reset_what_is_known_about_an_action():
     from eli.runtime import capability_state as cs
-    from eli.runtime.evidence_arbitration import EvidenceState
-    cs.record_probe_result("SOME_DEVICE_ACTION", EvidenceState.NOT_FOUND, reachable=False)
+    cs.upsert_state("SOME_DEVICE_ACTION", reachable=False)
     _build_capability_entry("SOME_DEVICE_ACTION", {"source": "executor"})
     st = _status("SOME_DEVICE_ACTION")
-    assert st["evidence_state"] == EvidenceState.NOT_FOUND and st["reachable"] is False
+    assert st["reachable"] is False
     assert st["status"] == "unavailable"
 
 

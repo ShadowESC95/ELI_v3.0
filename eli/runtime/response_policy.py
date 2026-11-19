@@ -52,38 +52,3 @@ def classify_response_mode(action: str, args: Dict[str, Any] | None = None, meta
             return RAW_MEMORY_DUMP
     return COGNITIVE_DEFAULT
 
-
-def should_force_cognitive_for_user_text(text: str) -> bool:
-    low = str(text or "").strip().lower()
-    if not low:
-        return False
-    cognitive_patterns = (
-        "who am i",
-        "who are you",
-        "what do you remember of me",
-        "what do you know about me",
-        "what do you know about yourself",
-        "what habits",
-        "explain your memory system",
-        "explain exactly how your memory system works",
-        "explain your cognition pipeline",
-        "how does your memory system work",
-        "how does your cognition pipeline work",
-        "if i ask you something you're wrong about",
-        "what is with the calmly",
-    )
-    if any(p in low for p in cognitive_patterns):
-        if any(x in low for x in (
-            "timestamp included",
-            "resolved runtime paths",
-            "what imports are failing",
-            "run a full runtime audit",
-            "raw memory dump",
-            "don't summarise",
-            "do not summarise",
-            "every table",
-            "row count",
-        )):
-            return False
-        return True
-    return False

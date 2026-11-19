@@ -5,7 +5,6 @@ import pytest
 
 from eli.runtime.response_policy import (
     classify_response_mode,
-    should_force_cognitive_for_user_text,
     GROUNDED_REPORT,
     COGNITIVE_DEFAULT,
     RAW_MEMORY_DUMP,
@@ -104,23 +103,6 @@ def test_policies_are_distinct():
     assert GROUNDED_REPORT != COGNITIVE_DEFAULT
     assert GROUNDED_REPORT != RAW_MEMORY_DUMP
     assert COGNITIVE_DEFAULT != RAW_MEMORY_DUMP
-
-
-# ── should_force_cognitive_for_user_text ─────────────────────────────────
-
-@pytest.mark.parametrize("text,expect_cognitive", [
-    ("who am i", True),
-    ("who are you", True),
-    ("what do you remember of me", True),
-    ("what is 2+2", False),
-    ("open a file", False),
-    ("", False),
-])
-def test_force_cognitive_for_user_text(text, expect_cognitive):
-    result = should_force_cognitive_for_user_text(text)
-    assert isinstance(result, bool)
-    if expect_cognitive:
-        assert result is True
 
 
 # ── Memory recall policy edge cases ──────────────────────────────────────

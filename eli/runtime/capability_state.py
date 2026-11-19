@@ -20,9 +20,8 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
-from eli.runtime.evidence_arbitration import EvidenceState
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -161,49 +160,6 @@ def upsert_state(action: str, *, db_path: Optional[str | Path] = None,
         conn.close()
 
 
-def record_probe_result(action: str, evidence_state: str, *,
-                        reachable: Optional[bool] = None,
-                        device_available: Optional[bool] = None,
-                        cost_estimate: Optional[float] = None,
-                        now: Optional[float] = None,
-                        db_path: Optional[str | Path] = None) -> None:
-    """A probe just reported something real about this action. Also refreshes
-    reliability/last_verified_success from evidence_ledger — that module stays
-    the one place reliability math is computed; this just caches the current
-    values alongside everything else so capability_updater.py has one row to
-    read instead of querying two separate systems. cost_estimate is accepted
-    for the caller's own logging/telemetry but not persisted — this table
-    tracks capability STATE, not a probe cost history."""
-    now = float(now if now is not None else time.time())
-    fields: Dict[str, Any] = {"evidence_state": str(evidence_state), "last_probe_at": now}
-    if reachable is not None:
-        fields["reachable"] = bool(reachable)
-    if device_available is not None:
-        fields["device_available"] = bool(device_available)
-    try:
-        from eli.runtime.evidence_ledger import last_verified_success, predict_success
-        lvs = last_verified_success(action)
-        if lvs is not None:
-            fields["last_verified_success"] = lvs
-        rel = predict_success(action)
-        if rel is not None:
-            fields["reliability"] = rel
-    except Exception:
-        log.debug("evidence_ledger lookup failed while recording a probe result", exc_info=True)
-    upsert_state(action, now=now, db_path=db_path, **fields)
-
-
-# ── freshness policy ──────────────────────────────────────────────────────
-# Static per-dimension TTLs, not a learned/adaptive policy — matches "don't
-# over-engineer" over a speculative future need there is no usage data to
-# calibrate against yet.
-_FRESHNESS_S: Dict[str, float] = {
-    "reachable": 5 * 60.0,
-    "device_available": 10 * 60.0,
-    "permission_state": 60 * 60.0,
-}
-
-
 # A failure that names something missing from this machine, not a mistake in the request: a module,
 # a program, an extra. A missing file is left out: that is usually the user's file, not ELI's part.
 _MISSING_PART_RE = re.compile(r"no module named|modulenotfounderror|\b(?:isn't|is not|not) installed\b|command not found",
@@ -219,88 +175,6 @@ def observe_run(action: str, outcome: str, detail: str = "", *, db_path: Optiona
         upsert_state(action, db_path=db_path, dependency_ready=False)
 
 
-def is_stale(action: str, dimension: str, *, now: Optional[float] = None,
-            db_path: Optional[str | Path] = None) -> bool:
-    """Whether the given dimension's evidence is old enough to need
-    re-checking. Unknown (never probed) counts as stale — there is nothing
-    fresh about an absence. A dimension with no freshness policy registered
-    is never forced stale by this function."""
-    ttl = _FRESHNESS_S.get(dimension)
-    if ttl is None:
-        return False
-    state = get_state(action, db_path=db_path)
-    if not state or not state.get("last_probe_at"):
-        return True
-    now = float(now if now is not None else time.time())
-    return (now - float(state["last_probe_at"])) > ttl
-
-
-# ── probe adapters ────────────────────────────────────────────────────────
-# Three existing probes, three incompatible native return shapes:
-#   mic_diag._probe_device          -> Optional[int]             (mean RMS, or None)
-#   ble_light.probe                 -> dict                      (BleProbe.as_dict())
-#   mqtt_setup.probe_broker_connection -> Dict[str, Any]
-# Each adapter below normalizes one probe's raw return into
-# (evidence_state, cost_estimate, detail).
-#
-# None of them has a caller in the running pipeline yet, and none corresponds to a capability
-# manifest action; they are built and tested so a real caller can use them.
-
-def _adapt_mic_probe(rms: Optional[int]) -> Tuple[str, Optional[float], str]:
-    if rms is None:
-        return EvidenceState.NOT_FOUND, None, "device could not be read"
-    return EvidenceState.FOUND, None, f"mean RMS {rms}"
-
-
-def _adapt_ble_probe(result: Dict[str, Any]) -> Tuple[str, Optional[float], str]:
-    if result.get("error"):
-        return EvidenceState.INSPECTION_FAILED, None, str(result["error"])
-    if result.get("protocol"):
-        return EvidenceState.FOUND, None, f"protocol: {result['protocol']}"
-    return EvidenceState.NOT_FOUND, None, "connected, no known light protocol matched"
-
-
-def _adapt_mqtt_probe(result: Dict[str, Any]) -> Tuple[str, Optional[float], str]:
-    if result.get("ok"):
-        return EvidenceState.FOUND, None, "broker reachable"
-    return (EvidenceState.NOT_FOUND, None,
-            str(result.get("error") or result.get("hint") or "broker unreachable"))
-
-
-_ADAPTERS = {
-    "mic_probe": _adapt_mic_probe,
-    "ble_probe": _adapt_ble_probe,
-    "mqtt_probe": _adapt_mqtt_probe,
-}
-
-
-# ── probe selection ────────────────────────────────────────────────────────
-# A real but modest first version: given a dimension missing evidence, pick
-# the cheapest registered adapter that actually resolves it. Not a full
-# expected-information-value optimizer — the plan itself flags that as an
-# explicit stretch goal, not v1, since building it without real usage data
-# to calibrate against would be speculative complexity. Costs below are
-# relative orderings grounded in what each probe mechanically does (a plain
-# TCP connect is cheaper than a BLE GATT negotiation, which is cheaper than
-# opening an audio device and sampling it) — not measured data, since none
-# exists yet.
-_DIMENSION_ADAPTERS: Dict[str, Tuple[Tuple[str, float], ...]] = {
-    "reachable": (("mqtt_probe", 1.0), ("ble_probe", 3.0)),
-    "device_available": (("mic_probe", 2.0),),
-}
-
-
-def select_cheapest_adapter(dimension: str) -> Optional[str]:
-    """The cheapest registered adapter name that resolves the given
-    dimension, or None if nothing registered resolves it."""
-    candidates = _DIMENSION_ADAPTERS.get(dimension)
-    if not candidates:
-        return None
-    return min(candidates, key=lambda c: c[1])[0]
-
-
 __all__ = [
-    "ensure_schema", "get_state", "all_states", "touch_discovered", "upsert_state",
-    "record_probe_result", "observe_run", "is_stale", "select_cheapest_adapter",
-    "_adapt_mic_probe", "_adapt_ble_probe", "_adapt_mqtt_probe",
+    "ensure_schema", "get_state", "all_states", "touch_discovered", "upsert_state", "observe_run",
 ]

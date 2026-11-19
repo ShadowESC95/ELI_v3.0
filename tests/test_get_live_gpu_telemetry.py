@@ -281,9 +281,8 @@ def test_every_status_surface_shows_a_non_nvidia_gpu(monkeypatch):
     assert "AMD Radeon RX 7900 XTX" in hp.describe_gpus(dict(_AMD))
     # grounded evidence and replies print the same line: each had its own nvidia-smi call that
     # said "unavailable" on every other vendor and on an NVIDIA driver mismatch
-    from eli.runtime import deterministic_grounding_gate, user_visible_response_surface
+    from eli.runtime import deterministic_grounding_gate
     assert deterministic_grounding_gate._describe_gpus is hp.describe_gpus
-    assert user_visible_response_surface._describe_gpus is hp.describe_gpus
 
 
 def test_the_gpu_line_lists_every_card():

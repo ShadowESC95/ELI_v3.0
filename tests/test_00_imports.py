@@ -169,8 +169,6 @@ ALL_MODULES = [
     "eli.runtime.security",
     "eli.runtime.self_improvement",
     "eli.runtime.self_model_refresh",
-    "eli.runtime.stage_packets",
-    "eli.runtime.stage_packet_store",
     # ── tools ─────────────────────────────────────────────────────────────────
     "eli.tools",
     "eli.tools.image_engine",

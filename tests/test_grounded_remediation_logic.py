@@ -13,10 +13,8 @@ from eli.runtime import grounded_remediation as gr
 def _clean_state():
     # No pending plan can leak into a test → a stray affirmation can never execute.
     gr.clear_pending()
-    gr.set_busy(False)
     yield
     gr.clear_pending()
-    gr.set_busy(False)
 
 
 # --------------------------------------------------------------------------- #

@@ -770,11 +770,6 @@ def verified_actions(*, db_path: Optional[str | Path] = None) -> Dict[str, float
     return {str(a).upper(): float(t) for a, t in rows if a and t}
 
 
-def last_verified_success(action: str, *, db_path: Optional[str | Path] = None) -> Optional[float]:
-    """Timestamp of the most recent successful tool_execution for this action, or None."""
-    return verified_actions(db_path=db_path).get(str(action or "").upper())
-
-
 def predict_success(action: str, *, db_path: Optional[str | Path] = None) -> Optional[float]:
     """Chance the next run succeeds (action_reliability), or None when this action has never run here."""
     try:
