@@ -25,7 +25,7 @@ Reproducible via `scripts/coverage_full.sh`; methodology in
 | Pre-existing reds (unrelated) | 5 |
 | Skipped / xfailed (documented) | 45 / 2 (the tool/name-alias bug is now fixed — that xfail is a real pass) |
 
-> **Sole exclusion:** `eli/gui/gui_eli_original.py` — the ~7k-statement main
+> **Sole exclusion:** the main window as it was then (now `eli/gui/main_window/`) — the ~7k-statement main
 > window, which blocks on device/display init and cannot be constructed headless.
 > *Everything else is in the denominator.* Notably the number is now **higher** than
 > the earlier GUI-*excluded* 47.6% — because the offscreen-Qt lane genuinely tests the
