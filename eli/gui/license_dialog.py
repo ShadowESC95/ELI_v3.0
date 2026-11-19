@@ -251,7 +251,3 @@ def prompt_terminal(reason: str = "") -> Optional[str]:
     except (EOFError, KeyboardInterrupt):
         return None
     return key or None
-
-
-# Back-compat for any caller of the pre-rewrite private helper.
-_prompt_terminal = prompt_terminal

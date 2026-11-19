@@ -40,29 +40,9 @@ MODEL_PROVIDER_LABELS = {
 }
 
 
-def _import_eli_gpu_pack():
-    """Load eli_gpu_pack in AppImage/portable (hiddenimport) or dev tree."""
-    import sys
-    try:
-        import eli_gpu_pack
-        return eli_gpu_pack
-    except ImportError:
-        # Expected on portable/dev: module lives under packaging/pyinstaller/.
-        # Do not log exc_info — startup's DEBUG handler prints it as a scary
-        # traceback even though the path fallback below succeeds.
-        log.debug("eli_gpu_pack not on sys.path yet; resolving via packaging tree")
-    candidates = []
-    meipass = getattr(sys, "_MEIPASS", "")
-    if meipass:
-        candidates.append(Path(meipass) / "packaging" / "pyinstaller")
-    candidates.append(_PROJECT_ROOT / "packaging" / "pyinstaller")
-    candidates.append(Path(__file__).resolve().parents[3] / "packaging" / "pyinstaller")
-    for base in candidates:
-        if (base / "eli_gpu_pack.py").is_file():
-            sys.path.insert(0, str(base))
-            import eli_gpu_pack
-            return eli_gpu_pack
-    raise ImportError("eli_gpu_pack not found")
+# The GPU pack module, found by the one loader that activates the pack at start (packaged app or
+# source tree).
+from eli.core.gpu_pack_runtime import _import_gpu_pack_module as _import_eli_gpu_pack  # noqa: E402
 
 
 def _dialog_gpus() -> List[Dict[str, Any]]:
@@ -294,31 +274,16 @@ def _enable_switched_off_pack(parent) -> bool:
 
 
 def _query_ollama_tags(host: str, timeout: int = 5):
-    """Query an Ollama server's /api/tags. Returns (sorted_names_or_None,
-    error_or_None); never raises. Loopback is allowed even with NetGuard on
-    (see netguard._is_local_host), so localhost:11434 is reachable offline."""
-    import json
-    import urllib.request
-    # Normalise through the client so a scheme-less "localhost:11434" typed here
-    # behaves exactly as it does everywhere else, and try the same IPv4 fallback.
+    """An Ollama server's models as (sorted_names_or_None, error_or_None); never raises. Read by
+    the window's own Ollama reader (OllamaModelManager.list_models): the address is normalised and
+    its IPv4 form tried as everywhere else, and it is registered with the network guard as a local
+    service the owner named, so a LAN Ollama typed here is reachable offline as the message says.
+    Listing never starts Ollama; using an Ollama model does."""
     try:
-        from eli.integrations.ollama.client import candidate_hosts
-        bases = candidate_hosts(host)   # listing never starts Ollama; using an Ollama model does
-    except Exception:
-        bases = [(host or "http://127.0.0.1:11434").strip().rstrip("/")]
-    last = None
-    for base in bases:
-        try:
-            with urllib.request.urlopen(base + "/api/tags", timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            names = sorted(
-                m["name"] for m in data.get("models", [])
-                if isinstance(m, dict) and m.get("name")
-            )
-            return names, None
-        except Exception as exc:
-            last = exc
-    return None, last
+        from eli.gui.main_window.models import OllamaModelManager
+        return sorted(OllamaModelManager().list_models(host, timeout=timeout)), None
+    except Exception as exc:
+        return None, exc
 
 
 def _ollama_unreachable_message(host: str, err) -> str:
@@ -1417,9 +1382,12 @@ class StartupModelSelectionDialog(QDialog):
             return "piper"
 
     def selected_tts_voice(self) -> str:
-        """The voice id implied by the engine choice: a natural neural voice, or ''
-        (empty = leave the Piper voice as-is)."""
-        return "natural:sophia" if self.selected_tts_engine() == "natural" else ""
+        """The voice id implied by the engine choice: the natural engine's own default voice
+        (eli/perception/tts_xtts), or '' (empty = leave the Piper voice as-is)."""
+        if self.selected_tts_engine() != "natural":
+            return ""
+        from eli.perception.tts_xtts import NATURAL_PREFIX, _DEFAULT_NATURAL
+        return NATURAL_PREFIX + _DEFAULT_NATURAL
 
     def should_auto_tune(self) -> bool:
         return self.selected_provider() != "ollama"
@@ -2206,8 +2174,7 @@ class FirstBootWizard(QDialog):
         except Exception:
             return "piper"
 
-    def selected_tts_voice(self) -> str:
-        return "natural:sophia" if self.selected_tts_engine() == "natural" else ""
+    selected_tts_voice = StartupModelSelectionDialog.selected_tts_voice   # one rule for both windows
 
     def accept(self):
         provider = self.selected_provider()

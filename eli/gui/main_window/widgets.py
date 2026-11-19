@@ -88,49 +88,6 @@ class _QABoard(QWidget):
     """
     changed = pyqtSignal()  # emitted whenever cards are added/removed
 
-    _NO_ARG_ACTIONS = frozenset({
-        # Time / date
-        "TIME", "DATE", "GET_DATE", "GET_TIME",
-        # System info
-        "SCREENSHOT", "HARDWARE_PROFILE", "LIST_DIR",
-        "RUNTIME_AUDIT", "IMPORT_AUDIT", "RESOLVE_RUNTIME_PATHS",
-        "GUI_RUNTIME_AUDIT", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
-        "RUNTIME_STATUS", "REASONING_MODE_STATUS", "MEMORY_STATUS", "COGNITION_STATUS",
-        # Memory
-        "MEMORY_STATS", "AWARENESS_STATUS", "PERSONAL_MEMORY_SUMMARY",
-        "PERSONAL_MEMORY_DEEP_EXPLAIN", "MEMORY_AUDIT", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
-        # Help & capabilities
-        "HELP", "LIST_CAPABILITIES",
-        # Self-awareness / improvement
-        "SELF_TEST", "SELF_ANALYZE", "SELF_IMPROVE", "SELF_PATCH", "SELF_UPGRADE",
-        "MORNING_REPORT", "CODE_CHANGES",
-        # Proactive daemon
-        "PROACTIVE_START", "PROACTIVE_STOP", "PROACTIVE_STATUS", "HABIT_STATUS",
-        # Clipboard (get)
-        "GET_CLIPBOARD",
-        # Plugins
-        "PLUGIN_LIST", "PLUGIN_STATUS",
-        # News (default fetch all)
-        "NEWS_FETCH",
-        # Misc
-        "GET_STATUS", "SHOW_DIFF", "LIST_EVENTS",
-        # Media control (no args needed to pause/stop/next/prev)
-        "STOP_MEDIA", "PAUSE_MEDIA", "PLAY_MEDIA", "NEXT_MEDIA",
-        "PREVIOUS_MEDIA", "SHUFFLE_MEDIA", "REPEAT_MEDIA",
-        # Chronal / system
-        "CHECK_CHRONAL_ALIGNMENT",
-        # File system / OS launchers
-        "OPEN_FILE_SYSTEM", "OPEN_AUDIO_SETTINGS", "OPEN_BROWSER",
-        "OPEN_COMMUNICATION_HUB", "OPEN_MEDIA_HUB", "OPEN_NETWORK_BROWSER",
-        "OPEN_SYSTEM_SETTINGS", "OPEN_POWER_SETTINGS", "OPEN_IDE",
-        # Persona
-        "PERSONA_LOCK_STATUS", "PERSONA_LOCK_CLEAR",
-        # System stats (no args)
-        "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS",
-        # Notes / Pomodoro no-arg variants
-        "LIST_NOTES", "POMODORO_STATUS", "POMODORO_STOP",
-    })
-
     def __init__(self, execute_fn, parent=None):
         super().__init__(parent)
         self._execute_fn = execute_fn   # callable(action_name, args)

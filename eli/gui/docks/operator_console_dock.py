@@ -7,7 +7,7 @@ from eli.gui import qt_compat as QtCompat
 from eli.runtime.operator_state import operator_snapshot
 from eli.execution.operator_actions import set_proposal_state
 from eli.planning.operator_goal_actions import create_goal, set_goal_enabled
-from eli.execution.operator_policy import load_policy, set_policy_mode
+from eli.execution.operator_policy import VALID_POLICY_MODES, load_policy, set_policy_mode
 from eli.runtime.operator_feed import safe_operator_feed
 from eli.planning.autonomy_scheduler import scheduler_snapshot, scheduler_tick
 
@@ -42,12 +42,7 @@ class OperatorConsoleDock(QtCompat.QDockWidget):
         layout.addWidget(QtCompat.QLabel("Policy mode"))
         pol_row = QtCompat.QHBoxLayout()
         self.policy_mode = QtCompat.QComboBox()
-        self.policy_mode.addItems([
-            "proposal_only",
-            "operator_supervised",
-            "goal_driven",
-            "observe_only",
-        ])
+        self.policy_mode.addItems(sorted(VALID_POLICY_MODES))   # the modes the policy itself takes
         self.policy_reason = QtCompat.QLineEdit()
         self.policy_reason.setPlaceholderText("Policy reason")
         self.policy_apply_btn = QtCompat.QPushButton("Apply Policy")
@@ -176,12 +171,8 @@ class OperatorConsoleDock(QtCompat.QDockWidget):
     def create_goal_from_ui(self):
         title = self.goal_title.text().strip()
         objective = self.goal_objective.text().strip()
-        out = create_goal(
-            title=title,
-            objective=objective or title,
-            cadence_sec=3600,
-            autonomy_mode="proposal_only",
-        )
+        # How often and how freely a new goal runs are the planner's own defaults (create_goal).
+        out = create_goal(title=title, objective=objective or title)
         self.summary.append(f"goal_create: {out}")
         if out.get("ok"):
             self.goal_title.setText("")
@@ -197,7 +188,7 @@ class OperatorConsoleDock(QtCompat.QDockWidget):
 
     def run_scheduler_tick(self):
         try:
-            out = scheduler_tick(limit=3, cooldown_sec=60)
+            out = scheduler_tick()   # the scheduler's own limit and cooldown
         except Exception as exc:
             out = {"ok": False, "error": str(exc)}
         self.summary.append(f"scheduler_tick: {out}")

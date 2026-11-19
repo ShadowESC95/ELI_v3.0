@@ -60,7 +60,7 @@ class LocalModelManager:
         n_ctx: int = 0,
         n_threads: int = 0,
         n_gpu_layers: Optional[int] = None,
-        n_batch: int = 512,
+        n_batch: int = 0,
         cache_type_k: str = "",
         cache_type_v: str = "",
         use_mmap: bool = True,
@@ -100,11 +100,12 @@ class LocalModelManager:
             except Exception:
                 log.debug("[GUI] trained context check skipped", exc_info=True)
             from eli.cognition import gguf_inference as _gg
+            from eli.core.runtime_settings import DEFAULTS as _setting_defaults
             request = _gg.load_request(
                 path_obj,
                 n_ctx=max(0, int(n_ctx or 0)),
                 n_gpu_layers=None if n_gpu_layers is None else max(0, int(n_gpu_layers)),
-                n_batch=max(1, int(n_batch or 512)),
+                n_batch=max(1, int(n_batch or _setting_defaults["batch_size"])),   # none named: the setting's own default
                 n_threads=max(0, int(n_threads or 0)),
                 cache_type_k=str(cache_type_k or ""),
                 cache_type_v=str(cache_type_v or ""),
@@ -214,7 +215,9 @@ class OllamaModelManager:
             return candidate_hosts(host or self.host)
         except Exception:
             return [self._normalize_host(host or self.host)]
-    def list_models(self, host: Optional[str] = None) -> List[str]:
+    def list_models(self, host: Optional[str] = None, timeout: float = 4) -> List[str]:
+        """The models an Ollama server holds, in the server's order; raises when no address
+        answers. The one /api/tags reader of the window, the start-up window and the wizard."""
         last = None
         # Listing never starts Ollama (it started `ollama serve` at every launch with a GGUF model
         # in use); the client starts it when a reply is asked of an Ollama model.
@@ -224,10 +227,8 @@ class OllamaModelManager:
                 _allow_via_netguard(base)
             except Exception:
                 log.debug("[OLLAMA] netguard registration skipped", exc_info=True)
-            req = urllib.request.Request(base + '/api/tags',
-                                         headers={'Content-Type': 'application/json'})
             try:
-                with urllib.request.urlopen(req, timeout=4) as resp:
+                with urllib.request.urlopen(base + '/api/tags', timeout=timeout) as resp:
                     data = json.loads(resp.read().decode('utf-8', errors='replace'))
                 return [m.get('name', '') for m in data.get('models', []) if m.get('name')]
             except Exception as exc:

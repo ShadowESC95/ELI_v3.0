@@ -61,10 +61,12 @@ class AdvancedSettingsDialog(QDialog):
         _page("models", self._build_models_tab(), "\U0001f9e0 Models")
         _page("cognition", self._build_cognition_tab(), "\U0001f9e0 Cognition")
         # Community marketplace: the verified way strangers' code comes in (download to memory,
-        # hash, scan, consent, installed switched off), the same page as Extensions ▸ Browse.
+        # hash, scan, consent, installed switched off). The Extensions tab's own widget, opened
+        # at Browse: one copy of it, so a fix to either place is a fix to both.
         try:
-            from eli.gui.tabs.marketplace_tab import MarketplaceTab
-            self._marketplace_tab = MarketplaceTab(parent_window=self)
+            from eli.gui.tabs.extensions_tab import ExtensionsTab
+            self._marketplace_tab = ExtensionsTab(parent_window=self)
+            self._marketplace_tab.open_page("browse")
             _page("marketplace", self._marketplace_tab, "\U0001f6d2 Marketplace")
         except Exception as _mk_err:
             from eli.utils.log import get_logger
@@ -595,16 +597,7 @@ class AdvancedSettingsDialog(QDialog):
                 update_capability_manifest()
                 self._log_upgrade("\u2705 Capability manifest updated.")
             except Exception as e:
-                try:
-                    import subprocess, sys
-                    root = Path(__file__).resolve().parents[3]
-                    result = subprocess.run(
-                        [sys.executable, str(root / "auto_update.py"), "--dry-run"],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    self._log_upgrade(result.stdout[-500:] if result.stdout else f"\u274c {e}")
-                except Exception as e2:
-                    self._log_upgrade(f"\u274c {e} / {e2}")
+                self._log_upgrade(f"\u274c Capability manifest error: {e}")
         threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_persona(self):

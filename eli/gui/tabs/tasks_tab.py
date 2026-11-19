@@ -187,25 +187,12 @@ class TasksTab(QWidget):
             log.debug("task result shown as plain text", exc_info=True)
             self.result.setPlainText(text)
 
-    def _forget_persisted(self, jid):
-        """Drop the durable record so a cancelled task doesn't re-arm on restart."""
-        bt = self._bt()
-        try:
-            d = bt.get(jid) if bt else None
-            pid = ((d or {}).get("meta") or {}).get("pid")
-            if pid:
-                from eli.runtime.scheduled_tasks import forget
-                forget(pid)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
     def _cancel_selected(self):
         jid = self._selected_jid()
         bt = self._bt()
         if jid is None or bt is None:
             return
-        self._forget_persisted(jid)
-        ok = bt.cancel(jid)
+        ok = bt.cancel(jid)             # a cancel that takes also drops the stored record
         self.result.setPlainText(f"Cancel job #{jid}: {'cancelled' if ok else 'could not cancel (already running/finished)'}")
         self._refresh()
 
@@ -276,8 +263,7 @@ class TasksTab(QWidget):
                                  kind=str(meta.get("kind") or "auto"))
         if not vals:
             return
-        self._forget_persisted(jid)     # drop the old durable record
-        bt.cancel(jid)                  # un-arm the old timer
+        bt.cancel(jid)                  # un-arm the old timer and drop its stored record
         # Preserve recurrence: without it, editing a nightly job silently made it
         # one-shot and the recurring work quietly stopped happening.
         r = self._schedule(*vals, recurring=bool(meta.get("recurring")))

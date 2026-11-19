@@ -478,18 +478,6 @@ class ImageMixin:
             log.debug(f"[IMAGE] memory log failed: {e}")
 
         try:
-            if self._proactive_daemon:
-                self._proactive_daemon.suggestion_queue.put((
-                    "image_generation",
-                    {
-                        "suggestion": f"Generated {len(result.saved_paths)} personalised images",
-                        "command": result.saved_paths[0] if result.saved_paths else "",
-                    },
-                ))
-        except Exception as e:
-            log.debug(f"[IMAGE] proactive queue update failed: {e}")
-
-        try:
             note = (
                 f"<b>🖼 Image Studio</b><br>"
                 f"Generated {len(result.saved_paths)} image(s). "

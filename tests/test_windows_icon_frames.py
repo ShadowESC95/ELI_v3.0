@@ -87,3 +87,16 @@ def test_linux_scalable_icon_is_rendered_square():
 
     assert "_square_png_bytes" in scalable_block, "scalable icon must be rendered square"
     assert "shutil.copy2" not in scalable_block, "raw source art is not square"
+
+
+def test_preparing_the_launcher_icon_writes_no_copy_into_the_install(tmp_path, monkeypatch):
+    """Every launcher preparation copied the icon into the install's blueprints/ folder "for legacy
+    lookups"; each of those lookups tries packaging/desktop first, where the copy came from."""
+    from eli.gui import branding
+    icon = tmp_path / "packaging" / "desktop" / "Eli_Icon.png"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"sample")
+    monkeypatch.setattr(branding, "install_linux_theme_icon", lambda root=None: branding.ICON_NAME)
+    assert branding.prepare_launcher_icons(root=tmp_path)
+    assert branding.source_icon_path(tmp_path) == icon
+    assert not (tmp_path / "blueprints").exists()

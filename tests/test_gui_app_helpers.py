@@ -112,7 +112,9 @@ def test_a_returning_launch_writes_nothing_and_setup_writes_only_what_it_chose(m
             "n_ctx": 12288, "theme": "a-default", "ram_budget_percent": 61}
     monkeypatch.setattr(app, "_load_config", lambda: dict(view))
     monkeypatch.setattr(app, "save_settings", lambda c: saved.append(dict(c)))
-    monkeypatch.setattr(app, "MODELS_DIR", model.parent)
+    # the models offered are the ones of every model folder (eli/core/model_folders), not only of
+    # ELI's own models folder: a model kept in a folder the user named was "No GGUF models found"
+    monkeypatch.setattr("eli.core.model_folders.chat_models", lambda current=None: {model.name: model})
     tuned = {"n_ctx": 4096, "n_gpu_layers": 0, "n_threads": 2, "batch_size": 64, "max_tokens": -1,
              "temperature": 0.7, "use_mmap": True, "use_mlock": False, "cache_type_k": "f16", "cache_type_v": "f16"}
     monkeypatch.setattr(app, "_auto_tune", lambda p: dict(tuned))

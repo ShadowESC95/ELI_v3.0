@@ -301,8 +301,6 @@ class ChromeIoMixin:
             self._user_text_color = color.name()
             self.save_settings(silent=True)
 
-    def _noop(): pass
-
     def _toggle_operator_console_dock(self, checked: bool = None):
         """Show or hide the Operator Console dock. Wired to View → Operator Console
         (Ctrl+Shift+O)."""
@@ -512,17 +510,6 @@ class ChromeIoMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
             return "<this-computer-ip>"
-
-    def _eli_server_python(self) -> str:
-        """Always launch the server with the project's venv interpreter — NOT whatever
-        python happens to be on PATH (system python lacks fastapi etc.)."""
-        import os, sys
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        for cand in (os.path.join(root, ".venv", "bin", "python"),
-                     os.path.join(root, ".venv", "Scripts", "python.exe")):
-            if os.path.exists(cand):
-                return cand
-        return sys.executable
 
     def _eli_server_refresh_firewall_hint(self) -> None:
         try:
@@ -1932,20 +1919,6 @@ class ChromeIoMixin:
                 self.console_output.append(f"\n❌ Error: {str(e)}")
         thread = threading.Thread(target=run_worker, daemon=True)
         thread.start()
-
-    def open_document(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Document",
-            str(Path.home()),
-            "Documents (*.txt *.md *.pdf *.log);;All Files (*)"
-        )
-        if file_path:
-            path_obj = Path(file_path)
-            if path_obj.suffix.lower() == '.pdf':
-                self.open_pdf(path_obj)
-            else:
-                self.open_text_file(path_obj)
 
     def open_text_file(self, path: Path):
         if self._load_into_labs_file_chat(path):

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -34,19 +33,6 @@ def source_icon_path(root: Optional[Path] = None) -> Optional[Path]:
         if p.is_file():
             return p
     return None
-
-
-def sync_runtime_icon_copy(root: Optional[Path] = None) -> Optional[Path]:
-    """Ensure blueprints/Eli_Icon.png exists for legacy path lookups."""
-    base = _project_root(root)
-    src = source_icon_path(base)
-    if base is None or src is None:
-        return None
-    dst = base / "blueprints" / "Eli_Icon.png"
-    if src.resolve() != dst.resolve():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-    return dst
 
 
 def _square_png_bytes(src: Path, size: int, *, maskable: bool = False) -> bytes:
@@ -91,7 +77,6 @@ def write_packaged_icons(root: Optional[Path] = None) -> Path:
     _ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
     master = Image.open(io.BytesIO(_square_png_bytes(src, 256))).convert("RGBA")
     master.save(ico_path, format="ICO", sizes=_ICO_SIZES)
-    sync_runtime_icon_copy(base)
     return ico_path
 
 
@@ -117,8 +102,7 @@ def install_linux_theme_icon(root: Optional[Path] = None) -> str:
 
 
 def prepare_launcher_icons(root: Optional[Path] = None) -> str:
-    """Sync blueprints copy + install Freedesktop theme icon; return .desktop Icon= value."""
-    sync_runtime_icon_copy(root)
+    """Install the Freedesktop theme icon; return the .desktop Icon= value (on Windows the .ico)."""
     if os.name == "nt":
         base = _project_root(root)
         if base is None:

@@ -1275,7 +1275,7 @@ class TabsMixin:
 
     def create_labs_tab(self):
         try:
-            from eli.gui.labs_tab import LabsTab
+            from eli.gui.labs import LabsTab
             self._labs_widget = LabsTab(parent_window=self)
             self.tabs.addTab(self._labs_widget, "⚗️  Labs")
         except Exception as _labs_err:
@@ -1308,10 +1308,16 @@ class TabsMixin:
             self.tabs.addTab(fallback, "🗓️  Tasks")
 
     def create_experimental_tab(self):
-        """Create safe experimental prototype inventory tab."""
+        """Create safe experimental prototype inventory tab, where there is an experimental/
+        folder to list: a released build has none, and the tab only said "experimental/ not found"."""
         try:
             from eli.gui.tabs.experimental_tab import ExperimentalTab
-            self._experimental_widget = ExperimentalTab(parent=self)
+            widget = ExperimentalTab(parent=self)
+            if not (getattr(widget, "inventory", None) or {}).get("exists"):
+                widget.deleteLater()
+                log.debug("[Experimental] no experimental/ folder here: no tab")
+                return
+            self._experimental_widget = widget
             self.tabs.addTab(self._experimental_widget, "🧪 Experimental")
             log.debug("[Experimental] tab loaded")
         except Exception as _experimental_err:
@@ -1344,7 +1350,7 @@ class TabsMixin:
         """Report Builder as a top-level main tab (promoted out of Labs). Grounded,
         evidence-first document generation with export to pdf/docx/lualatex/etc."""
         try:
-            from eli.gui.labs_tab import _ReportTab
+            from eli.gui.labs import _ReportTab
             self._report_builder_widget = _ReportTab(eli_callback=self._labs_generate)
             self.tabs.addTab(self._report_builder_widget, "📄 Report Builder")
         except Exception as e:

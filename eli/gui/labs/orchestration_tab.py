@@ -22,8 +22,6 @@ class _OrchestrationTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, QLabel
-        from PySide6.QtCore import QTimer
         lay = QVBoxLayout(self)
         hdr = QLabel("🧭 Agent DAG — live wiring + last-turn trace")
         hdr.setStyleSheet("font-weight:bold;padding:2px;")

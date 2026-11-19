@@ -7,7 +7,7 @@ import multiprocessing
 import sys
 from pathlib import Path
 
-from eli.core.paths import models_dir, project_root
+from eli.core.paths import project_root
 from eli.core.runtime_settings import _settings_file, load_settings, save_settings
 # KV-cache math and CUDA overhead are imported, not restated. This module used to
 # carry its own copy of the constants and the formula, kept "in sync by hand" with a
@@ -19,7 +19,6 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 BASE_DIR = project_root()
-MODELS_DIR = models_dir()
 CFG_PATH = _settings_file()
 
 
@@ -256,7 +255,7 @@ def main():
     # If the GUI startup picker is enabled, skip the terminal pre-load entirely.
     # StartupModelSelectionDialog owns model selection, hw-tuning, and load.
     if cfg.get("show_startup_model_picker", True) and "--setup" not in sys.argv:
-        import eli.gui.gui_eli_original as _gui_mod
+        import eli.gui.main_window as _gui_mod
         _gui_mod.main()
         return
 
@@ -264,10 +263,12 @@ def main():
     force_setup = "--setup" in sys.argv
     silent      = (not first_run) and (not force_setup) and (saved_path is not None) and saved_path.exists()
 
-    # Search recursively so models in models/gguf/base/ are found
-    models = sorted(MODELS_DIR.rglob("*.gguf"))
+    # The chat models in every model folder (eli/core/model_folders): ELI's own, the folders of the
+    # models the settings name and the ones the user named, the list the window offers.
+    from eli.core.model_folders import chat_models, model_folders
+    models = list(chat_models().values())
     if not models:
-        print(f"❌  No GGUF models found in {MODELS_DIR}")
+        print("❌  No GGUF models found in " + ", ".join(str(folder) for folder in model_folders()))
         sys.exit(1)
 
     # On silent (returning) launch: use the persisted config as the source of
@@ -312,12 +313,13 @@ def main():
     # The same load the window and the server make: the plan for this machine now, the saved
     # values as the request (gguf_inference.load_model writes what loaded to runtime_snapshot.json).
     from eli.cognition import gguf_inference as _gi
+    from eli.core.runtime_settings import DEFAULTS as _setting_defaults
     print(f"⏳  Loading {model_path.name} ...")
     request = _gi.load_request(
         model_path,
         n_ctx=int(params.get("n_ctx") or 0),
         n_gpu_layers=int(params["n_gpu_layers"]) if params.get("n_gpu_layers") is not None else None,
-        n_batch=int(params.get("batch_size") or 512),
+        n_batch=int(params.get("batch_size") or _setting_defaults["batch_size"]),
         n_threads=int(params.get("n_threads") or 0),
         cache_type_k=str(params.get("cache_type_k") or ""),
         cache_type_v=str(params.get("cache_type_v") or ""),
@@ -345,7 +347,7 @@ def main():
     import threading as _thr
     _thr.Thread(target=_prewarm_embed, daemon=True, name="embed-prewarm").start()
 
-    import eli.gui.gui_eli_original as _gui_mod
+    import eli.gui.main_window as _gui_mod
 
     # User-info startup refresh and its background updater. Not in a test run (ELI_TEST_MODE).
     from eli.core.paths import test_mode as _test_mode

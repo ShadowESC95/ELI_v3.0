@@ -22,10 +22,6 @@ class _TestReviewTab(QWidget):
         self._workers = []        # keep QThread refs alive
         self._last = None
         self._fail_modules = []   # row index → {node, module, message, findings}
-        from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit,
-                                       QLabel, QSplitter, QTableWidget, QHeaderView,
-                                       QWidget as _QW)
-        from PySide6.QtCore import Qt
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Run the suite → pass/fail summary, a table of failing tests, and "
                              "click-to-fix. Prior report backed up + errors file written."))
@@ -72,7 +68,7 @@ class _TestReviewTab(QWidget):
         self._table.itemSelectionChanged.connect(self._on_row_selected)
         split.addWidget(self._table)
 
-        right = _QW(); rl = QVBoxLayout(right)
+        right = QWidget(); rl = QVBoxLayout(right)
         self._detail = QTextEdit(); self._detail.setReadOnly(True)
         self._detail.setStyleSheet("font-family:monospace;")
         self._detail.setPlaceholderText("Select a failing test to see its message + examiner finding.")
@@ -88,7 +84,7 @@ class _TestReviewTab(QWidget):
         self._eli_summary = QLabel(""); self._eli_summary.setWordWrap(True)
         self._eli_summary.setStyleSheet("padding:4px;color:#cdd6f4;")
         lay.addWidget(self._eli_summary)
-        self._opts_host = _QW(); self._opts_layout = QHBoxLayout(self._opts_host)
+        self._opts_host = QWidget(); self._opts_layout = QHBoxLayout(self._opts_host)
         lay.addWidget(self._opts_host)
 
     def _set_busy(self, busy: bool):
@@ -174,7 +170,6 @@ class _TestReviewTab(QWidget):
         fa = res.get("fix_analysis") or {}
         find_by_mod = {p.get("module"): (p.get("findings") or []) for p in fa.get("proposals", [])}
 
-        from PySide6.QtWidgets import QTableWidgetItem
         fails = res.get("failures", [])
         self._table.setRowCount(len(fails))
         self._fail_modules = []
@@ -192,7 +187,6 @@ class _TestReviewTab(QWidget):
 
         # Result-driven option buttons (unchanged behaviour) + backups note.
         self._clear_options()
-        from PySide6.QtWidgets import QPushButton
         for opt in res.get("options", []):
             b = QPushButton(opt.get("label", opt.get("id", "option")))
             b.clicked.connect(lambda _=False, cmd=opt.get("command", ""): self._send(cmd))

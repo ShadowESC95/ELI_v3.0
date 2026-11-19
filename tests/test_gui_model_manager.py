@@ -85,3 +85,31 @@ def test_the_window_has_no_lock_of_its_own_for_the_model():
     root = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui"
     for path in root.rglob("*.py"):
         assert "_inference_lock" not in path.read_text(encoding="utf-8"), path
+
+
+def test_a_load_that_names_no_batch_asks_for_the_settings_own_default(tmp_path, monkeypatch):
+    """The window's loader wrote the default batch out again as a number of its own (as did the
+    terminal setup and the batch box); it is the batch setting's default (runtime_settings)."""
+    import eli.core.runtime_settings as settings
+    model = tmp_path / "sample.gguf"
+    model.write_bytes(b"\0" * 64)
+    asked = {}
+
+    class _Asked(Exception):
+        pass
+
+    def _request(path, **kw):
+        asked.update(kw)
+        raise _Asked()
+
+    monkeypatch.setitem(settings.DEFAULTS, "batch_size", 96)
+    monkeypatch.setattr("eli.core.gpu_pack_runtime.try_activate_gpu_pack", lambda **k: False)
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda *a, **k: None)
+    monkeypatch.setattr("eli.core.startup_hardware_optimizer.train_ctx_for_model", lambda p: 0)
+    monkeypatch.setattr(G, "load_request", _request)
+    mgr = LocalModelManager()
+    assert mgr.load_model(str(model)) is False
+    assert asked["n_batch"] == 96
+    asked.clear()
+    assert mgr.load_model(str(model), n_batch=40) is False
+    assert asked["n_batch"] == 40

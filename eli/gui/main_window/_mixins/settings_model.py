@@ -680,7 +680,8 @@ class SettingsModelMixin:
 
         self.batch_size_input = QSpinBox()
         self.batch_size_input.setRange(1, 2_147_483_647)   # llama.cpp limits it to the context
-        self.batch_size_input.setValue(512)
+        from eli.core.runtime_settings import DEFAULTS as _setting_defaults
+        self.batch_size_input.setValue(int(_setting_defaults["batch_size"]))   # the setting's own default
         self.batch_size_input.setSingleStep(64)
         self.batch_size_input.setToolTip("Prompt processing batch size — larger is faster but uses more VRAM")
         form.addRow(self._field_label("Batch size"), self.batch_size_input)
@@ -2337,7 +2338,7 @@ class SettingsModelMixin:
                 os.environ["ELI_XTTS_DEVICE"] = "cuda"  # user chose it up-front → prefer GPU
                 try:
                     from eli.perception.tts_router import set_active_voice as _sav
-                    _sav(_tts_voice or "natural:sophia")
+                    _sav(_tts_voice)   # the natural engine's default voice (dlg.selected_tts_voice)
                 except Exception:
                     log.debug("[STARTUP] set natural voice active failed", exc_info=True)
         except Exception as _te:

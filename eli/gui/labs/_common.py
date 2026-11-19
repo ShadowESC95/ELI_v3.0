@@ -129,8 +129,8 @@ if _QT is None:
 
 # ── Optional: QsciScintilla ───────────────────────────────────────────────
 # QScintilla has no PySide6 binding (Riverbank ships it for PyQt only).
-# When running on PySide6 the editor falls back to QTextEdit + a custom
-# Python syntax highlighter (see _PySyntaxHighlighter usage below).
+# When running on PySide6 the editor is eli.gui.code_editor.PyCodeEditor, which
+# carries its own Python highlighter.
 try:
     if _QT == "PyQt6":
         from PyQt6.Qsci import QsciScintilla, QsciLexerPython
@@ -226,11 +226,6 @@ PHYSICS_VALUES: Dict[str, float] = {
     "pi":   math.pi,
     "inf":  math.inf,
 }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Python syntax highlighter (fallback when QSci not available)
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 # Re-export every name defined above (incl. optional/underscored) so that

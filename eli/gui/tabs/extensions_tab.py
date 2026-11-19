@@ -60,6 +60,24 @@ _OK = "#a3be8c"
 _WARN = "#ebcb8b"
 _BAD = "#bf616a"
 _DIM = "#6c7086"
+# Short forms for the table; the full meaning (eli.plugins.integrity.TRUST_LABELS)
+# is the tooltip and heads the detail pane, so a badge never claims more than it says.
+_TRUST_SHORT = {
+    "official": "Official ELI",
+    "reviewed": "reviewed",
+    "signed": "signed",
+    "checksum": "checksum only",
+    "unverified": "unverified",
+}
+_TRUST_COLOUR = {
+    "official": _OK, "reviewed": _OK, "signed": _OK,
+    "checksum": _WARN, "unverified": _BAD,
+}
+_KIND_LABELS = {"plugin": "plugin", "mcp": "MCP", "bundle": "bundle",
+                "integration": "integration"}
+_MODEL_LABELS = {"perpetual": "one-time purchase", "subscription": "subscription",
+                 "trial": "trial", "external": "free client for a paid service",
+                 "paid": "paid"}
 _RISK = {"low": _OK, "medium": _WARN, "high": "#d08770", "critical": _BAD}
 
 # Documentation that ships with ELI. Local files, opened in whatever the OS uses for
@@ -551,7 +569,7 @@ class ExtensionsTab(QWidget):
         split = QSplitter(Qt.Orientation.Vertical)
         self._browse_table = QTableWidget(0, 7)
         self._browse_table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Publisher", "Version", "Price", "Permissions", "Verified"])
+            ["Name", "Type", "Publisher", "Version", "Price", "Permissions", "Trust"])
         self._browse_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._browse_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._browse_table.itemSelectionChanged.connect(self._show_listing)
@@ -654,21 +672,16 @@ class ExtensionsTab(QWidget):
         for r, m in enumerate(items):
             perms = m.get("permissions") or []
             risk = m.get("risk", "low")
-            price = float(m.get("price") or 0)
-            if m.get("signed"):
-                verified, colour = "signed", _OK
-            elif m.get("pinned"):
-                verified, colour = "checksum only", _WARN
-            else:
-                verified, colour = "unverified", _BAD
+            trust = str(m.get("trust") or "unverified")
+            sale = m.get("purchase") or {}
             cells = [
                 str(m.get("name", m.get("id", "?"))),
-                "MCP" if m.get("kind") == "mcp" else "plugin",
+                _KIND_LABELS.get(str(m.get("kind")), "plugin"),
                 str(m.get("author", "unknown")),
                 str(m.get("version", "?")),
-                ("free" if price <= 0 else f"{price:g} {m.get('currency', 'EUR')}"),
+                str(sale.get("price_display") or "Free"),
                 (f"{len(perms)} ({risk})" if perms else "none"),
-                verified,
+                _TRUST_SHORT.get(trust, trust),
             ]
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
@@ -676,10 +689,11 @@ class ExtensionsTab(QWidget):
                     item.setToolTip("\n".join(perms))
                     item.setForeground(QColor(_RISK.get(risk, _DIM)))
                 if c == 6:
-                    # The verification state was being computed and then thrown away,
-                    # so "signed" and "unverified" read identically in a long list —
-                    # exactly the distinction the operator is scanning the column for.
-                    item.setForeground(QColor(colour))
+                    # The trust level in its colour as well as its word: "signed" and
+                    # "unverified" read identically in a long list otherwise — exactly
+                    # the distinction the operator is scanning the column for.
+                    item.setToolTip(str(m.get("trust_label") or ""))
+                    item.setForeground(QColor(_TRUST_COLOUR.get(trust, _BAD)))
                 self._browse_table.setItem(r, c, item)
 
         errs = res.get("errors") or []
@@ -703,14 +717,37 @@ class ExtensionsTab(QWidget):
         if not m:
             return
         from eli.plugins.permissions import describe
+        from html import escape as e
         perms = m.get("permissions") or []
+        trust = str(m.get("trust") or "unverified")
+        sale = m.get("purchase") or {}
         lines = [
-            f"<h3>{m.get('name')}</h3>",
-            f"<p>{m.get('description', '')}</p>",
-            f"<p><b>Publisher:</b> {m.get('author', 'unknown')} &nbsp; "
-            f"<b>Licence:</b> {m.get('license', '?')} &nbsp; "
-            f"<b>Source:</b> {m.get('registry_label', m.get('registry'))}</p>",
+            f"<h3>{e(str(m.get('name')))}</h3>",
+            f"<p style='color:{_TRUST_COLOUR.get(trust, _BAD)}'><b>"
+            f"{e(str(m.get('trust_label') or trust))}</b></p>",
+            f"<p>{e(str(m.get('description', '')))}</p>",
+            f"<p><b>Publisher:</b> {e(str(m.get('author', 'unknown')))} &nbsp; "
+            f"<b>Licence:</b> {e(str(m.get('license', '?')))} &nbsp; "
+            f"<b>Source:</b> {e(str(m.get('registry_label', m.get('registry'))))}</p>",
+            f"<p><b>Price:</b> {e(str(sale.get('price_display') or 'Free'))}"
+            + (f" ({e(_MODEL_LABELS.get(str(sale.get('model')), str(sale.get('model'))))})"
+               if sale.get("model") not in (None, "free") else "")
+            + ("" if not sale.get("needs_key") else
+               " &nbsp; <i>needs a licence key from the publisher</i>") + "</p>",
         ]
+        links = [(label, str(m.get(field) or "")) for label, field in (
+            ("Support", "support_url"), ("Privacy", "privacy_url"),
+            ("Terms", "terms_url"), ("Licence text", "license_url"))]
+        links = [(label, url) for label, url in links if url.startswith("https://")]
+        if links:
+            # Shown in full rather than as link text: the pane does not open links,
+            # and a publisher's URL should be read before it is visited.
+            lines.append("<p>" + "<br>".join(
+                f"<b>{label}:</b> {e(url)}" for label, url in links) + "</p>")
+        fits = m.get("compatible") or {}
+        if fits and not fits.get("ok", True):
+            lines.append(f"<p style='color:{_BAD}'><b>Not for this ELI:</b> "
+                         f"{e(str(fits.get('reason')))}</p>")
         if perms:
             lines.append("<p><b>Requests permission to:</b></p><ul>")
             for p in perms:
@@ -1983,9 +2020,5 @@ def _servers_from_config(data: Any) -> Dict[str, Dict[str, Any]]:
     return found
 
 
-# `MarketplaceTab` was this class's name while it was a Settings sub-tab. Kept as an
-# alias so an out-of-tree import does not break on the rename.
-MarketplaceTab = ExtensionsTab
-
-__all__ = ["ExtensionsTab", "MarketplaceTab", "AddMcpServerDialog",
+__all__ = ["ExtensionsTab", "AddMcpServerDialog",
            "InstallReviewDialog", "ScanReportDialog"]

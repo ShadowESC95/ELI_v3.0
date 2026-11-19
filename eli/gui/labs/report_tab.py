@@ -751,15 +751,6 @@ class _ReportTab(QWidget):
             self._source_preview.setPlainText(self._sources[idx].get("preview", ""))
 
     # ── Generation actions ───────────────────────────────────────────────
-    def _sources_inventory_md(self) -> str:
-        if not self._sources:
-            return "_No source data attached._"
-        lines = ["| File | Kind | Size (KB) | Path |", "| --- | --- | --- | --- |"]
-        for s in self._sources:
-            kb = s.get("bytes", 0) / 1024.0
-            lines.append(f"| {s['name']} | {s['kind']} | {kb:.1f} | `{s['path']}` |")
-        return "\n".join(lines)
-
     def _reports_output_dir(self) -> Path:
         artifacts = os.environ.get("ELI_ARTIFACTS_DIR")
         if artifacts:
@@ -915,83 +906,6 @@ class _ReportTab(QWidget):
             evidence,
         ] if p)
 
-    def _build_section_prompt(self, doc_type: str, section_title: str,
-                              section_intent: str, accumulated_so_far: str) -> str:
-        """Stage 2: Generate a single section in full, given the prior
-        sections (for coherence) and this section's outline intent."""
-        grade = self._grade_combo.currentText()
-        grade_hint = self._GRADE_HINTS.get(grade, "")
-        target_format = self._target_format_combo.currentText()
-        spec = self._doc_spec(doc_type)
-        fmt = self._format_spec(target_format)
-        evidence = self._build_evidence_block()
-        title = self._title.text().strip() or "Untitled"
-        # Prior-sections snippet — last 6 000 chars so the LLM keeps continuity
-        # without re-spending the whole ctx on what came before.
-        prior_tail = (accumulated_so_far or "")[-6000:]
-        return "\n".join(p for p in [
-            f"TASK: Write the section titled '{section_title}' of a {doc_type}.",
-            f"GRADE MODIFIER: {grade_hint}" if grade_hint else "",
-            "",
-            "DOC-TYPE SPECIFICATION (governs voice, structure, depth — adhere strictly):",
-            self._doc_spec_block(spec),
-            "",
-            self._format_spec_block(fmt, target_format),
-            "",
-            self._quality_spec_block(),
-            "",
-            f"DOCUMENT TITLE: {title}",
-            f"SECTION INTENT (from the outline): {section_intent}",
-            "",
-            "INSTRUCTIONS:",
-            f"1. Write this section in the voice and depth of a {doc_type}.",
-            "2. Do NOT restart the document — assume prior sections exist (provided below as PRIOR_TAIL).",
-            "3. Do NOT include sections other than this one. Output starts at this section's heading.",
-            "4. Cite supplied sources where you rely on them, in the exact citation style of OUTPUT FORMAT.",
-            "5. Mark anything you cannot ground in the evidence as [source needed].",
-            f"6. Respect the AVOID list — those are failure modes specific to {doc_type}.",
-            "7. When numbers/equations/units are relevant, show calculation assumptions and units explicitly.",
-            "",
-            self._acceptance_test_block(),
-            "",
-            "PRIOR_TAIL (for coherence, do not repeat):",
-            prior_tail or "(no prior content yet — this is the opening section)",
-            "",
-            evidence,
-        ] if p)
-
-    def _build_polish_prompt(self, full_draft: str) -> str:
-        """Stage 3: Single format-targeted polish pass over the
-        assembled draft. Output target is the FINAL DOCUMENT — clean
-        for the chosen export pipeline."""
-        doc_type = self._template_combo.currentText()
-        target_format = self._target_format_combo.currentText()
-        spec = self._doc_spec(doc_type)
-        fmt = self._format_spec(target_format)
-        return "\n".join([
-            f"TASK: Polish the following assembled draft so it is publication-ready in {target_format}.",
-            "",
-            "DOC-TYPE SPECIFICATION:",
-            self._doc_spec_block(spec),
-            "",
-            self._format_spec_block(fmt, target_format),
-            "",
-            self._quality_spec_block(),
-            "",
-            "INSTRUCTIONS:",
-            f"1. Output a single complete document in {target_format}, ready to compile/export with no further edits.",
-            "2. Fix transitions between sections. Remove duplicated content where the section generator overlapped.",
-            "3. Apply the OUTPUT FORMAT syntax / citation / figure / escape rules consistently throughout.",
-            "4. Add missing section glue only when it is implied by the draft or the supplied evidence.",
-            "5. Replace weak unsupported certainty with [source needed] or [assumption] rather than inventing evidence.",
-            "6. Output ONLY the polished document — no commentary about what you changed.",
-            "",
-            self._acceptance_test_block(),
-            "",
-            "DRAFT TO POLISH:",
-            full_draft,
-        ])
-
     # Back-compat: a single-shot draft prompt is still used by the live
     # prompt-preview pane (the Draft Full Report ACTION uses the staged
     # pipeline instead).
@@ -1050,39 +964,6 @@ class _ReportTab(QWidget):
             self._acceptance_test_block(),
             "",
             f"DRAFT:\n{draft}",
-            "",
-            evidence,
-        ])
-
-    def _build_revision_prompt(self, draft: str, critique: str) -> str:
-        doc_type = self._template_combo.currentText()
-        target_format = self._target_format_combo.currentText()
-        spec = self._doc_spec(doc_type)
-        fmt = self._format_spec(target_format)
-        evidence = self._build_evidence_block()
-        return "\n".join([
-            f"TASK: Revise the draft into the final {doc_type} after peer-review critique.",
-            "",
-            "DOC-TYPE SPECIFICATION:",
-            self._doc_spec_block(spec),
-            "",
-            self._format_spec_block(fmt, target_format),
-            "",
-            self._quality_spec_block(),
-            "",
-            "REVISION RULES:",
-            "1. Apply the critique where valid; do not merely append the critique.",
-            "2. Strengthen weak claims only when supported by SOURCE EVIDENCE; otherwise mark [source needed].",
-            "3. Remove fabricated citations, fabricated file paths, fake links, and promises about files that were not created.",
-            "4. Preserve the target format exactly and output the complete final document only.",
-            "",
-            self._acceptance_test_block(),
-            "",
-            "PEER-REVIEW CRITIQUE:",
-            critique.strip() or "(empty critique)",
-            "",
-            "DRAFT TO REVISE:",
-            draft,
             "",
             evidence,
         ])
@@ -2763,38 +2644,6 @@ class _ReportTab(QWidget):
             return path
         except Exception:
             return None
-
-    @staticmethod
-    def _parse_outline(outline_text: str) -> List[Dict[str, str]]:
-        """Parse the LLM's outline output into a list of
-        {title, intent} dicts. Heuristic — scans for markdown headings
-        or numbered lines and picks the first ~14 entries."""
-        sections: List[Dict[str, str]] = []
-        if not outline_text:
-            return sections
-        lines = outline_text.splitlines()
-        current: Optional[Dict[str, str]] = None
-        for raw in lines:
-            line = raw.rstrip()
-            if not line.strip():
-                continue
-            # Top-level markers: '# Heading', '## Heading',
-            # 'N. Heading', 'Section: Heading', 'Chapter N: ...'.
-            m = re.match(r"^\s*(?:#{1,3}\s+|(?:\d+\.|[IVX]+\.)\s+|Chapter\s+\d+[:\.]?\s+)(.+)$",
-                         line, re.IGNORECASE)
-            if m:
-                if current is not None:
-                    sections.append(current)
-                current = {"title": m.group(1).strip(), "intent": ""}
-                continue
-            if current is not None:
-                # Treat continuation text as the section's intent line.
-                current["intent"] = (current["intent"] + " " + line.strip()).strip()
-        if current is not None:
-            sections.append(current)
-        # Cap to keep total LLM call count bounded.
-        return sections[:14]
-
 
     def _draft_full_with_eli(self):
         # Frontier direct-broker, continuation-based, fail-closed pipeline.

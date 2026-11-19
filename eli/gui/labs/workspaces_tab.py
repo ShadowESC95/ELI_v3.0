@@ -431,11 +431,8 @@ class _WorkspacesTab(QWidget):
             log.debug(f"[Workspaces] save error: {ex}")
 
     def _load(self):
-        try:
-            if self._DATA_FILE.exists():
-                self._workspaces = json.loads(self._DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            self._workspaces = {}
+        from eli.utils.jsonio import read_json_dict
+        self._workspaces = read_json_dict(self._DATA_FILE)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

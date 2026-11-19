@@ -106,6 +106,30 @@ def test_gui_query_normalises_the_same_way(monkeypatch):
     assert seen and seen[0] == "http://localhost:11434/api/tags"
 
 
+def test_startup_listing_registers_a_lan_host_with_the_network_guard(monkeypatch):
+    """The start-up window and the wizard read /api/tags with a call of their own that skipped the
+    guard's registration, so a LAN Ollama typed there was blocked while the message said ELI allows
+    it. They read through the window's one reader, which registers the address first."""
+    try:
+        from eli.gui.panels import startup
+    except Exception as exc:  # Qt bindings are stubbed in the headless test env
+        pytest.skip(f"GUI panels unavailable here: {exc}")
+    import io
+    order = []
+    monkeypatch.setattr("eli.integrations.ollama.client._allow_via_netguard",
+                        lambda base: order.append(("allow", base)))
+
+    def fake_urlopen(url, timeout=0):
+        order.append(("open", url, timeout))
+        return io.BytesIO(b'{"models": [{"name": "zeta:1"}, {"name": "alpha:2"}, {"size": 3}]}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    names, err = startup._query_ollama_tags("http://192.0.2.10:11434", timeout=3)
+    assert (names, err) == (["alpha:2", "zeta:1"], None)
+    assert order[:2] == [("allow", "http://192.0.2.10:11434"),
+                         ("open", "http://192.0.2.10:11434/api/tags", 3)]
+
+
 def test_ollama_never_starts_or_answers_unless_it_is_the_chosen_backend(monkeypatch):
     """An earlier release started `ollama serve` at launch with a GGUF model in use. Ollama is the user's choice:
     started only when chosen (or while being chosen in the GUI / start-up), never a fallback."""

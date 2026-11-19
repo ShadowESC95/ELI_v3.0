@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from eli.gui.labs import (  # noqa: F401
     LabsTab,
-    _PySyntaxHighlighter, _CodeRunnerThread, _BgWorker,
+    _CodeRunnerThread, _BgWorker,
     _NotebookTab, _MemoryAndConversationsTab, _JupyterTab,
     _CalculatorTab, _PhysicsTab, _ReportTab, _FileChatTab,
     _WorkspacesTab, _SimIDETab, _OrchestrationTab, _TestReviewTab,
@@ -21,7 +21,7 @@ from eli.gui.labs import (  # noqa: F401
 
 __all__ = [
     "LabsTab",
-    "_PySyntaxHighlighter", "_CodeRunnerThread", "_BgWorker",
+    "_CodeRunnerThread", "_BgWorker",
     "_NotebookTab", "_MemoryAndConversationsTab", "_JupyterTab",
     "_CalculatorTab", "_PhysicsTab", "_ReportTab", "_FileChatTab",
     "_WorkspacesTab", "_SimIDETab", "_OrchestrationTab", "_TestReviewTab",

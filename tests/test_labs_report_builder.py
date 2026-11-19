@@ -70,7 +70,6 @@ def test_report_prompts_enforce_evidence_and_acceptance_contracts():
 def test_report_pipeline_has_review_revision_and_autosave():
     source = _source()
 
-    assert "def _build_revision_prompt" in source
     assert "critiquing draft against quality contract" in source
     assert "applying review feedback" in source
     assert "def _autosave_report" in source

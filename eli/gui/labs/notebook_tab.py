@@ -112,11 +112,8 @@ class _NotebookTab(QWidget):
             log.debug(f"[Notebook] save error: {ex}")
 
     def _load(self):
-        try:
-            if self._DATA_FILE.exists():
-                self._projects = json.loads(self._DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            self._projects = {}
+        from eli.utils.jsonio import read_json_dict
+        self._projects = read_json_dict(self._DATA_FILE)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
