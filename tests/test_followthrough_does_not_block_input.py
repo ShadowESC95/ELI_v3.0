@@ -228,6 +228,20 @@ def test_a_command_that_needs_no_model_runs_at_once_while_eli_answers(window):
     assert roles[-2:] == [("user", "volume 40%"), ("assistant", "Volume set (volume 40%).")]
 
 
+def test_a_command_that_needs_no_model_runs_with_no_model_loaded(window):
+    """With no model loaded "volume 40%" was answered "No model is loaded yet" and nothing ran,
+    though the same message runs at once while a model is loading."""
+    w, engine = window, window._cognitive_engine
+    w.backend = None
+    w.type_and_send("volume 40%")
+    w.settle(lambda: w.idle() and "Volume set" in _transcript(w))
+    assert engine.calls == [("volume 40%", False)]
+    assert _transcript(w).count("volume 40%") == 2, "the message once, and once in what was done"
+    w.type_and_send("what is a river")                       # needs the model: nothing is sent
+    w.settle()
+    assert engine.calls == [("volume 40%", False)]
+
+
 def test_enter_and_send_never_stop_only_stop_does(window):
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent

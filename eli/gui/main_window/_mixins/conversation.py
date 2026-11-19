@@ -686,15 +686,17 @@ class ConversationMixin:
             self._append_chat_response("__STREAM_END__")
         self._drain_waiting()
 
-    def _run_now(self, text: str, *, spoken: bool) -> bool:
-        """A command that needs no model, while a reply is coming or the model loads: through the
-        engine like any message, on its own thread, at once. What it did shows in the status bar
-        now and in the transcript after the reply in progress."""
+    def _run_now(self, text: str, *, spoken: bool, shown: bool = False) -> bool:
+        """A command that needs no model, while a reply is coming, the model loads or none is
+        loaded: through the engine like any message, on its own thread, at once. What it did shows
+        in the status bar now and in the transcript after the reply in progress. `shown` when the
+        message is already in the transcript."""
         _ce = getattr(self, "_cognitive_engine", None)
         if _ce is None:
             return False
         self._running_now = int(getattr(self, "_running_now", 0) or 0) + 1
-        self._chat_put("user", text)
+        if not shown:
+            self._chat_put("user", text)
         mode = getattr(self, "_reasoning_mode", "quick")
 
         def worker():
@@ -800,8 +802,13 @@ class ConversationMixin:
         # Direct executor dispatch is reserved for explicit Quick Action buttons,
         # otherwise routed commands can bypass agent evidence and final synthesis.
 
-        backend = self._text_backend_ready(notify=True)
+        backend = self._text_backend_ready(notify=False)
         if backend is None:
+            # "pause", "volume 40%": the engine runs these with no model, as it does while one loads.
+            # With none loaded they were answered "No model is loaded yet" and nothing ran.
+            if self._needs_no_model(user_message) and self._run_now(user_message, spoken=spoken, shown=True):
+                return
+            self._text_backend_ready(notify=True)
             return
 
         # A prior worker's followthrough tail may still be running — stop it first.
