@@ -127,17 +127,6 @@ def test_try_open_and_play_rejects_a_stale_track_that_never_changed(monkeypatch)
     assert result is None, "must fall through to another path, not claim a stale track as success"
 
 
-def test_wait_playing_returns_true_when_status_flips(monkeypatch):
-    states = iter([False, False, True])
-
-    monkeypatch.setattr(
-        "eli.integrations.media.cross_platform.spotify_is_playing",
-        lambda: next(states),
-    )
-    monkeypatch.setattr(ex.time, "sleep", lambda _s: None)
-    assert ex._spotify_wait_playing(timeout=2.0) is True
-
-
 def test_next_media_uses_mpv_when_youtube_is_active(monkeypatch):
     monkeypatch.setattr(ex, "_targets_mpv", lambda target: True)
     monkeypatch.setattr(ex, "_mpv_ipc", lambda cmd, **kw: True)

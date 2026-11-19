@@ -133,6 +133,21 @@ def _cache_types(settings: Dict[str, Any]) -> tuple:
             cache_setting(_runtime_value(settings, "cache_type_v", "type_v", default="")))
 
 
+def _requested_ctx(settings: Dict[str, Any], model_path) -> int:
+    """The context to load this model with: the operator's (env, then settings), else auto for
+    this model on this machine. Never 0, which llama.cpp reads as the model's whole trained
+    context; with nothing measurable, the smallest window. Read by the replay's driver
+    (tools/eval/eli_driver.py) for the window its stand-in model is given."""
+    n_ctx = _env_int("ELI_GGUF_N_CTX", None) or _as_int(_runtime_value(settings, "n_ctx", "context_size"), 0)
+    if int(n_ctx or 0) <= 0:
+        try:
+            from eli.core.hardware_profile import auto_ctx_for
+            n_ctx = int(auto_ctx_for(model_path) or 0)
+        except Exception:
+            log.debug("[GGUF] auto context unavailable", exc_info=True)
+            n_ctx = 0
+    return int(n_ctx) if int(n_ctx or 0) > 0 else 2048
+
 _last_error: Optional[str] = None
 _last_params: Dict[str, Any] = {}
 # ELI_GGUF_MODEL_PATH values already reported missing: said once each, not on every one of the

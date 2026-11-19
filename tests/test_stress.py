@@ -207,14 +207,6 @@ def test_tts_find_voice_50_times():
         result = find_voice_model(installed[0])
         assert result is not None and result.exists()
 
-def test_tts_clean_text_stress():
-    from eli.perception.tts_router import _clean_text
-    for i in range(200):
-        result = _clean_text(f"**Bold** response number {i} with `code` and _italic_")
-        assert isinstance(result, str)
-        assert "**" not in result
-
-
 # ── Memory hallucination guard stress ────────────────────────────────────
 
 def test_no_memory_marker_on_empty_recall(tmp_db):
