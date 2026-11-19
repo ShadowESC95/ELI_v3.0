@@ -345,3 +345,63 @@ def test_a_summary_fact_the_users_own_words_do_not_carry_is_not_kept(cur):
                                            "call a sourdough starter?\nI've started learning the cello to play duets")
     data = sorted(d for _t, d in _patterns(cur))
     assert data == ["Keeps bees on the roof.", "Learns to play the cello.", "Owns a dog named Pepper."]
+
+
+# ── one fact kept once, under whatever kind it was filed ─────────────────────────────────────────
+
+def test_a_fact_said_again_under_another_kind_is_the_fact_already_kept(cur):
+    """The model filed one fact as research.field in one pass and research.science in the next, and
+    each stood as a fact and a claim of its own."""
+    assert PE._insert_user_pattern(cur, "research.field", "User studies river sediment.", ts_value=1_000_000.0)
+    assert not PE._insert_user_pattern(cur, "research.science", "The user is studying river sediments",
+                                       ts_value=1_200_000.0)
+    assert _patterns(cur) == [("research.field", "User studies river sediment.")]
+    assert _claims_now(cur) == [("research.field", "User studies river sediment.")]
+    # said on another day, it is said twice
+    assert cur.execute("SELECT corroboration FROM user_patterns").fetchone()[0] == 2
+    # one that says more, or denies it, is a fact of its own
+    assert PE._insert_user_pattern(cur, "research.science", "User studies river sediment in winter.")
+    assert PE._insert_user_pattern(cur, "research.science", "User does not study river sediment.")
+    assert len(_patterns(cur)) == 3
+
+
+def test_a_kind_that_holds_one_value_is_kept_under_its_own_name(cur):
+    """A name said in the words of a fact already kept is still the name; and a lasting fact is not
+    taken for a session's state said in the same words."""
+    PE._insert_user_pattern(cur, "identity.fact", "User is called Robin.", provenance="user_passing")
+    assert PE._insert_user_pattern(cur, "identity.name", "User is called Robin", provenance="user_explicit")
+    PE._insert_user_pattern(cur, "preference.session", "Likes short answers.")
+    assert PE._insert_user_pattern(cur, "preference.stated", "Likes short answers")
+    assert sorted(t for t, _d in _patterns(cur)) == ["identity.fact", "identity.name", "preference.session",
+                                                     "preference.stated"]
+
+
+def test_facts_kept_twice_before_are_folded_into_one_at_the_next_start(cur, tmp_path):
+    """Rows kept before a restatement was read as one: the pass run at every start keeps the name (the
+    kind that holds one value) and the row said most, with the heaviest provenance of them all, closes
+    the other claims, and records what it took out. A second run finds nothing."""
+    for kind, data, said, prov in (
+            ("identity.fact", "User is called Robin.", 3, "user_passing"),
+            ("identity.name", "User is called Robin", 1, "user_explicit"),
+            ("research.field", "User studies river sediment.", 1, "inferred"),
+            ("research.science", "The user is studying river sediments", 4, "user_passing"),
+            ("interest.explicit", "User likes maps.", 1, "user_passing")):
+        cur.execute("INSERT INTO user_patterns (pattern_type, pattern_data, timestamp, ts, corroboration, provenance) "
+                    "VALUES (?, ?, 1, 1, ?, ?)", (kind, data, said, prov))
+        PE._link_pattern_to_claim(cur, kind, data, prov, 1.0)
+    assert len(_claims_now(cur)) == 5
+    assert PE.fold_restated_patterns(cur) == 2
+    assert sorted(_patterns(cur)) == [("identity.name", "User is called Robin"), ("interest.explicit", "User likes maps."),
+                                      ("research.science", "The user is studying river sediments")]
+    assert _claims_now(cur) == sorted(_patterns(cur))
+    kept = {r[0]: (r[1], r[2]) for r in cur.execute(
+        "SELECT pattern_type, corroboration, provenance FROM user_patterns").fetchall()}
+    assert kept["identity.name"] == (3, "user_explicit") and kept["research.science"] == (4, "user_passing")
+    assert cur.execute("SELECT COUNT(*) FROM belief_revisions WHERE kind = 'user_pattern'").fetchone()[0] == 2
+    assert PE.fold_restated_patterns(cur) == 0
+    # and it runs at every start
+    cur.execute("INSERT INTO user_patterns (pattern_type, pattern_data, timestamp, ts, corroboration, provenance) "
+                "VALUES ('interest.topic', 'The user likes maps', 1, 1, 1, 'user_passing')")
+    cur.connection.commit()
+    PE.ensure_profile_tables(tmp_path / "user.sqlite3")
+    assert [t for t, _d in _patterns(cur)].count("interest.topic") == 0

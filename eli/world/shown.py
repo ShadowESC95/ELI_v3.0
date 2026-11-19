@@ -135,36 +135,10 @@ def _goals() -> List[Dict[str, Any]]:
 
 # ── one record for one fact ────────────────────────────────────────────────────────────────────────
 
-# What a word ends in when it is the same word in another form ("name", "named"; "work", "works").
-_ENDINGS = ("ing", "es", "ed", "en", "s", "d", "n", "e")
-# The short forms a word carries on its end ("you're", "user's"): no words of the fact's own.
-_CONTRACTED = re.compile(r"(?<=\w)['’](?:re|s|m|ve|ll|d)\b")
-# What turns a statement into its denial: two records that differ in it are never one fact.
-_DENIES = re.compile(r"\b(?:not|no|never|none|nor|without|cannot)\b|n['’]t\b", re.I)
-# The words every record about the user shares, which say nothing of what the fact is (beside the
-# pronouns scoring.STOPWORDS already leaves out).
-_OF_THE_USER = frozenset({"user", "has", "have", "had", "he", "she", "him", "his", "her"})
-
-
-def _stem(word: str) -> str:
-    for ending in _ENDINGS:
-        if word.endswith(ending) and len(word) - len(ending) >= 2:
-            word = word[:-len(ending)]
-            break
-    return word[:-1] if word.endswith("e") and len(word) > 2 else word
-
-
 def _says(text: Any) -> Tuple[frozenset, bool]:
-    """What a record says, apart from how it was worded: the words that carry it (without the quote a
-    profile fact keeps beside its label, the short forms on a word's end, and the words every record
-    about the user has), each in one form, and whether it denies."""
-    from eli.cognition.scoring import STOPWORDS
-    from eli.runtime.profile_extractor import split_evidence
-    label = split_evidence(_plain(text))[0]
-    # a figure is a word of the fact however short ("season 2" is not "season 3"); a lone letter is not
-    words = frozenset(t if t.isdigit() else _stem(t) for t in re.findall(r"[a-z0-9]+", _CONTRACTED.sub("", label).lower())
-                      if t not in STOPWORDS and t not in _OF_THE_USER and (t.isdigit() or len(t) > 1))
-    return words, bool(_DENIES.search(label))
+    """What a record says as it reads on paper (eli/memory/claims.says)."""
+    from eli.memory.claims import says
+    return says(_plain(text))
 
 
 def same_fact(a: Any, b: Any) -> bool:
@@ -211,7 +185,7 @@ def _claims() -> List[Dict[str, Any]]:
     (a profile fact read again in other words, under another relation) is the strongest of them (the
     best chance, the most often confirmed, then the one that says most), which carries the others ("also") and
     the records every one of them rests on."""
-    from eli.memory.claims import basis, chance, describe, origin_words
+    from eli.memory.claims import basis, chance, describe, origin_words, states
     from eli.memory.memory import get_memory
     from eli.world.books import _cut
     from eli.world.building import MAX_PER_ROOM, NAME_MAX
@@ -227,7 +201,7 @@ def _claims() -> List[Dict[str, Any]]:
             return max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
 
     sures = {id(r): sure_of(r) for r in rows}
-    facts = one_per_fact(rows, lambda r: r.get("value"),
+    facts = one_per_fact(rows, lambda r: states(r.get("relation"), r.get("value")),
                          lambda r: (sures[id(r)], int(r.get("confirmations") or 1)))
     out = []
     for row, others in facts[:MAX_PER_ROOM]:

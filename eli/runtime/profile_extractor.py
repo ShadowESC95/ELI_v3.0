@@ -198,6 +198,7 @@ def ensure_profile_tables(db_path: Path | None = None) -> None:
 
     backfill_semantic_from_patterns(cur)
     reconcile_single_valued_patterns(cur)
+    fold_restated_patterns(cur)
     retired = retire_unfounded_readings(cur)
 
     con.commit()
@@ -622,17 +623,109 @@ def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data:
         log.debug("could not link user_pattern to a claim", exc_info=True)
 
 
-def _same_fact_row(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str, who: str) -> str | None:
-    """The stored row this statement says again, if any: the same label of the same kind, whatever
-    words it was said in. A row's data is its label plus the user's quote (_evidence), so comparing
-    whole strings counted every rephrasing as a rival fact and corroboration never built."""
-    label = split_evidence(pattern_data)[0].lower()
-    for (data,) in cur.execute(
-            "SELECT pattern_data FROM user_patterns WHERE lower(COALESCE(pattern_type, '')) = lower(?) "
-            "AND COALESCE(user_id, '') = ?", (pattern_type, who)).fetchall():
-        if split_evidence(str(data or ""))[0].lower() == label:
-            return str(data or "")
+def _durable(pattern_type: str) -> bool:
+    """Whether a kind of fact is kept in the semantic tier (a lasting fact, not a session's state)."""
+    ptype = str(pattern_type or "").strip().lower()
+    return ptype.startswith(_SEMANTIC_PATTERN_PREFIXES) and not ptype.startswith(_SEMANTIC_PATTERN_EXCLUDE)
+
+
+def _same_fact_row(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str, who: str) -> tuple[str, str] | None:
+    """The stored row this statement says again, if any, as (its kind, its data): the same label of the
+    same kind, whatever quote stands beside it (a row's data is its label plus the user's quote,
+    _evidence, so comparing whole strings counted every rephrasing as a rival fact and corroboration
+    never built); else a row of that kind that says it in other words (claims.said_again); else, for a
+    kind that keeps many facts, a row of another kind that does. The model files one fact under one
+    kind in one pass and another in the next, and each was kept as a fact of its own. A kind that
+    holds one value is always kept under its own name, and a lasting fact is never taken for a
+    session's state said in the same words."""
+    from eli.memory.claims import said_again
+    label = split_evidence(pattern_data)[0]
+    kind = str(pattern_type or "").lower()
+    rows = [(str(t or ""), str(d or "")) for t, d in cur.execute(
+        "SELECT pattern_type, pattern_data FROM user_patterns WHERE COALESCE(user_id, '') = ? ORDER BY id",
+        (who,)).fetchall()]
+    own = [(t, d) for t, d in rows if t.lower() == kind]
+    for t, d in own:
+        if split_evidence(d)[0].lower() == label.lower():
+            return t, d
+    for t, d in own:
+        if said_again(d, label):
+            return t, d
+    if kind in _SINGLE_VALUED_PATTERNS:
+        return None
+    for t, d in rows:
+        if t.lower() != kind and (_durable(t) or not _durable(kind)) and said_again(d, label):
+            return t, d
     return None
+
+
+def fold_restated_patterns(cur: sqlite3.Cursor) -> int:
+    """One fact kept once: rows of one user that say the same thing (claims.said_again) under several
+    kinds, or in several wordings of one kind, kept from before a restatement was read as one
+    (_same_fact_row), are folded into one. The row kept is the one whose kind holds one value (a name
+    stays the name), then a lasting kind over a session's, the heavier provenance, the more often said,
+    the first kept. It takes the heaviest provenance and the most days said of them all; each other row
+    is written to belief_revisions, as every value taken out is, its own claim closed, and removed.
+    Two kinds that each hold one value both stand. Returns the rows folded away; nothing on a store
+    with no fact kept twice, so it runs at every start."""
+    if not _table_exists(cur, "user_patterns"):
+        return 0
+    try:
+        from eli.cognition.belief import PROVENANCE_WEIGHT
+        from eli.cognition.stance_store import ensure_tables, record_revision
+        from eli.memory import claims as _claims
+        ensure_tables(cur)
+        _ensure_user_column(cur)
+        rows = cur.execute(
+            "SELECT id, COALESCE(user_id, ''), pattern_type, pattern_data, COALESCE(corroboration, 1), "
+            "COALESCE(provenance, ''), COALESCE(ts, timestamp, 0), claim_id FROM user_patterns ORDER BY id").fetchall()
+    except (ImportError, sqlite3.Error) as failure:
+        log.debug("profile_extractor: restated facts not folded: %s", failure)
+        return 0
+    facts: dict[tuple, list] = {}
+    for row in rows:
+        words, denies = _claims.says(str(row[3] or ""))
+        if words:
+            facts.setdefault((row[1], words, denies), []).append(row)
+    folded = 0
+    now = time.time()
+    for (who, _words, _denies), same in facts.items():
+        if len(same) < 2:
+            continue
+
+        def single(row) -> bool:
+            return str(row[2] or "").lower() in _SINGLE_VALUED_PATTERNS
+
+        kept = max(same, key=lambda r: (single(r), _durable(r[2]), PROVENANCE_WEIGHT.get(r[5], 0.0), int(r[4] or 1),
+                                        -int(r[0])))
+        others = [r for r in same if r is not kept
+                  and not (single(r) and str(r[2] or "").lower() != str(kept[2] or "").lower())]
+        if not others:
+            continue
+        try:
+            heaviest = max([kept, *others], key=lambda r: PROVENANCE_WEIGHT.get(r[5], 0.0))[5]
+            cur.execute("UPDATE user_patterns SET corroboration = ?, provenance = ?, ts = ?, timestamp = ? WHERE id = ?",
+                        (max(int(r[4] or 1) for r in [kept, *others]), heaviest or None,
+                         max(float(r[6] or 0.0) for r in [kept, *others]),
+                         max(float(r[6] or 0.0) for r in [kept, *others]), kept[0]))
+            for row_id, _who, ptype, data, _n, _prov, _ts, _claim in others:
+                record_revision(cur, "user_pattern", str(ptype or ""), str(data or ""), str(kept[3] or ""),
+                                reason=f"the same fact as {kept[2]}, kept once", now=now)
+                _claims.retire(cur, str(ptype or ""), subject=_claims.user_subject(who), value=str(data or ""), now=now)
+                cur.execute("DELETE FROM user_patterns WHERE id = ?", (row_id,))
+                if (_table_exists(cur, "semantic")
+                        and split_evidence(str(data or ""))[0].lower() != split_evidence(str(kept[3] or ""))[0].lower()):
+                    cur.execute("DELETE FROM semantic WHERE lower(COALESCE(fact, '')) = lower(?) "
+                                "AND COALESCE(NULLIF(user_id, ''), 'default') = ? "
+                                "AND ',' || lower(COALESCE(tags, '')) || ',' LIKE ?",
+                                (split_evidence(str(data or ""))[0], _semantic_user(who),
+                                 f"%,{str(ptype or '').lower()},%"))
+                folded += 1
+        except sqlite3.Error as failure:
+            log.warning("profile_extractor: a restated fact was not folded: %s", failure)
+    if folded:
+        log.info("profile: %d fact(s) kept twice folded into the one that says them", folded)
+    return folded
 
 
 def _insert_user_pattern(
@@ -660,7 +753,10 @@ def _insert_user_pattern(
     if read_as is None:
         return False
     rests_on = read_as[0] if read_as else None
-    same = _same_fact_row(cur, pattern_type, pattern_data, who)
+    said = _same_fact_row(cur, pattern_type, pattern_data, who)
+    same = said[1] if said else None
+    if said:
+        pattern_type = said[0]      # said again under another kind: it is that row's fact
     verdict = ""
     if same is None and pattern_type.lower() in _SINGLE_VALUED_PATTERNS:
         # A refusal means the standing value won. Inserting anyway would leave

@@ -205,6 +205,57 @@ def _same(a: str, b: str) -> bool:
     return False
 
 
+# What a word ends in when it is the same word in another form ("name", "named"; "work", "works").
+_ENDINGS = ("ing", "es", "ed", "en", "s", "d", "n", "e")
+# The short forms a word carries on its end ("you're", "user's"): no words of the fact's own.
+_CONTRACTED = re.compile(r"(?<=\w)['’](?:re|s|m|ve|ll|d)\b")
+# What turns a statement into its denial: two records that differ in it are never one fact.
+_DENIES = re.compile(r"\b(?:not|no|never|none|nor|without|cannot)\b|n['’]t\b", re.I)
+# The words every record about the user shares, which say nothing of what the fact is (beside the
+# pronouns scoring.STOPWORDS already leaves out).
+_OF_THE_USER = frozenset({"user", "has", "have", "had", "he", "she", "him", "his", "her"})
+
+
+def _stem(word: str) -> str:
+    """A word in one form: "named" is "name", "works" is "work", "studies" and "studied" are "study"."""
+    for ending in _ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 2:
+            word = word[:-len(ending)]
+            break
+    if word.endswith("e") and len(word) > 2:
+        return word[:-1]
+    # the y a word's other forms turn to i ("study", "studi-es"); a short word ending in i is its own ("ski")
+    return word[:-1] + "y" if word.endswith("i") and len(word) > 3 else word
+
+
+def says(text: Any) -> Tuple[frozenset, bool]:
+    """What a statement says, apart from how it was worded: the words that carry it (without the quote a
+    profile fact keeps beside its label, the short forms on a word's end, and the words every record
+    about the user has), each in one form, and whether it denies."""
+    from eli.cognition.scoring import STOPWORDS
+    from eli.runtime.profile_extractor import split_evidence
+    label = split_evidence(str(text or ""))[0]
+    # a figure is a word of the fact however short ("season 2" is not "season 3"); a lone letter is not
+    words = frozenset(t if t.isdigit() else _stem(t) for t in re.findall(r"[a-z0-9]+", _CONTRACTED.sub("", label).lower())
+                      if t not in STOPWORDS and t not in _OF_THE_USER and (t.isdigit() or len(t) > 1))
+    return words, bool(_DENIES.search(label))
+
+
+def states(relation: Any, value: Any) -> str:
+    """What a claim states, in words: its value when its relation only files it (a profile kind,
+    "family.kind", whose value is a sentence of its own), else what the relation says of the value
+    too: living in a town and working in the town of the same name are two facts."""
+    relation = str(relation or "")
+    return str(value or "") if "." in relation else f"{relation.replace('_', ' ')} {value or ''}"
+
+
+def said_again(a: Any, b: Any) -> bool:
+    """Whether one statement is the other said again: the same words carry both and neither denies
+    what the other states. One that adds a word of its own says more, and is a statement of its own."""
+    (said_a, denies_a), (said_b, denies_b) = says(a), says(b)
+    return bool(said_a) and said_a == said_b and denies_a == denies_b
+
+
 def _confirm(conn, cid: int, roots_json: Any, c_origin: str, origin: str, root: Any, vfrom: float, now: float,
              contradicted_by: str = "") -> None:
     """One more statement of a standing claim's value: counted when it is another confirmation

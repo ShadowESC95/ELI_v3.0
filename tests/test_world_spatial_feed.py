@@ -485,6 +485,55 @@ def test_socket_sends_on_connect_then_only_on_change(monkeypatch):
     assert [f[0] for f in fired] == ["vr_room_entered"]
 
 
+def _record(ident, text):
+    return {"id": ident, "name": text, "kind": "memory", "room": "memory_archive", "x": 0.0, "y": 0.0,
+            "importance": 0.5, "meaning": text, "made_by": "memory",
+            "form": {"shape": "orb", "colour": "#9fd8ff", "size": 0.35, "glow": 0.8, "pos": [1.0, 1.5, 2.0]}}
+
+
+def test_a_record_the_same_as_when_it_was_last_sent_goes_as_its_id_alone():
+    held = {}
+    first = {"type": "eli_world_state", "room": "workshop",
+             "objects": [_record("a", "one"), _record("b", "two"), {"name": "no id"}, _record("a", "said twice")]}
+    out = spatial_feed.lighten(first, held)
+    assert out["objects"] == first["objects"], "everything whole the first time"
+    assert spatial_feed.lighten(first, held)["objects"] == [
+        {"id": "a", "kept": True}, {"id": "b", "kept": True}, {"name": "no id"}, _record("a", "said twice")]
+    # one that changed goes whole; one that left and came back does too; the message itself is not changed
+    changed = {**first, "objects": [_record("a", "one"), _record("b", "two, now more")]}
+    assert spatial_feed.lighten(changed, held)["objects"] == [{"id": "a", "kept": True}, _record("b", "two, now more")]
+    assert spatial_feed.lighten({**first, "objects": [_record("b", "two, now more")]}, held)["objects"] == [
+        {"id": "b", "kept": True}]
+    assert spatial_feed.lighten(changed, held)["objects"] == [_record("a", "one"), {"id": "b", "kept": True}]
+    assert changed["objects"] == [_record("a", "one"), _record("b", "two, now more")]
+    # as the contract a body is given says it goes
+    shapes = json.loads(CONTRACT.read_text())["shapes"]
+    assert _contract_errors({"id": "a", "kept": True}, "kept_record", shapes) == []
+
+
+def test_a_client_that_keeps_records_is_sent_each_whole_once_and_one_that_does_not_every_time(monkeypatch):
+    """Every change anywhere sent all of ELI's books and beliefs again: a megabyte to read each time
+    ELI walked to another room."""
+    from eli.world import shown
+    for asks, keeps in ((["world-state", "kept-records"], True), (["world-state"], False), (None, False)):
+        client, box = _client(monkeypatch)
+        monkeypatch.setattr(shown, "items", lambda now=None: [_record("memory_1", "the canal walk"),
+                                                               _record("memory_2", "the allotment")])
+        with client.websocket_connect("/v1/world/ws") as ws:
+            ws.receive_json()
+            hello = {"type": "hello", "protocol_versions": [1, 2]}
+            ws.send_json({**hello, "capabilities": asks} if asks is not None else hello)
+            welcome = ws.receive_json()
+            assert welcome["type"] == "welcome" and "kept-records" in welcome["capabilities"]
+            whole = [o for o in ws.receive_json()["objects"] if o["id"].startswith("memory_")]
+            assert [o["meaning"] for o in whole] == ["the canal walk", "the allotment"], "all of it first"
+            box["world"] = {**WORLD, "avatar": {**WORLD["avatar"], "room": "debug_basement"}}
+            again = ws.receive_json()
+            assert again["room"] == "debug_basement"
+            sent = [o for o in again["objects"] if o["id"].startswith("memory_")]
+            assert sent == ([{"id": "memory_1", "kept": True}, {"id": "memory_2", "kept": True}] if keeps else whole)
+
+
 def test_played_route_hands_the_result_to_the_games(monkeypatch):
     client, _ = _client(monkeypatch)
     from eli.world import games
@@ -1070,6 +1119,22 @@ def test_the_evidence_wall_is_sent_one_record_for_one_fact_what_matters_first_an
     notes = [o for o in msg["objects"] if o["kind"] == "thought"]
     assert sum(o["room"] == "evidence_wall" for o in notes) == 1
     assert sum(o["room"] == "memory_archive" for o in notes) == 1, "one memory recalled in three turns is one sheet"
+
+
+def test_two_facts_that_share_a_value_are_two_sheets(monkeypatch, records):
+    """Living in a town and working for a firm of the same name were one sheet: only the values were
+    compared. What the relation says of the value is part of the fact; a profile fact that says one of
+    them in a sentence is still that fact."""
+    from eli.memory import claims
+    conn = records.memory._claims_conn()
+    who = records.memory._claim_subject()
+    for relation, value in (("lives_in", "Marlow"), ("employer", "Marlow"), ("identity.location", "User lives in Marlow.")):
+        claims.record(conn, relation, value, origin="user_said", subject=who, single_valued=False)
+    conn.commit()
+    conn.close()
+    beliefs = [o["claim"] for o in _knowledge_message(monkeypatch, records)["objects"] if o["kind"] == "claim"]
+    assert sorted(len(b["also"]) for b in beliefs) == [0, 1], beliefs
+    assert next(b for b in beliefs if not b["also"])["relation"] == "employer"
 
 
 def test_a_name_too_long_for_its_label_ends_at_a_word_and_says_it_goes_on(monkeypatch, records):

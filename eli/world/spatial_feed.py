@@ -10,7 +10,8 @@ contract, served on the local API server:
 
     GET  /v1/world/protocol   which versions and capabilities this ELI speaks
     GET  /v1/world/state      one snapshot
-    WS   /v1/world/ws         the snapshot again whenever it changes
+    WS   /v1/world/ws         the snapshot again whenever it changes; a client that keeps the records it
+                              was sent is sent each whole once, then by its id (version 2, kept-records)
     POST /v1/world/event      the client reporting back (the user entered a room)
     POST /v1/world/scene      what the user and ELI can see now       (version 2)
     POST /v1/world/body       the real things the body can draw, for ELI to place (version 2, props)
@@ -55,8 +56,11 @@ MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
     2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures",
-        "models", "games", "thoughts", "books", "evidence"),
+        "models", "games", "thoughts", "books", "evidence", "kept-records"),
 }
+# A client that asks for this keeps the records it was sent: one the same as when it was last sent
+# over this link goes as its id alone (lighten).
+KEPT_RECORDS = "kept-records"
 # The most one message to a body may take, in bytes, unless its hello says otherwise ("max_message"):
 # what ELI VR's world link takes in (eli_link.gd, inbound_buffer_size: 1 MiB). ELI's books fill what
 # the rest of the message leaves of it (shown.books).
@@ -306,6 +310,29 @@ def _recent(state: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
         if len(out) >= limit:
             break
     return list(reversed(out))
+
+
+def lighten(message: Dict[str, Any], held: Dict[str, str]) -> Dict[str, Any]:
+    """The message for a client that keeps the records it was sent ("kept-records"): a record ("objects")
+    the same as when it was last sent over this link goes as {"id", "kept": true}, and the client shows
+    the one it holds. `held` is what this link has been sent ({id: the record's digest}), brought up to
+    this message: a record that changed or is new goes whole, one no longer in the message is forgotten,
+    so one that comes back is sent whole again. ELI's books and what it holds about the user are most
+    of a message and seldom change, and every change anywhere used to send all of them again."""
+    records = message.get("objects")
+    if not isinstance(records, list):
+        return message
+    sent, out = {}, []
+    for record in records:
+        ident = str(record.get("id") or "") if isinstance(record, dict) else ""
+        if not ident or ident in sent:          # nothing to keep it by, or an id twice: sent as it is
+            out.append(record)
+            continue
+        sent[ident] = hashlib.sha1(json.dumps(record, sort_keys=True, default=str).encode()).hexdigest()
+        out.append({"id": ident, "kept": True} if held.get(ident) == sent[ident] else record)
+    held.clear()
+    held.update(sent)
+    return {**message, "objects": out}
 
 
 def _digest(message: Dict[str, Any]) -> str:
@@ -623,12 +650,15 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         version = FEED_VERSION
         budget = MESSAGE_BYTES         # the most one message to it takes, as its hello says
         sent = ""
+        keeps: Optional[Dict[str, str]] = None    # the records a client that keeps them holds (lighten)
         who: Dict[str, str] = {}       # the surface and session the client named in its hello
         try:
             while True:
                 message = await asyncio.to_thread(spatial_state, None, version, budget, reader=reads)
                 digest = _digest(message)
                 if digest != sent:
+                    if keeps is not None:
+                        message = lighten(message, keeps)
                     await ws.send_text(json.dumps(message, default=str))
                     sent = digest
                 try:
@@ -651,6 +681,9 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
                         await ws.close(code=CLOSE_INCOMPATIBLE)
                         return
                     version, sent = answer["version"], ""   # the state again, as agreed
+                    asked = incoming.get("capabilities") if isinstance(incoming.get("capabilities"), list) else []
+                    # from here the client holds what it is sent, if it said it keeps records: all of it first
+                    keeps = {} if KEPT_RECORDS in asked and KEPT_RECORDS in answer["capabilities"] else None
                     budget = int(answer.get("max_message") or MESSAGE_BYTES)
                 elif incoming.get("type") == "vr_event":
                     try:
