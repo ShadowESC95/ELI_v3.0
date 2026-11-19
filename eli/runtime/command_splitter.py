@@ -313,7 +313,8 @@ def tells_by_form(sentence: str) -> bool:
     or "it" was taken for an instruction, so "Note: the red box is not the blue one." before a
     question wrote a note, and a rule about switches and a lamp was sent to the smart home."""
     said = _LEAD.sub("", str(sentence or "").strip(), count=1)
-    if _REQUEST.match(said) or _COMMAND_START.match(said):
+    # "go search the web", "go and open it": the verb comes after "go"
+    if _REQUEST.match(said) or _COMMAND_START.match(re.sub(r"^go\s+(?:and\s+)?", "", said, flags=re.I)):
         return True
     words = re.findall(r"[a-z]+", said.lower())
     vocab = _command_words()
