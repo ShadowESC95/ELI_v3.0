@@ -84,7 +84,9 @@ def test_the_scope_of_a_search_is_stated_so_a_denial_covers_only_that(monkeypatc
     from eli.cognition import memory_diag
     rec = memory_diag.retrieval_record(2, 0, 0, 0, None, searched={"semantic": 0, "exact": 1, "claims": 0, "archive": None})
     text = memory_diag.block(rec)
-    assert "archive: not searched" in text and "exact codes/phrases 1" in text and "Only say nothing is stored for this scope" in text
+    assert "archive: not searched" in text and "exact codes/phrases 1" in text and "A denial covers this scope only" in text
+    # "Only say nothing is stored for this scope." read as an order: replies said those words with the answer in hand
+    assert "Only say nothing is stored" not in text
 
 
 def test_the_archive_is_searched_when_live_evidence_is_thin(tmp_path, monkeypatch):

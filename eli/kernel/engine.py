@@ -4163,7 +4163,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         turn's Context. One row is written when the turn really ends: on return, on an
         exception, and for a stream when it is drained, closed early or dropped unread.
         """
-        mode = str(reasoning_mode or "quick").strip().lower() or "quick"
+        # The mode by its one key, whatever name the caller used: a caller passing the public name
+        # ("normal") got the generic profile and no reasoning stage, since the stages compare keys.
+        from eli.cognition.reasoning_modes import canonical_mode
+        mode = canonical_mode(reasoning_mode)
+        if reasoning_mode is not None:
+            reasoning_mode = mode
         parent = _request_context.turn_facts_var.get() or {}
         facts: Dict[str, Any] = {
             "request_id": f"req-{uuid.uuid4().hex[:12]}",

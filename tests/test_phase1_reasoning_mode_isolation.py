@@ -62,6 +62,21 @@ def test_the_turn_mode_is_released_after_a_non_streaming_turn():
     assert rc.reasoning_mode_var.get() is None
 
 
+def test_a_mode_given_by_its_public_name_runs_as_that_mode():
+    """A caller passing "normal" got the generic profile and no reasoning stage: the stages compare
+    the mode's key, and only the window sent the key."""
+    eng = _bare_engine()
+    seen = {}
+
+    def _probe(self, user_input, source="user", stream=False, reasoning_mode=None, **kwargs):
+        seen["passed"], seen["turn"] = reasoning_mode, self._reasoning_mode
+        return "ok"
+
+    with patch.object(CognitiveEngine, "_process_impl", _probe):
+        eng.process("hi", reasoning_mode="Normal")
+    assert seen == {"passed": "chain_of_thought", "turn": "chain_of_thought"}
+
+
 def test_a_stream_body_sees_its_mode_and_the_caller_never_does():
     """The generator's body runs after process() has returned — exactly when
     a real stream formats its prompt and calls _no_think_prefill — so it must

@@ -132,6 +132,10 @@ extras = [
     "ics>=0.7",
     "pyflakes>=3.0",
 ]
+# Direct playback of a video's sound through mpv; without it playback is browser-only.
+media = [
+    "yt-dlp>=2025.1",
+]
 # Test-suite drivers (API subprocess tests, lint gates, MQTT probe). Cross-platform.
 # Keep in sync with requirements-test.txt.
 test = [

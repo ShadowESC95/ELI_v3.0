@@ -278,6 +278,19 @@ def test_without_an_inference_engine_eli_is_installed_with_every_extra_but_llm()
     assert got.split(",") == [e for e in extras if e != "llm"]
 
 
+def test_every_extra_the_release_build_requires_is_one_the_project_has():
+    """The release build asked pip for a "media" extra the project did not define; pip warns and goes
+    on, so every download was built without yt-dlp."""
+    import re
+    from eli.core.toml_util import loads_toml
+    root = Path(__file__).resolve().parents[1]
+    have = set(loads_toml((root / "pyproject.toml").read_bytes())["project"]["optional-dependencies"])
+    workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    asked = {e for line in re.findall(r"^\s*(?:REQUIRED|OPTIONAL)_EXTRAS:\s*\"([^\"]*)\"", workflow, re.M)
+             for e in line.split()}
+    assert asked and not asked - have, sorted(asked - have)
+
+
 def test_windows_installer_explains_the_fallback():
     """A silent downgrade to CPU is how 0 GPU layers became a mystery."""
     text = _ps1_text()

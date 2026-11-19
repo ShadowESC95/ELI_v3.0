@@ -55,7 +55,7 @@ def block(diag: Optional[Dict[str, Any]]) -> str:
     return (f"Retrieval diagnostics (authoritative): searched keyword={diag['keyword']} "
             f"semantic={diag['semantic']} kg={diag['kg']}, merged {diag['merged']} items{conf}."
             + (f" Search was {_window_text(diag['window'])}." if diag.get("window") else "")
-            + (f" Scope: {scope_text(diag['searched'])}. Only say nothing is stored for this scope." if diag.get("searched") else ""))
+            + (f" Scope: {scope_text(diag['searched'])}. A denial covers this scope only: never say nothing is stored at all." if diag.get("searched") else ""))
 
 
 def explanation(diag: Dict[str, Any]) -> str:
