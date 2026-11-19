@@ -61,7 +61,7 @@ import time
 from pathlib import Path
 import uvicorn
 
-from eli.kernel.engine import get_engine, MAIN_REPLY_DONE_SENTINEL
+from eli.kernel.engine import get_engine, MAIN_REPLY_DONE_SENTINEL, _visible_reply_text
 
 # Bearer-token gate. Enforced ONLY when ELI_API_TOKEN is set — which the launcher does
 # automatically when binding beyond loopback (--lan). Loopback (default) runs tokenless
@@ -1727,14 +1727,10 @@ _WEB_UI = """<!doctype html>
   }
   // ── Local-control drivers (AirPlay / Fire TV / Cast / UPnP) ────────────────
   let DRIVERS={};
-  const DRIVER_CAPS={
-    airplay:['play','pause','stop','previous','next','volume'],
-    firetv:['home','back','up','down','left','right','select','play','pause','on','off'],
-    cast:['play','pause','stop','volume'],
-    upnp:['play','pause','stop','volume'],
-  };
   const CAP_LABEL={play:'▶',pause:'⏸',stop:'⏹',previous:'⏮',next:'⏭',home:'⌂',back:'↩',
-    up:'▲',down:'▼',left:'◀',right:'▶',select:'OK',on:'On',off:'Off',volume:'🔊'};
+    up:'▲',down:'▼',left:'◀',right:'▶',select:'OK',on:'On',off:'Off',volume:'🔊',volume_up:'🔊+',volume_down:'🔉−'};
+  // what a driver can do is the driver's own word (/v1/devices/drivers); the page draws those it has a button for
+  function driverCaps(name){return ((DRIVERS[name]||{}).capabilities||[]).filter(c=>CAP_LABEL[c]);}
   function loadDrivers(){return api('/v1/devices/drivers').then(d=>{DRIVERS={};(d.drivers||[]).forEach(x=>DRIVERS[x.name]=x);return DRIVERS;}).catch(()=>DRIVERS);}
   function isPaired(dv){const a=dv.attrs||{};
     if(dv.driver==='airplay')return !!a.airplay_credentials;
@@ -1754,7 +1750,7 @@ _WEB_UI = """<!doctype html>
       h+='<div class="row"><span class="st" style="color:#e0a72e">not paired</span>'
         +'<button class="cbtn" data-act="pair">Pair</button></div>';
     } else {
-      const caps=DRIVER_CAPS[dv.driver]||[];
+      const caps=driverCaps(dv.driver);
       h+='<div class="row" style="flex-wrap:wrap;gap:6px">';
       caps.forEach(c=>{h+='<button class="cbtn" data-cap="'+c+'" title="'+c+'">'+(CAP_LABEL[c]||c)+'</button>';});
       h+='</div><div style="font-size:.78em;opacity:.55">'+esc(dv.host||'')+' · ready</div>';
@@ -1887,7 +1883,7 @@ _WEB_UI = """<!doctype html>
   }
   function devHubCaps(dv){
     const drv=DRIVERS[dv.driver]||{};
-    if(dv.driver&&dv.driver!=='mqtt')return DRIVER_CAPS[dv.driver]||[];
+    if(dv.driver&&dv.driver!=='mqtt')return driverCaps(dv.driver);
     const t=dv.type||'switch';
     if(t==='light'||t==='switch'||t==='fan'||t==='outlet')return['on','off'].concat(t==='light'&&((dv.attrs||{}).brightness_command_topic)?['volume']:'');
     return[];
@@ -2020,7 +2016,7 @@ _WEB_UI = """<!doctype html>
         +'<div class="setrow"><span class="setlbl">Role</span><select id="mh-role" class="setinput"><option value="off">off</option><option value="primary">primary (main PC)</option><option value="secondary">secondary (2nd brain)</option><option value="tertiary">tertiary (3rd brain)</option><option value="reflex">reflex (edge only)</option></select></div>'
         +'<div class="setrow"><span class="setlbl">Node name</span><input id="mh-name" class="setinput" value="'+esc(cfg.node_name||'')+'"></div>'
         +'<div class="setrow"><span class="setlbl">Primary URL</span><input id="mh-primary" class="setinput" placeholder="https://192.168.1.10:8765" value="'+esc(cfg.primary_url||location.origin)+'"></div>'
-        +'<div class="setrow"><span class="setlbl">Failover after (sec)</span><input id="mh-fail" type="number" class="setinput" min="6" max="120" value="'+(cfg.failover_after_sec||18)+'"></div>'
+        +'<div class="setrow"><span class="setlbl">Failover after (sec)</span><input id="mh-fail" type="number" class="setinput" min="6" max="120" value="'+(cfg.failover_after_sec||'')+'"></div>'
         +'<div class="setrow"><span class="setlbl">Auto takeover</span><label class="sw"><input type="checkbox" id="mh-auto" '+(cfg.auto_takeover!==false?'checked':'')+'><span></span></label></div>'
         +'<div class="jhead" style="margin-top:14px">Other brains on LAN</div>'
         +'<div id="mh-peers"></div>'
@@ -2058,7 +2054,7 @@ _WEB_UI = """<!doctype html>
         });
         const body={enabled:!!($('#mh-en')&&$('#mh-en').checked),role:($('#mh-role')||{}).value||'off',
           node_name:($('#mh-name')||{}).value||'',primary_url:($('#mh-primary')||{}).value||'',
-          failover_after_sec:parseFloat(($('#mh-fail')||{}).value)||18,auto_takeover:!!($('#mh-auto')&&$('#mh-auto').checked),
+          failover_after_sec:parseFloat(($('#mh-fail')||{}).value)||null,auto_takeover:!!($('#mh-auto')&&$('#mh-auto').checked),
           peers:peers};
         save.disabled=true;
         api('/v1/home/mesh/config',{method:'POST',body:JSON.stringify(body)}).then(r=>{
@@ -3422,8 +3418,9 @@ class MeshConfig(BaseModel):
     node_name: str = ""
     primary_url: str = ""
     peers: List[MeshPeer] = []
-    heartbeat_interval_sec: float = 5.0
-    failover_after_sec: float = 18.0
+    # no figure of their own: left out, the mesh keeps its value (eli/runtime/home_mesh.py owns the defaults)
+    heartbeat_interval_sec: Optional[float] = None
+    failover_after_sec: Optional[float] = None
     auto_takeover: bool = True
 
 class MediaControl(BaseModel):
@@ -3591,14 +3588,10 @@ def _extract_response_text(result) -> str:
     process() usually returns a dict, but several paths return a bare string
     (e.g. the multi-question splitter joins sub-answers) or a streaming
     generator. Assuming a dict and calling .get() on a str raised
-    "'str' object has no attribute 'get'" → HTTP 500. Field order mirrors the
-    engine's own extraction: response → content → text."""
-    if isinstance(result, str):
-        return result.strip()
-    if isinstance(result, dict):
-        return str(
-            result.get("response") or result.get("content") or result.get("text") or ""
-        ).strip()
+    "'str' object has no attribute 'get'" → HTTP 500. A dict or a string is read by the
+    engine's own reader (_visible_reply_text), not by a copy of its field order here."""
+    if isinstance(result, (str, dict)):
+        return _visible_reply_text(result).strip()
     try:  # streaming generator / iterable of chunks
         parts = []
         for chunk in result:
@@ -4513,8 +4506,11 @@ def devices_drivers():
     """Local-control driver status: which are installed, how each pairs — so the dashboard
     can offer one-click Install / guided Pair when you choose to control a device."""
     from eli.runtime import device_drivers
-    return {"ok": True, "drivers": device_drivers.driver_status(),
-            "adb": device_drivers.adb_available()}
+    drivers = device_drivers.driver_status()
+    for row in drivers:
+        # the controls each driver declares, so the page does not keep a list of its own
+        row["capabilities"] = list(device_drivers.get_driver(row["name"]).capabilities({}))
+    return {"ok": True, "drivers": drivers, "adb": device_drivers.adb_available()}
 
 @app.post("/v1/devices/driver/install", tags=["Devices"], dependencies=[Depends(require_admin)])
 def devices_driver_install(req: DriverInstall):
@@ -4930,7 +4926,7 @@ def _list_chat_models() -> list:
 
 
 @app.get("/v1/models/installed", tags=["System"], dependencies=[Depends(_require_token)])
-def list_models():
+def list_installed_models():
     """Available chat models + the active one, for the dashboard's model dropdown.
     (Distinct path from the OpenAI-compatible /v1/models so it isn't shadowed by it.)
     `active` is the *actually resolved* model (honours the env override), so the
@@ -5017,27 +5013,6 @@ def _firewall_hint() -> dict:
         cmds = ["System Settings → Network → Firewall → allow incoming connections for "
                 "python3 (or turn the firewall off while testing)."]
     return {"os": osname, "tool": tool, "commands": cmds, "subnet": subnet}
-
-
-def effective_api_port() -> int:
-    """The port the ELI web/API server should listen on. Precedence: explicit ELI_API_PORT
-    env (from --port / launcher) > the user's persisted `api_port` setting > 8081. Single
-    source every launch path consults, so changing the setting moves the server everywhere
-    (useful when 8081 is already taken by another service on the LAN)."""
-    env = os.environ.get("ELI_API_PORT")
-    if env:
-        try:
-            return int(env)
-        except (TypeError, ValueError):
-            pass
-    try:
-        from eli.core import config as _cfg
-        v = _cfg.get("api_port")
-        if v:
-            return int(v)
-    except Exception:
-        pass
-    return 8081
 
 
 def _connect_url() -> dict:
@@ -5557,7 +5532,17 @@ def main():
 
     # Precedence: explicit flag > --lan > env default. --lan means 0.0.0.0 unless --host given.
     host = args.host or ("0.0.0.0" if args.lan else os.environ.get("ELI_API_HOST", "127.0.0.1"))
-    port = args.port or effective_api_port()  # --port > env > saved api_port setting > 8081
+    # One owner for where ELI serves (eli/runtime/server_util), as the window and the bundles use:
+    # --port > env > saved api_port setting > 8081, and the next free port when another program
+    # (ELI v2 among them) holds that one. Started on its own, this server failed to bind instead.
+    from eli.runtime import server_util
+    port = args.port or server_util.effective_api_port()
+    _held = server_util.probe_eli_server(port)
+    if _held.get("in_use") and not _held.get("eli_running"):
+        _moved = server_util.free_port_after(port)
+        if _moved:
+            print(f"  Port {port} is held by another program; ELI v3 serves on {_moved}.", flush=True)
+            port = _moved
     reload = args.reload or os.environ.get("ELI_API_RELOAD", "0").strip().lower() in ("1", "true", "yes", "on")
     if args.token:
         os.environ["ELI_API_TOKEN"] = args.token

@@ -12,7 +12,8 @@ from pathlib import Path
 from eli.core.paths import get_paths
 from eli.execution.executor_enhanced import execute as execute_action
 from eli.memory import Memory, get_memory_status, resolve_db_paths
-from eli.kernel.stages._common import _eli_path_get, _is_brief_phatic_prompt
+from eli.core.paths import path_get as _eli_path_get
+from eli.kernel.stages._common import _is_brief_phatic_prompt
 from eli.utils.log import get_logger
 import logging
 

@@ -5,12 +5,10 @@ import pytest
 
 
 def test_pipeline_trace_stage_names():
-    from eli.kernel.pipeline_trace import STAGE_NAMES, stage_label, map_orch_trace_key
+    from eli.kernel.pipeline_trace import STAGE_NAMES, stage_label
     assert STAGE_NAMES[6] == "AGENT_BUS"
     assert STAGE_NAMES[12] == "LEARNING_STATE_UPDATE"
     assert stage_label(12) == "LEARNING_STATE_UPDATE"
-    assert map_orch_trace_key("stage_9") == 7
-    assert map_orch_trace_key("agent_bus_specialists") == 6
 
 
 def test_orchestrator_planner_mode_maps_quick_to_fast():

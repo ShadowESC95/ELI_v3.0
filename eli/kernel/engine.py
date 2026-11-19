@@ -44,21 +44,18 @@ from eli.kernel.stages.retrieval import RetrievalMixin
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
 from eli.kernel.stages._common import (  # noqa: F401
     _eli_bus_first_ok_result,
-    _eli_path_get,
     _eli_test_mode,
     _is_brief_phatic_prompt,
     _is_autonomous_source,
     _WEB_READS,
 )
 from eli.kernel.stages.fast_actions import (  # noqa: F401
-    _AUTHORITY_FAILCLOSED_ACTIONS,
     _ALWAYS_AS_IS,
     _DIRECT_FINAL_ACTIONS,
     _DIRECT_RESULT_ACTIONS,
     _LIVE_STATE_ACTIONS,
     _LIVE_STATE_ACTION_SUFFIXES,
     _PHASE45_DIRECT_FAST_ACTIONS,
-    _PHASE45_SILENT_FAST_ACTIONS,
     _is_live_state_action,
     _is_soft_informational_action,
     _held_to_requested_format,
@@ -148,7 +145,6 @@ from eli.kernel.stages.output_text import (  # noqa: F401
 from eli.kernel.stages.persona_text import (  # noqa: F401
     _BAD_ASSISTANT_IDENTITY_DRIFT_SNIPPETS,
     _IDENTITY_OR_PHATIC_FASTPATH_RE,
-    _clean_persona,
     _eli_is_identity_or_phatic_fastpath,
     _eli_is_subjective_opinion_prompt,
     _eli_sanitize_identity_context_block,
@@ -252,17 +248,6 @@ def _eli_direct_grounded_answer(user_text: str):
         return direct_grounded_answer(user_text)
     except Exception as e:
         return f"Grounded status lookup failed: {e!r}"
-
-
-def _model_family_from_path(model_path) -> str:
-    """Deprecated wrapper — prefer ``resolve_chat_family`` / metadata."""
-    try:
-        from eli.cognition.model_identity import resolve_chat_family, read_gguf_identity
-        ident = read_gguf_identity(model_path)
-        fam = ident.get("family") or resolve_chat_family(path=model_path)
-        return str(fam or "chatml")
-    except Exception:
-        return "chatml"
 
 
 
@@ -826,27 +811,6 @@ def _classify_query(text: str, action: str) -> str:
 _RUNTIME_STATUS_GROUNDING = 0.95
 
 
-def _mw_rs_text_from_args(args, kwargs) -> str:
-    for key in ("user_input", "message", "text", "prompt"):
-        val = kwargs.get(key)
-        if val is not None:
-            return str(val)
-    if args:
-        return str(args[0])
-    return ""
-
-
-def _mw_rs_mode_from_args(args, kwargs) -> str:
-    mode = kwargs.get("reasoning_mode")
-    if mode is None and len(args) >= 4:
-        mode = args[3]
-    try:
-        from eli.cognition.reasoning_modes import canonical_mode as _cm
-        return _cm(mode)
-    except Exception:
-        return str(mode or "quick").strip().lower() or "quick"
-
-
 def _mw_rs_is_quick(mode) -> bool:
     return str(mode or "").strip().lower() in {"quick", "fast", "direct"}
 
@@ -1260,476 +1224,6 @@ def _mw_mem_runtime_strict_collect_evidence(raw, mode) -> dict:
         }
 
 
-def _mw_mem_runtime_strict_synthesize(question, mode, evidence) -> dict:
-    """Non-Quick: synthesize a natural-language answer from the evidence
-    via local GGUF, validate it, return the synthesized surface only.
-    Mirrors the V19 runtime-status pattern — non-Quick must run the full
-    cognition pipeline (per spec) and never return raw evidence packets."""
-    evidence_text = _mw_rs_extract_text(evidence)
-    if not evidence_text:
-        err = evidence.get("error") if isinstance(evidence, dict) else ""
-        msg = f"Memory-runtime evidence collection failed, non-Quick synthesis was not attempted. Error: {err}"
-        return {
-            "ok": False, "action": "EXPLAIN_MEMORY_RUNTIME",
-            "content": msg, "response": msg,
-            "source": "memory_runtime_strict_v1_synth_no_evidence",
-            "evidence_source": "memory_runtime_strict_v1_synth_no_evidence",
-            "grounded": False, "evidence_used": False,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "memory_runtime_strict_v1_synth",
-            },
-        }
-
-    mode_instruction = {
-        "chain_of_thought": "Use private structured reasoning. Do not reveal hidden reasoning. Output only the final answer.",
-        "self_consistency": "Privately compare several phrasings and output only the strongest final answer.",
-        "tree_of_thoughts": "Privately explore branches, prune weak ones, and output only the strongest final answer.",
-        "constitutional_ai": "Draft, privately critique for accuracy and contract compliance, revise, and output only the final answer.",
-    }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
-
-    system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
-        "You are answering a question about how your own memory system works internally. "
-        "Use ONLY the evidence below; do not invent file paths, table names, or function names. "
-        "Do not expose JSON packets, internal report fields, repair reasons, or validation machinery. "
-        "Return a concise but complete synthesized explanation that names the actual files, DB tables, "
-        "and functions seen in the evidence."
-    )
-    prompt = (
-        f"Original user question:\n{question}\n\n"
-        f"Reasoning mode:\n{mode}\n\n"
-        f"Mode contract:\n{mode_instruction}\n\n"
-        f"Live memory-runtime evidence:\n{evidence_text}\n\n"
-        "Task:\nExplain ELI's memory system: which files, which DB tables, which functions. "
-        "Cover long-term store (SQLite), FAISS vectors + index path, FTS5 tables, knowledge graph "
-        "tables, the embedder model, retrieval/orchestrator flow. Synthesize — do not paste raw evidence.\n"
-    )
-    try:
-        synthesized = _mw_rs_generate(prompt, system, mode).strip()
-    except Exception as e:
-        msg = f"Memory-runtime evidence was collected, but non-Quick synthesis failed: {e}"
-        return {
-            "ok": False, "action": "EXPLAIN_MEMORY_RUNTIME",
-            "content": msg, "response": msg,
-            "source": "memory_runtime_strict_v1_synth_failed",
-            "evidence_source": "memory_runtime_strict_grounded_v1",
-            "grounded": True, "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "memory_runtime_strict_v1_synth",
-                "error": repr(e),
-            },
-        }
-
-    # Reuse V19's bad-synthesis check; for memory-runtime require ≥3 of
-    # {memory, sqlite, table, vector, faiss, function}.
-    low = synthesized.lower()
-    if not low.strip():
-        bad = "empty synthesis"
-    else:
-        forbidden = (
-            "raw gguf candidate",
-            "raw_gguf_candidates_skipped",
-            "repair_reason",
-            "response_surface:",
-            "evidence_source:",
-            "{'ok':",
-            '"ok":',
-        )
-        bad = ""
-        for frag in forbidden:
-            if frag in low:
-                bad = f"leaked internal/direct telemetry marker: {frag}"
-                break
-        if not bad:
-            required_any = ("memory", "sqlite", "table", "vector", "faiss", "function")
-            if sum(1 for x in required_any if x in low) < 3:
-                bad = "synthesis did not preserve enough memory-runtime facts"
-
-    if bad:
-        msg = (
-            f"Memory-runtime non-Quick synthesis failed validation: {bad}. "
-            "Direct telemetry was not returned because only Quick mode may use that surface."
-        )
-        return {
-            "ok": False, "action": "EXPLAIN_MEMORY_RUNTIME",
-            "content": msg, "response": msg,
-            "source": "memory_runtime_strict_v1_synth_validation_failed",
-            "evidence_source": "memory_runtime_strict_grounded_v1",
-            "grounded": True, "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "memory_runtime_strict_v1_synth",
-                "validation_error": bad,
-            },
-        }
-
-    return {
-        "ok": True, "action": "EXPLAIN_MEMORY_RUNTIME",
-        "content": synthesized, "response": synthesized,
-        "source": "memory_runtime_strict_v1_synthesized",
-        "evidence_source": "memory_runtime_strict_grounded_v1",
-        "grounded": True, "evidence_used": True,
-        "report": {
-            "requested_mode": mode,
-            "synthesis_validated": True,
-            "direct_telemetry_returned": False,
-            "quick_direct_allowed": False,
-            "repair_reason": "memory_runtime_strict_v1_synth",
-        },
-    }
-
-
-# Synthesis helpers for evidence surfaces that used to return raw in every mode
-# (MEMORY_STATUS.recent_processing, SELF_REPORT.recent_updates). Quick still gets it raw;
-# deeper modes run it through the local model, sanity-check it, and hand out only the synthesis.
-
-def _mw_recent_memory_processing_synthesize(question, mode, evidence) -> dict:
-    evidence_text = _mw_rs_extract_text(evidence)
-    evidence_source = (
-        str((evidence or {}).get("evidence_source") or "recent_memory_processing_grounded_evidence")
-        if isinstance(evidence, dict)
-        else "recent_memory_processing_grounded_evidence"
-    )
-
-    if not evidence_text:
-        err = evidence.get("error") if isinstance(evidence, dict) else ""
-        msg = (
-            "Recent-memory-processing evidence collection failed, so non-Quick "
-            f"synthesis was not attempted. Error: {err}"
-        )
-        return {
-            "ok": False,
-            "action": "MEMORY_STATUS",
-            "content": msg,
-            "response": msg,
-            "source": "recent_memory_processing_nonquick_synth_no_evidence_v5",
-            "evidence_source": evidence_source,
-            "grounded": False,
-            "evidence_used": False,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "recent_memory_processing_nonquick_synthesis_v5",
-            },
-        }
-
-    mode_instruction = {
-        "chain_of_thought": "Use private structured reasoning. Do not reveal hidden reasoning. Output only the final answer.",
-        "self_consistency": "Privately compare several possible phrasings and output only the strongest final answer.",
-        "tree_of_thoughts": "Privately explore branches, prune weak ones, and output only the strongest final answer.",
-        "constitutional_ai": "Draft, privately critique for accuracy and contract compliance, revise, and output only the final answer.",
-    }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
-
-    system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
-        "You are answering a question about recent durable memory-processing evidence. "
-        "Use ONLY the evidence below. Do not invent recent processing, emotional activity, "
-        "mathematical work, project work, or hidden background actions unless the evidence states it. "
-        "Do not expose JSON packets, report keys, repair reasons, validation machinery, or raw metadata. "
-        "Return a concise but complete synthesized answer."
-    )
-
-    prompt = (
-        f"Original user question:\n{question}\n\n"
-        f"Reasoning mode:\n{mode}\n\n"
-        f"Mode contract:\n{mode_instruction}\n\n"
-        f"Grounded recent-memory-processing evidence:\n{evidence_text}\n\n"
-        "Task:\n"
-        "Answer what recent durable memory-processing evidence exists. "
-        "Summarize the available counts and meaningful recent categories or rows "
-        "without pasting raw control packets. If the evidence shows no clean recent "
-        "activity in a category, state that plainly.\n"
-    )
-
-    try:
-        synthesized = _mw_rs_generate(prompt, system, mode).strip()
-    except Exception as e:
-        msg = f"Recent-memory-processing evidence was collected, but non-Quick synthesis failed: {e}"
-        return {
-            "ok": False,
-            "action": "MEMORY_STATUS",
-            "content": msg,
-            "response": msg,
-            "source": "recent_memory_processing_nonquick_synth_failed_v5",
-            "evidence_source": evidence_source,
-            "grounded": True,
-            "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "recent_memory_processing_nonquick_synthesis_v5",
-                "error": repr(e),
-            },
-        }
-
-    low = synthesized.lower()
-    bad = ""
-
-    if not low.strip():
-        bad = "empty synthesis"
-    else:
-        forbidden = (
-            "raw gguf candidate",
-            "raw_gguf_candidates_skipped",
-            "repair_reason",
-            "response_surface:",
-            "evidence_source:",
-            "synthesis_validated",
-            "{'ok':",
-            '"ok":',
-            '"report":',
-        )
-        for frag in forbidden:
-            if frag in low:
-                bad = f"leaked internal/direct evidence marker: {frag}"
-                break
-
-        if not bad:
-            required_any = (
-                "memory",
-                "memories",
-                "recent",
-                "rows",
-                "observations",
-                "learning",
-                "faiss",
-                "conversation",
-                "stored",
-            )
-            if sum(1 for x in required_any if x in low) < 2:
-                bad = "synthesis did not preserve enough recent-memory evidence"
-
-    if bad:
-        msg = (
-            f"Recent-memory-processing non-Quick synthesis failed validation: {bad}. "
-            "Direct evidence was not returned because only Quick mode may use that surface."
-        )
-        return {
-            "ok": False,
-            "action": "MEMORY_STATUS",
-            "content": msg,
-            "response": msg,
-            "source": "recent_memory_processing_nonquick_synth_validation_failed_v5",
-            "evidence_source": evidence_source,
-            "grounded": True,
-            "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "recent_memory_processing_nonquick_synthesis_v5",
-                "validation_error": bad,
-            },
-        }
-
-    return {
-        "ok": True,
-        "action": "MEMORY_STATUS",
-        "content": synthesized,
-        "response": synthesized,
-        "source": "recent_memory_processing_nonquick_synthesized_v5",
-        "evidence_source": evidence_source,
-        "grounded": True,
-        "evidence_used": True,
-        "report": {
-            "requested_mode": mode,
-            "synthesis_validated": True,
-            "direct_telemetry_returned": False,
-            "quick_direct_allowed": False,
-            "repair_reason": "recent_memory_processing_nonquick_synthesis_v5",
-        },
-    }
-
-
-def _mw_self_report_recent_updates_synthesize(question, mode, evidence) -> dict:
-    evidence_text = _mw_rs_extract_text(evidence)
-    evidence_source = (
-        str((evidence or {}).get("evidence_source") or "self_report_recent_updates_grounded_evidence")
-        if isinstance(evidence, dict)
-        else "self_report_recent_updates_grounded_evidence"
-    )
-
-    if not evidence_text:
-        err = evidence.get("error") if isinstance(evidence, dict) else ""
-        msg = (
-            "Self-report recent-updates evidence collection failed, so non-Quick "
-            f"synthesis was not attempted. Error: {err}"
-        )
-        return {
-            "ok": False,
-            "action": "SELF_REPORT",
-            "content": msg,
-            "response": msg,
-            "source": "self_report_recent_updates_nonquick_synth_no_evidence_v5",
-            "evidence_source": evidence_source,
-            "grounded": False,
-            "evidence_used": False,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "self_report_recent_updates_nonquick_synthesis_v5",
-            },
-        }
-
-    mode_instruction = {
-        "chain_of_thought": "Use private structured reasoning. Do not reveal hidden reasoning. Output only the final answer.",
-        "self_consistency": "Privately compare several possible phrasings and output only the strongest final answer.",
-        "tree_of_thoughts": "Privately explore branches, prune weak ones, and output only the strongest final answer.",
-        "constitutional_ai": "Draft, privately critique for accuracy and contract compliance, revise, and output only the final answer.",
-    }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
-
-    system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
-        "You are answering a self-report question about what updates, checks, or recent "
-        "operational work are actually evidenced. Use ONLY the grounded report below. "
-        "Do not invent Git commits, status changes, capability changes, runtime changes, "
-        "maintenance actions, or emotional colour not present in evidence. "
-        "Do not expose JSON packets, report keys, repair reasons, validation machinery, or raw metadata. "
-        "Return a concise but complete synthesized answer."
-    )
-
-    prompt = (
-        f"Original user question:\n{question}\n\n"
-        f"Reasoning mode:\n{mode}\n\n"
-        f"Mode contract:\n{mode_instruction}\n\n"
-        f"Grounded self-report recent-updates evidence:\n{evidence_text}\n\n"
-        "Task:\n"
-        "Answer what ELI has concrete evidence for recently: Git evidence if present, "
-        "capability manifest evidence, runtime snapshot facts, and working-tree status "
-        "if available. If there is no recent Git commit evidence, state that plainly. "
-        "Synthesize — do not paste raw evidence packets.\n"
-    )
-
-    try:
-        synthesized = _mw_rs_generate(prompt, system, mode).strip()
-    except Exception as e:
-        msg = f"Self-report recent-updates evidence was collected, but non-Quick synthesis failed: {e}"
-        return {
-            "ok": False,
-            "action": "SELF_REPORT",
-            "content": msg,
-            "response": msg,
-            "source": "self_report_recent_updates_nonquick_synth_failed_v5",
-            "evidence_source": evidence_source,
-            "grounded": True,
-            "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "self_report_recent_updates_nonquick_synthesis_v5",
-                "error": repr(e),
-            },
-        }
-
-    low = synthesized.lower()
-    bad = ""
-
-    if not low.strip():
-        bad = "empty synthesis"
-    else:
-        forbidden = (
-            "raw gguf candidate",
-            "raw_gguf_candidates_skipped",
-            "repair_reason",
-            "response_surface:",
-            "evidence_source:",
-            "synthesis_validated",
-            "{'ok':",
-            '"ok":',
-            '"report":',
-        )
-        for frag in forbidden:
-            if frag in low:
-                bad = f"leaked internal/direct evidence marker: {frag}"
-                break
-
-        if not bad:
-            required_any = (
-                "eli",
-                "runtime",
-                "model",
-                "git",
-                "commit",
-                "capability",
-                "working tree",
-                "updates",
-                "evidence",
-            )
-            if sum(1 for x in required_any if x in low) < 2:
-                bad = "synthesis did not preserve enough grounded self-report evidence"
-
-    if bad:
-        msg = (
-            f"Self-report recent-updates non-Quick synthesis failed validation: {bad}. "
-            "Direct evidence was not returned because only Quick mode may use that surface."
-        )
-        return {
-            "ok": False,
-            "action": "SELF_REPORT",
-            "content": msg,
-            "response": msg,
-            "source": "self_report_recent_updates_nonquick_synth_validation_failed_v5",
-            "evidence_source": evidence_source,
-            "grounded": True,
-            "evidence_used": True,
-            "report": {
-                "requested_mode": mode,
-                "synthesis_validated": False,
-                "direct_telemetry_returned": False,
-                "quick_direct_allowed": False,
-                "repair_reason": "self_report_recent_updates_nonquick_synthesis_v5",
-                "validation_error": bad,
-            },
-        }
-
-    return {
-        "ok": True,
-        "action": "SELF_REPORT",
-        "content": synthesized,
-        "response": synthesized,
-        "source": "self_report_recent_updates_nonquick_synthesized_v5",
-        "evidence_source": evidence_source,
-        "grounded": True,
-        "evidence_used": True,
-        "report": {
-            "requested_mode": mode,
-            "synthesis_validated": True,
-            "direct_telemetry_returned": False,
-            "quick_direct_allowed": False,
-            "repair_reason": "self_report_recent_updates_nonquick_synthesis_v5",
-        },
-    }
-
-
-
-def _mw_mem_runtime_strict_live_result(raw, mode) -> dict:
-    """Backward-compat shim. Quick mode returns the raw evidence surface;
-    Non-Quick gathers evidence then runs the synthesis path. The middleware
-    inside CognitiveEngine.process() can call this single helper for both."""
-    evidence = _mw_mem_runtime_strict_collect_evidence(raw, mode)
-    if _mw_rs_is_quick(mode):
-        return evidence
-    return _mw_mem_runtime_strict_synthesize(raw, mode, evidence)
 
 
 # -- MEMORY_COUNT + conversation_turns telemetry -----------------------
@@ -1822,26 +1316,6 @@ def _eli_pm_engine_wants_routing_fault(low):
     return wants_routing_fault_explain(low)
 
 
-def _eli_pm_engine_mode_key(self, pargs, kwargs):
-    mode = kwargs.get("reasoning_mode")
-    if mode is None and len(pargs) >= 3:
-        mode = pargs[2]
-    if mode is None:
-        mode = getattr(self, "reasoning_mode", None) or getattr(self, "_reasoning_mode", None)
-    if mode is None:
-        try:
-            from eli.runtime.reasoning_status import current_reasoning_mode_label
-            mode = current_reasoning_mode_label(self)
-        except Exception:
-            mode = "quick"
-    try:
-        from eli.cognition.reasoning_modes import canonical_mode
-        return canonical_mode(mode)
-    except Exception:
-        low_mode = str(mode or "quick").strip().lower().replace(" ", "_")
-        return low_mode or "quick"
-
-
 # -- Recent-memory-processing v3 helpers (used by RECENT_MEMORY_PROCESSING_V4) --
 
 def _eli_recent_mem_v3_is_prompt(text):
@@ -1859,17 +1333,6 @@ def _eli_recent_mem_v3_is_prompt(text):
         r"\b(remembering|memory)\b.{0,80}\b(lately|recent|recently|processing|activity)\b",
     )
     return any(_re.search(pat, low) for pat in patterns)
-
-
-def _eli_recent_mem_v3_mode(args, kwargs):
-    try:
-        if "reasoning_mode" in kwargs:
-            return str(kwargs.get("reasoning_mode") or "quick").strip().lower()
-        if args:
-            return str(args[0] or "quick").strip().lower()
-    except Exception:
-        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-    return "quick"
 
 
 def _eli_recent_mem_v3_execute(user_input):
@@ -1942,17 +1405,6 @@ def _eli_mc_is_memory_count_question_v4(text):
         or "remembering recently" in q
     )
     return not broader
-
-
-def _eli_mc_mode_v4(args, kwargs):
-    mode = kwargs.get("reasoning_mode")
-    if mode is None and args:
-        try:
-            if isinstance(args[0], str):
-                mode = args[0]
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-    return str(mode or "quick").strip().lower()
 
 
 def _eli_mc_content_v5(counts, *, include_related):
@@ -2970,36 +2422,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 "who am i", "who are you", "what do you remember",
                 "how does your memory work", "pipeline", "wiring",
             ))
-
-    def _capability_summary(self) -> str:
-        if hasattr(self, '_awareness') and self._awareness and self._awareness.capability_count > 0:
-            count = self._awareness.capability_count
-            preview = ", ".join(self._awareness.capability_names[:12])
-            more = f", +{count - 12} more" if count > 12 else ""
-            return f"I have {count} capabilities: {preview}{more}."
-        manifest_path = Path(__file__).resolve().parents[2] / "capability_inventory.generated.json"
-        try:
-            if manifest_path.exists():
-                data = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace"))
-                caps = data.get("capabilities", [])
-                if isinstance(caps, list):
-                    names = [c.get("action", "") for c in caps if isinstance(c, dict) and c.get("action")]
-                    preview = ", ".join(names[:12])
-                    more = f", +{len(names) - 12} more" if len(names) > 12 else ""
-                    return f"I have {len(names)} capabilities: {preview}{more}."
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-        return ""
-
-    def _grounded_status_response(self, user_input: str) -> Optional[str]:
-        """
-        Legacy direct status-response shortcut disabled.
-
-        Evidence can still be gathered elsewhere, but status and admin queries
-        must pass through the normal final synthesis stage rather than
-        returning a prebuilt reply from this helper.
-        """
-        return None
 
     def _live_runtime_snapshot(self) -> Dict[str, Any]:
         snap: Dict[str, Any] = {
@@ -4181,18 +3603,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    def enqueue_post_response_storage(self, user_input: str, response: str,
-                                      intent: dict, command: bool = False,
-                                      working_memory=None):
-        """
-        Legacy compatibility hook.
-
-        Canonical conversation-turn persistence lives in the main process()/stream
-        finalization paths. This helper must not write user/assistant turns, or it
-        will create duplicate rows.
-        """
-        return None
-
     def _publish_orchestrator_turn_meta(self, user_input: str, final: str,
                                         trace: Optional[Dict[str, Any]] = None) -> None:
         """Publish this turn's confidence/grounding/agents for both orchestrator exits.
@@ -4324,11 +3734,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final = "".join(parts).strip()
                 if final:
                     self._publish_orchestrator_turn_meta(user_input, final)
-                    try:
-                        self.enqueue_post_response_storage(
-                            user_input, final, {"action": "CHAT"}, command=False)
-                    except Exception as _store_err:
-                        log.debug(f"[COGNITIVE] orchestrator stream storage failed: {_store_err}")
             return _wrapped()
 
         return result
@@ -5773,17 +5178,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # personal-memory/routing-fault surfaces; non-quick falls through to the normal cognition and
         # persona pipeline. The _eli_pm_engine_* helpers are defined unconditionally in the legacy
         # bottom block, so no globals() guard is needed.
+        # The middlewares below all read this turn's mode the one way (canonical_mode); each had its
+        # own reader of positional arguments no caller passed.
+        from eli.cognition.reasoning_modes import canonical_mode as _mw_canonical_mode
+        _mw_turn_mode = _mw_canonical_mode(reasoning_mode)
         try:
             _eli_pipe("mw_personal_memory_quick_check")
             _eli_pm_mw_raw = _eli_shortcut_text
             _eli_pm_mw_low = _eli_pm_mw_raw.lower()
-            _eli_pm_mw_kwargs = dict(kwargs)
-            try:
-                _eli_pm_mw_kwargs.setdefault("reasoning_mode", reasoning_mode)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-            _eli_pm_mw_mode = _eli_pm_engine_mode_key(self, (), _eli_pm_mw_kwargs)
+            _eli_pm_mw_mode = _mw_turn_mode
 
             # These quick paths intentionally return a bare string, not a dict (see
             # test_personal_memory_quick_middleware), which dropped the routed 'action' from telemetry.
@@ -5818,14 +5221,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # pipeline with one GGUF synthesis gave near-identical paraphrases across all four.
         try:
             _eli_pipe("mw_runtime_status_check")
-            _mw_rs_kwargs = dict(kwargs)
-            try:
-                _mw_rs_kwargs.setdefault("reasoning_mode", reasoning_mode)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
             _mw_rs_text = _eli_shortcut_text
             if _mw_rs_is_runtime_status_question(_mw_rs_text):
-                _mw_rs_mode = _mw_rs_mode_from_args((user_input,), _mw_rs_kwargs)
+                _mw_rs_mode = _mw_turn_mode
                 _eli_pipe("mw_runtime_status_hit", mode=_mw_rs_mode, quick=_mw_rs_is_quick(_mw_rs_mode))
                 if _mw_rs_is_quick(_mw_rs_mode):
                     return _mw_rs_quick_direct(_mw_rs_text, _mw_rs_mode)
@@ -5844,14 +5242,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # raw telemetry identical to Quick. Non-quick falls through to Stage 1-12.
         try:
             _eli_pipe("mw_memory_runtime_check")
-            _mw_mrs_kwargs = dict(kwargs)
-            try:
-                _mw_mrs_kwargs.setdefault("reasoning_mode", reasoning_mode)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
             _mw_mrs_text = _eli_shortcut_text
             if _mw_mem_runtime_strict_is_question(_mw_mrs_text):
-                _mw_mrs_mode = _mw_rs_mode_from_args((user_input,), _mw_mrs_kwargs)
+                _mw_mrs_mode = _mw_turn_mode
                 _eli_pipe("mw_memory_runtime_hit", mode=_mw_mrs_mode, quick=_mw_rs_is_quick(_mw_mrs_mode))
                 if _mw_rs_is_quick(_mw_mrs_mode):
                     log.debug("[ENGINE] EXPLAIN_MEMORY_RUNTIME Quick: direct evidence returned")
@@ -5866,14 +5259,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # broader telemetry surface than the narrower MEMORY_COUNT_V5 middleware.
         try:
             _eli_pipe("mw_memory_count_turns_check")
-            _mw_mct_kwargs = dict(kwargs)
-            try:
-                _mw_mct_kwargs.setdefault("reasoning_mode", reasoning_mode)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
             _mw_mct_text = _eli_shortcut_text
             if _mw_mc_turns_is_question(_mw_mct_text):
-                _mw_mct_mode = _mw_rs_mode_from_args((user_input,), _mw_mct_kwargs)
+                _mw_mct_mode = _mw_turn_mode
                 _eli_pipe("mw_memory_count_turns_hit", mode=_mw_mct_mode)
                 # MEMORY_COUNT_TURNS is a deterministic SQLite telemetry lookup, no GGUF needed.
                 # Mode is passed through for depth control but the answer is always grounded.
@@ -5892,12 +5280,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         try:
             _eli_pipe("mw_memory_count_check")
             if _eli_mc_is_memory_count_question_v4(_eli_shortcut_text):
-                _eli_mc_mw_kwargs = dict(kwargs)
-                try:
-                    _eli_mc_mw_kwargs.setdefault("reasoning_mode", reasoning_mode)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-                _eli_mc_mw_mode = _eli_mc_mode_v4((), _eli_mc_mw_kwargs)
+                _eli_mc_mw_mode = _mw_turn_mode
                 _eli_pipe("mw_memory_count_hit", mode=_eli_mc_mw_mode)
                 # MEMORY_COUNT is always deterministic (SQLite fact lookup, no GGUF needed).
                 # Mode affects depth: quick → concise count only, non-quick → grounded detail.
@@ -5911,16 +5294,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         try:
             _eli_pipe("mw_recent_memory_processing_check")
             if _eli_recent_mem_v3_is_prompt(_eli_shortcut_text):
-                _eli_rm_kwargs = dict(kwargs)
-                try:
-                    _eli_rm_kwargs.setdefault("reasoning_mode", reasoning_mode)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-
-                _eli_rm_mode = _eli_recent_mem_v3_mode((), _eli_rm_kwargs)
+                _eli_rm_mode = _mw_turn_mode
                 _eli_pipe("mw_recent_memory_processing_hit", mode=_eli_rm_mode)
 
-                _eli_rm_quick = str(_eli_rm_mode or "").lower() in {"", "quick", "fast"}
+                _eli_rm_quick = _eli_rm_mode == "quick"
 
 
                 _eli_rm_evidence = _eli_recent_mem_v3_execute(user_input)
@@ -5952,10 +5329,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # maintenance claims.
         try:
             _eli_pipe("mw_self_report_recent_updates_check")
-            _eli_self_mw_route = None
+            # The turn's one routing (_route_once): asking the router again here spent an offer
+            # a "yes" was confirming before the real routing saw it.
             try:
-                from eli.execution.router_enhanced import route as _eli_self_mw_route_fn
-                _eli_self_mw_route = _eli_self_mw_route_fn(_eli_shortcut_text)
+                _eli_self_mw_route = _route_once(_eli_shortcut_text)
             except Exception:
                 _eli_self_mw_route = None
 
@@ -6558,14 +5935,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 args = {}
                 log.debug(f"[COGNITIVE] Control contract upgraded action -> {_forced_control}")
                 if str(action or "").strip().upper() == "META_DIAGNOSTIC":
-                    _eli_phase13_diag_probe = str(
-                        locals().get("user_input")
-                        or locals().get("user_text")
-                        or locals().get("message")
-                        or locals().get("prompt")
-                        or locals().get("text")
-                        or ""
-                    )
+                    _eli_phase13_diag_probe = str(user_input or "")
                     if not _eli_phase13_explicit_meta_diagnostic_request(_eli_phase13_diag_probe):
                         log.debug("[COGNITIVE] Phase 13 implicit META_DIAGNOSTIC veto -> CHAT")
                         action = "CHAT"
@@ -6574,20 +5944,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # (AWARENESS_STATUS ran after the veto). Cleared at process() entry, read and cleared in the
                         # orchestrator.
                         self._eli_phase13_chat_override = True
-                        for _eli_phase13_route_obj in (
-                            locals().get("parsed"),
-                            locals().get("route_result"),
-                            locals().get("routed"),
-                            locals().get("route_payload"),
-                        ):
-                            if isinstance(_eli_phase13_route_obj, dict):
-                                _eli_phase13_route_obj["action"] = "CHAT"
-                                _eli_phase13_route_obj.setdefault("args", {})
-                                if isinstance(_eli_phase13_route_obj["args"], dict):
-                                    _eli_phase13_route_obj["args"].setdefault("message", _eli_phase13_diag_probe)
-                                _eli_phase13_route_obj.setdefault("meta", {})
-                                if isinstance(_eli_phase13_route_obj["meta"], dict):
-                                    _eli_phase13_route_obj["meta"]["phase13_meta_diagnostic_veto"] = True
         except Exception as _control_route_err:
             log.debug(f"[COGNITIVE] Control contract route check failed: {_control_route_err}")
 
@@ -6666,7 +6022,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     "meta": {"blocked": True, "gate": _gate_result}, "trace": trace,
                 }
         except Exception as _gate_err:
-            if str(action or "").upper() in _AUTHORITY_FAILCLOSED_ACTIONS:
+            # Anything that changes something is denied when the gate cannot check it; a read
+            # still answers. One rule says which is which (route_contracts.changes_something).
+            from eli.execution.route_contracts import changes_something as _changes_something
+            if _changes_something(action):
                 log.warning(f"[COGNITIVE] Authority gate errored on privileged action "
                             f"{action!r} — denying (fail-closed): {_gate_err}")
                 _blocked_msg = ("Action blocked: the authority gate could not verify this "
@@ -8067,29 +7426,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
-            admin_executor_actions = set(getattr(self, "admin_executor_actions", set()) or set())
-
-            if action in admin_executor_actions:
-                payload = self._executor_query_args(user_input, intent)
-                raw_result = execute_action(action, payload)
-                content = ""
-                if isinstance(raw_result, dict):
-                    content = str(
-                        raw_result.get("content")
-                        or raw_result.get("response")
-                        or raw_result.get("result")
-                        or raw_result
-                    )
-                else:
-                    content = str(raw_result)
-                return {
-                    "ok": True,
-                    "action": action,
-                    "content": content,
-                    "response": content,
-                    "trace": trace,
-                }
-
             if stream:
                 _fc_hedge = self._maybe_fail_closed_chat(
                     user_input,
@@ -8769,16 +8105,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     def add_observation(self, source: str, content: str) -> None:
         self.memory.add_observation(source, content)
 
-    def get_status(self) -> dict:
-        """Return runtime status of the cognitive engine."""
-
-        return {
-            "provider": "gguf",
-            "model_loaded": hasattr(self, "_gguf_model") and self._gguf_model is not None,
-            "context_size": self._runtime_n_ctx(),
-            "agents": ["file_code", "reflection", "habit", "memory", "system"],
-        }
-
     def _synthesize_control_with_mode_framing(
         self,
         user_input: str,
@@ -9192,89 +8518,3 @@ def get_engine() -> CognitiveEngine:
         if _engine is None:
             _engine = CognitiveEngine()
         return _engine
-
-# REASONING_STATUS body block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-
-# PERSONAL_MEMORY body block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# Safety guard for the non-quick persona pipeline. Runtime/identity/audit actions aren't fastpathed
-# like a plain command: non-quick diagnostics still go engine -> router -> agents/evidence. Only the
-# final status/audit/trace answer stays deterministic instead of being rewritten by the persona.
-try:
-    _ELI_NONQUICK_BLOCKED_FAST_ACTIONS = {
-        "SELF_REPORT",
-        "RUNTIME_STATUS",
-        "RUNTIME_AUDIT",
-        "IMPORT_AUDIT",
-        "RESOLVE_RUNTIME_PATHS",
-        "GUI_RUNTIME_AUDIT",
-        "EXPLAIN_MEMORY_RUNTIME",
-        "MEMORY_STATUS",
-        "PERSONAL_MEMORY_DEEP_EXPLAIN",
-        "EXPLAIN_COGNITION_RUNTIME",
-        "EXPLAIN_LAST_RESPONSE",
-        "EXPLAIN_ALL_REASONING_MODES",
-        "USER_IDENTITY_SUMMARY",
-        "NAME_SOURCE_AUDIT",
-        "SELF_ANALYZE",
-        "SELF_IMPROVE",
-    }
-    if "_PHASE45_DIRECT_FAST_ACTIONS" in globals():
-        _PHASE45_DIRECT_FAST_ACTIONS.difference_update(_ELI_NONQUICK_BLOCKED_FAST_ACTIONS)
-    if "_PHASE45_SILENT_FAST_ACTIONS" in globals():
-        _PHASE45_SILENT_FAST_ACTIONS.difference_update(_ELI_NONQUICK_BLOCKED_FAST_ACTIONS)
-    log.debug("[ENGINE] non-quick persona pipeline safety guard installed")
-except Exception as _eli_nonquick_guard_err:
-    log.debug(f"[ENGINE] non-quick persona pipeline guard failed: {_eli_nonquick_guard_err}")
-# =============================================================================
-
-# UVRS retired stub block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-# =============================================================================
-
-# GMC V1 validator block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# RECENT_MEM V1 block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# RECENT_MEM V2 block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# RECENT_MEM V3 (helpers now at module level) block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# SELF_REPORT validator block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# MC V4 (helpers now at module level) block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# MC V5 (helpers now at module level) block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-# V7 RS wrapper block removed (Phase 2c — helpers relocated above class CognitiveEngine)
-
-
-
-# V8 RUNTIME_STATUS all-modes intercept removed — replaced by V19 inline middleware
-
-
-
-# RUNTIME_STATUS canonical contract (V10/V18) migrated to inline middleware ELI_ENGINE_MIDDLEWARE_RUNTIME_STATUS_NONQUICK_FULL_PIPELINE_V1
-
-
-
-
-# MEMORY_RUNTIME strict grounded migrated to inline middleware ELI_ENGINE_MIDDLEWARE_MEMORY_RUNTIME_STRICT_V1
-
-
-# MEMORY_COUNT + conversation_turns telemetry migrated to inline middleware ELI_ENGINE_MIDDLEWARE_MEMORY_COUNT_TURNS_TELEMETRY_V1
-
-
-# V19 RUNTIME_STATUS non-Quick full-pipeline synthesis already migrated to inline middleware above
-
-

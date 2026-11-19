@@ -7,7 +7,6 @@ Purpose:
 - Preserve the behavioural rule:
     * Quick mode may return direct structured evidence.
     * Non-Quick runtime-status requests return canonical live telemetry without raw GGUF candidate generation.
-    * If synthesis is evasive, fabricated, incomplete, or poisoned, repair from live evidence.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Mapping
-import json
 import logging
 import os
 
@@ -23,50 +21,6 @@ log = logging.getLogger(__name__)
 
 
 RUNTIME_STATUS_ACTION = "RUNTIME_STATUS"
-
-RUNTIME_STATUS_TRIGGERS = (
-    "what are you actually running on",
-    "who are you and what are you actually running on",
-    "model, context size, gpu layers",
-    "runtime status",
-    "current runtime",
-    "what model are you running",
-    "context size",
-    "gpu layers",
-)
-
-EVASIVE_OR_POISON_PATTERNS = (
-    "clarify your request",
-    "could you please clarify",
-    "what specific details",
-    "what specific aspects",
-    "unable to answer",
-    "no suitable response",
-    "don't have access to internal system details",
-    "do not have access to internal system details",
-    "no batch size specified",
-    "no external models loaded",
-    "no additional context or system state beyond",
-    "</think>",
-    "<|im_",
-    "|im_end|",
-    "<<<<<<<",
-    ">>>>>>>",
-)
-
-REQUIRED_CONTENT_FIELDS = (
-    "provider:",
-    "model_name:",
-    "model_path:",
-    "context_size:",
-    "gpu_layers:",
-    "batch_size:",
-    "cpu_threads:",
-    "max_tokens:",
-    "temperature:",
-    "use_mmap:",
-    "use_mlock:",
-)
 
 
 @dataclass(frozen=True)
@@ -107,16 +61,6 @@ def _first(*values: Any, default: Any = "unknown") -> Any:
     return default
 
 
-def _nested_get(obj: Any, *path: str, default: Any = None) -> Any:
-    cur = obj
-    for key in path:
-        if isinstance(cur, Mapping):
-            cur = cur.get(key)
-        else:
-            return default
-    return default if cur is None else cur
-
-
 def _as_mapping(obj: Any) -> Mapping[str, Any]:
     return obj if isinstance(obj, Mapping) else {}
 
@@ -142,8 +86,6 @@ def _canonical_runtime_paths() -> dict[str, Path]:
         p = get_paths()
         return {
             "project_root": Path(p.project_root).expanduser().resolve(),
-            "artifacts": Path(p.artifacts_dir).expanduser().resolve(),
-            "config": Path(p.config_dir).expanduser().resolve(),
             "user_db": Path(p.user_db).expanduser().resolve(),
             "agent_db": Path(p.agent_db).expanduser().resolve(),
         }
@@ -152,37 +94,9 @@ def _canonical_runtime_paths() -> dict[str, Path]:
         artifacts = root / "artifacts"
         return {
             "project_root": root,
-            "artifacts": artifacts,
-            "config": root / "config",
             "user_db": artifacts / "db" / "user.sqlite3",
             "agent_db": artifacts / "db" / "agent.sqlite3",
         }
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return {}
-
-
-def _read_runtime_snapshot(project_root: Path) -> dict[str, Any]:
-    return _read_json(project_root / "artifacts" / "runtime_snapshot.json")
-
-
-def _read_settings(project_root: Path) -> dict[str, Any]:
-    candidates = [
-        project_root / "config" / "settings.json",
-        project_root / "settings.json",
-        project_root / "artifacts" / "settings.json",
-    ]
-    for path in candidates:
-        data = _read_json(path)
-        if data:
-            return data
-    return {}
 
 
 def _gpu_probe() -> dict[str, Any]:
@@ -203,33 +117,31 @@ def _gpu_probe() -> dict[str, Any]:
     }
 
 
-def is_runtime_status_question(prompt: Any) -> bool:
-    text = str(prompt or "").lower()
-    return any(trigger in text for trigger in RUNTIME_STATUS_TRIGGERS)
-
-
 def build_live_evidence(
     *,
-    mode: str | None = None,
-    project_root: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
     runtime_snapshot: Mapping[str, Any] | None = None,
 ) -> RuntimeStatusEvidence:
     paths = _canonical_runtime_paths()
-    root = Path(project_root).resolve() if project_root else paths["project_root"]
-    artifacts = paths["artifacts"]
 
+    # The snapshot and the settings each have one reader (the loader's artifacts folder; the
+    # settings file with its ELI_SETTINGS_FILE override and defaults). A private read of guessed
+    # locations here showed "unknown" for values the rest of ELI could see.
     snapshot = dict(runtime_snapshot or {})
     if not snapshot:
-        snapshot = _read_json(artifacts / "runtime_snapshot.json")
-    if not snapshot:
-        snapshot = _read_runtime_snapshot(root)
+        try:
+            from eli.runtime.live_introspection import runtime_snapshot as _live_snapshot
+            snapshot = dict(_live_snapshot() or {})
+        except Exception:
+            log.debug("runtime snapshot unavailable", exc_info=True)
 
     cfg = dict(settings or {})
     if not cfg:
-        cfg = _read_json(paths["config"] / "settings.json")
-    if not cfg:
-        cfg = _read_settings(root)
+        try:
+            from eli.core.runtime_settings import load_settings
+            cfg = dict(load_settings() or {})
+        except Exception:
+            log.debug("settings unavailable", exc_info=True)
 
     # Some snapshots are flat; some use {"runtime": {...}}.
     runtime = _as_mapping(snapshot.get("runtime") or snapshot)
@@ -286,8 +198,8 @@ def build_live_evidence(
 
     return RuntimeStatusEvidence(
         name="ELI / Enhanced Learning Interface",
-        role="local GGUF-backed assistant running inside this ELI v3 project",
-        provider=_first(runtime.get("provider"), cfg.get("provider"), "gguf"),
+        role="local assistant running inside this ELI v3 project",
+        provider=_first(runtime.get("provider"), cfg.get("provider")),
         model_name=model_name,
         model_path=model_path,
         context_size=context_size,
@@ -418,54 +330,15 @@ def build_content(
     return "\n".join(lines).strip()
 
 
-def has_required_fields(text: str) -> bool:
-    lower = str(text or "").lower()
-    return all(field in lower for field in REQUIRED_CONTENT_FIELDS)
-
-
-def has_unknown_required_values(text: str) -> bool:
-    lower = str(text or "").lower()
-    bad = (
-        "max_tokens: unknown",
-        "temperature: unknown",
-        "use_mmap: unknown",
-        "use_mlock: unknown",
-        "batch_size: unknown",
-        "cpu_threads: unknown",
-        "model_path: unknown",
-    )
-    return any(x in lower for x in bad)
-
-
-def has_poison(text: str) -> bool:
-    lower = str(text or "").lower()
-    return any(pat in lower for pat in EVASIVE_OR_POISON_PATTERNS)
-
-
-def synthesis_is_valid(text: str) -> bool:
-    if not text or not str(text).strip():
-        return False
-    if has_poison(text):
-        return False
-    if not has_required_fields(text):
-        return False
-    if has_unknown_required_values(text):
-        return False
-    return True
-
-
 def repair_result(
     *,
     result: Mapping[str, Any] | None,
     mode: str,
     repair_reason: str,
-    project_root: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
     runtime_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     evidence = build_live_evidence(
-        mode=mode,
-        project_root=project_root,
         settings=settings,
         runtime_snapshot=runtime_snapshot,
     )
@@ -506,41 +379,4 @@ def quick_result(*, mode: str = "quick", **kwargs: Any) -> dict[str, Any]:
         mode=mode,
         repair_reason="quick_direct_live_evidence",
         **kwargs,
-    )
-
-
-def complete_or_repair(
-    *,
-    result: Mapping[str, Any] | None,
-    mode: str,
-    project_root: str | Path | None = None,
-    settings: Mapping[str, Any] | None = None,
-    runtime_snapshot: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    result = dict(result or {})
-    text = str(result.get("content") or result.get("response") or "")
-
-    if synthesis_is_valid(text):
-        result["synthesis_validated"] = True
-        result.setdefault("action", RUNTIME_STATUS_ACTION)
-        result.setdefault("evidence_source", "runtime_status_synthesis_validated_canonical_contract")
-        return result
-
-    reason = "invalid_or_incomplete_runtime_status_synthesis"
-    if not text.strip():
-        reason = "blank_runtime_status_synthesis"
-    elif has_poison(text):
-        reason = "poisoned_or_evasive_runtime_status_synthesis"
-    elif not has_required_fields(text):
-        reason = "runtime_status_nonquick_strict_grounded_no_raw_gguf"
-    elif has_unknown_required_values(text):
-        reason = "unknown_runtime_status_fields"
-
-    return repair_result(
-        result=result,
-        mode=mode,
-        repair_reason=reason,
-        project_root=project_root,
-        settings=settings,
-        runtime_snapshot=runtime_snapshot,
     )

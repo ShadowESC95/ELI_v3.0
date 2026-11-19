@@ -63,12 +63,30 @@ def test_the_name_of_an_action_says_whether_it_changes_anything():
         assert not changes_something(name), name
 
 
-def test_the_engine_s_own_lists_agree_with_it():
-    """Five sets in the engine each held part of this and had drifted (one lacked STOP_MEDIA)."""
+def test_the_engine_asks_it_instead_of_keeping_lists_of_its_own():
+    """Sets in the engine each held part of this and had drifted (one lacked STOP_MEDIA, another
+    CREATE_FILE). Every name the last two held is still one that changes something, and what the
+    model is told ran this turn follows the same rule."""
+    from types import SimpleNamespace
     from eli.execution.route_contracts import changes_something
-    from eli.kernel import engine
+    from eli.kernel.stages import fast_actions
+    from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
 
-    assert all(changes_something(a) for a in engine._AUTHORITY_FAILCLOSED_ACTIONS)
+    for name in ("RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT", "FIX_FILE", "CODE_SOLVE",
+                 "CREATE_FOLDER", "DELETE_FILE", "OPEN_APP", "CLOSE_APP", "MINIMIZE_APP", "OPEN_URL", "OPEN_IDE",
+                 "OPEN_IN_IDE", "VOLUME", "PLAY_MEDIA", "PAUSE_MEDIA", "NEXT_MEDIA", "SELF_PATCH", "SELF_UPGRADE",
+                 "KEYBOARD", "MOUSE_CONTROL"):
+        assert changes_something(name), name
+    assert not hasattr(fast_actions, "_AUTHORITY_FAILCLOSED_ACTIONS")
+
+    def told(action, content):
+        bus = SimpleNamespace(intent_action=action, agent_results=[],
+                              action_result={"ok": True, "action": action, "content": content})
+        return PromptAssemblyMixin._execution_grounding_block(SimpleNamespace(), bus)
+
+    assert "really ran: CREATE_FILE" in told("CREATE_FILE", "wrote notes.txt")
+    assert "really ran: OPEN_APP" in told("OPEN_APP", "opened the editor")
+    assert "NO system action executed" in told("RUNTIME_STATUS", "model and context figures")
 
 
 def test_a_sentence_fits_its_action_when_it_tells_eli_to_do_it():

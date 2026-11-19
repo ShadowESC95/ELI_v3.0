@@ -132,8 +132,7 @@ def get_pipeline_description() -> List[str]:
     lines = []
     lines.append(
         "Runtime logs use canonical stage IDs S01–S12 via "
-        "`eli.kernel.pipeline_trace` (orchestrator sub-steps map through "
-        "`ORCH_KEY_TO_STAGE`)."
+        "`eli.kernel.pipeline_trace`."
     )
     for step in STEPS:
         name = step['name']

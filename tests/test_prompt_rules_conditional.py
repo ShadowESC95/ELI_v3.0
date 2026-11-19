@@ -118,18 +118,15 @@ def test_invented_preferences_guard_whenever_user_facts_are_in_play():
 
 # ── the point of the exercise ────────────────────────────────────────────────
 def test_phatic_turn_is_substantially_cheaper():
-    report = pr.selection_report("hey eli")
+    fired = pr._triggers("hey eli", "", "")
     # no_social_deflection is unconditional by design (it lives in the ordered
     # list only so the bullet order matches the original block).
-    assert report["included"] == ["no_social_deflection"], \
+    assert [k for k in pr._ORDER if fired.get(k)] == ["no_social_deflection"], \
         "a greeting should trigger no conditional guard"
-    assert report["saved"] > 3000, f"expected a real saving, got {report['saved']}"
-    assert report["chars"] < report["chars_full"] * 0.4
+    chosen, full = len(pr.select_rules("hey eli")), len(pr.all_rules())
+    assert full - chosen > 3000, f"expected a real saving, got {full - chosen}"
+    assert chosen < full * 0.4
 
-
-def test_report_accounts_for_every_guard():
-    r = pr.selection_report("what do you know about me")
-    assert set(r["included"]) | set(r["skipped"]) == set(pr._ORDER)
 
 @pytest.mark.parametrize("ui", [
     "how does your confidence scoring actually work?",

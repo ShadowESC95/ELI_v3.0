@@ -27,7 +27,7 @@ pipeline-description module.
 Moved so far
 ------------
     _common.py        shared stage primitives: governance soft-import,
-                      _eli_path_get, _is_brief_phatic_prompt (used by the engine
+                      _is_brief_phatic_prompt (used by the engine
                       AND the stages — one source, not re-derived per module)
     memory_commit.py  MemoryCommitMixin — Stage 12: decide what is worth
                       remembering, store the user/assistant turns, learn from

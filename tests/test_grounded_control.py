@@ -20,18 +20,6 @@ def test_error_evidence_is_incomplete():
     assert gc.evidence_complete_for_action("MEMORY_RECALL", lv) is False
 
 
-def test_bad_clarification_detection():
-    assert gc.looks_like_bad_clarification("Could you please clarify?") is True
-    assert gc.looks_like_bad_clarification("please clarify") is False      # no '?'
-    assert gc.looks_like_bad_clarification("what time is it?") is False    # not a bad pattern
-    assert gc.looks_like_bad_clarification("") is False
-
-
-def test_suppress_clarification_guards():
-    assert gc.should_suppress_clarification("not a mapping") is False
-    assert gc.should_suppress_clarification({"action": "CHAT"}) is False
-
-
 def test_registry_includes_control_and_file_actions():
     assert "RUNTIME_STATUS" in gc.GROUNDED_CONTROL_ACTIONS  # original 10, still present
     assert "SUMMARIZE_FILE" in gc.GROUNDED_CONTROL_ACTIONS  # new file-evidence family

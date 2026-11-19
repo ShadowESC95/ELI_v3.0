@@ -238,7 +238,7 @@ def test_a_re_chunked_stream_gets_the_live_claim_check_and_is_stored_as_shown():
     from eli.kernel import request_context as rc
     eng = CognitiveEngine()
     stored = []
-    eng.enqueue_post_response_storage = lambda u, text, *a, **k: stored.append(text)
+    eng._publish_orchestrator_turn_meta = lambda u, text, *a, **k: stored.append(text)
 
     class _FakeOrchestrator:
         def __init__(self, engine):

@@ -203,23 +203,3 @@ def select_rules(user_input: str = "", memory_context: str = "",
     except Exception:  # pragma: no cover - defensive
         return all_rules()
     return CORE + "".join(_TEXT[k] for k in _ORDER if fired.get(k))
-
-
-def selection_report(user_input: str = "", memory_context: str = "",
-                     profile_text: str = "") -> Dict[str, object]:
-    """Diagnostics for tests and the runtime introspection surface."""
-    full = all_rules()
-    chosen = select_rules(user_input, memory_context, profile_text)
-    try:
-        fired: Dict[str, bool] = _triggers(user_input, memory_context, profile_text)
-    except Exception:  # pragma: no cover - defensive
-        fired = {k: True for k in _ORDER}
-    if not (user_input or "").strip():
-        fired = {k: True for k in _ORDER}
-    return {
-        "included": [k for k in _ORDER if fired.get(k)],
-        "skipped": [k for k in _ORDER if not fired.get(k)],
-        "chars": len(chosen),
-        "chars_full": len(full),
-        "saved": len(full) - len(chosen),
-    }

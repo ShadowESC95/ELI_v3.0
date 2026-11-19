@@ -343,6 +343,72 @@ def test_the_link_the_server_opens_on_this_computer_carries_its_token(monkeypatc
     assert opened == ["http://127.0.0.1:8099/"], "no token, no token in the link"
 
 
+def test_started_on_its_own_the_server_moves_off_a_port_another_program_holds(monkeypatch, capsys):
+    """`ELI --server` and `python -m api.server` kept a copy of the port rule without the step the
+    window and the bundles take, and failed to bind when ELI v2 or anything else held the port."""
+    import sys
+    from eli.runtime import server_util
+    assert not hasattr(srv, "effective_api_port"), "the port rule has one owner (server_util)"
+    for name in ("ELI_API_HOST", "ELI_API_PORT", "ELI_API_TOKEN", "ELI_API_SCHEME", "ELI_API_ALLOW_TOKENLESS",
+                 "ELI_API_HTTPS", "ELI_API_HTTPS_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    served = []
+    monkeypatch.setattr(srv.uvicorn, "run", lambda *a, **k: served.append(k.get("port")))
+    monkeypatch.setattr(srv, "_open_browser_async", lambda url: True)
+    monkeypatch.setattr("eli.utils.log.keep_console_log", lambda *a, **k: None)
+    monkeypatch.setattr(server_util, "effective_api_port", lambda: 18099)
+    monkeypatch.setattr(server_util, "free_port_after", lambda port: port + 3)
+    monkeypatch.setattr(sys, "argv", ["api.server"])
+    monkeypatch.setattr(server_util, "probe_eli_server", lambda port=None: {"in_use": True, "eli_running": False})
+    srv.main()
+    monkeypatch.setattr(server_util, "probe_eli_server", lambda port=None: {"in_use": False, "eli_running": False})
+    srv.main()
+    # this ELI already there: it is not started a second time on another port
+    monkeypatch.setattr(server_util, "probe_eli_server", lambda port=None: {"in_use": True, "eli_running": True})
+    srv.main()
+    assert served == [18102, 18099, 18099]
+    monkeypatch.delenv("ELI_API_PORT", raising=False)
+
+
+def test_the_two_model_lists_are_two_handlers_and_reply_text_has_one_reader():
+    """Both handlers were named list_models, so the name meant the second; and the server kept
+    its own copy of the engine's field order for a reply."""
+    from eli.kernel.engine import _visible_reply_text
+    assert srv.list_models()["object"] == "list" and srv.list_installed_models is not srv.list_models
+    for result in ({"response": " a "}, {"content": "b", "text": "c"}, {"text": " c"}, {}, " plain ", ""):
+        assert srv._extract_response_text(result) == _visible_reply_text(result).strip()
+    assert srv._extract_response_text(iter([{"response": "one "}, "two", {"token": " three"}])) == "one two three"
+    assert srv._extract_response_text(None) == ""
+
+
+def test_the_mesh_timings_have_one_owner(tokenless_client):
+    """The request model and the page each carried the mesh's 5 s / 18 s figures; a save with the
+    box empty wrote the page's figure over the one kept."""
+    from eli.runtime import home_mesh
+    fields = srv.MeshConfig.model_fields
+    assert fields["heartbeat_interval_sec"].default is None and fields["failover_after_sec"].default is None
+    before = home_mesh.load_config()
+    try:
+        home_mesh.save_config({**before, "failover_after_sec": 31.0})
+        r = tokenless_client.post("/v1/home/mesh/config", json={"failover_after_sec": None, "node_name": "desk"})
+        assert r.status_code == 200 and home_mesh.load_config()["failover_after_sec"] == 31.0
+    finally:
+        home_mesh.save_config(before)
+    page = tokenless_client.get("/").text
+    assert "failover_after_sec||18" not in page and ".value)||18" not in page
+
+
+def test_the_page_draws_the_controls_each_driver_declares(tokenless_client):
+    """The page kept its own list of what each driver can do, which had drifted from the drivers'
+    (no volume keys for a Fire TV)."""
+    from eli.runtime import device_drivers
+    rows = {row["name"]: row for row in tokenless_client.get("/v1/devices/drivers").json()["drivers"]}
+    for name, row in rows.items():
+        assert row["capabilities"] == device_drivers.get_driver(name).capabilities({})
+    assert "volume_up" in rows["firetv"]["capabilities"]
+    assert "DRIVER_CAPS" not in tokenless_client.get("/").text
+
+
 # --------------------------------------------------------------------------- #
 # Static / PWA routes (no auth)
 # --------------------------------------------------------------------------- #

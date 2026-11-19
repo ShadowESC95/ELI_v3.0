@@ -29,17 +29,6 @@ except ImportError:  # pragma: no cover - governance is optional
     should_store_as_memory = None
     _HAS_GOVERNANCE = False
 
-def _eli_path_get(obj, key, default=None):
-    """
-    Compatibility helper for ELI path containers.
-    Accepts both dict-style path maps and object/namespace-style path maps.
-    """
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
 def _is_brief_phatic_prompt(text: str) -> bool:
     raw = (text or "").strip().lower()
     if not raw:
@@ -374,7 +363,6 @@ __all__ = [
     "_eli_bus_first_ok_result",
     "_eli_test_mode",
     "_HAS_GOVERNANCE",
-    "_eli_path_get",
     "_is_brief_phatic_prompt",
     "normalize_response",
     "should_store_as_memory",

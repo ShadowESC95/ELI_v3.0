@@ -136,13 +136,20 @@ def test_the_executor_runtime_status_states_the_difference():
     assert "not a per-call limit" in text
 
 
+def _has_every_required_field(text):
+    """Each field the evidence check counts (grounded_control's one list) is a labelled line."""
+    from eli.contracts.grounded_control import RUNTIME_STATUS_REQUIRED_TERMS
+    low = text.lower()
+    return all(f"{term}:" in low for term in RUNTIME_STATUS_REQUIRED_TERMS)
+
+
 def test_the_engine_contract_states_the_difference_and_keeps_its_required_fields():
     from eli.contracts import runtime_status as rs
     ev = rs.build_live_evidence(runtime_snapshot=CLAMPED_SNAPSHOT, settings=SETTINGS)
     text = rs.build_content(ev, requested_mode="quick", surface="test")
     assert "loaded_below_request: GPU layers: requested 7, loaded 6" in text
     assert "NOT what loaded" in text
-    assert rs.has_required_fields(text), "adding the comparison must not drop a required field"
+    assert _has_every_required_field(text), "adding the comparison must not drop a required field"
     assert "not a per-call limit" in text
 
 
@@ -150,4 +157,19 @@ def test_the_engine_contract_still_builds_without_any_comparison_data():
     from eli.contracts import runtime_status as rs
     ev = rs.build_live_evidence(runtime_snapshot={}, settings={})
     text = rs.build_content(ev, requested_mode="quick", surface="test")
-    assert rs.has_required_fields(text)
+    assert _has_every_required_field(text)
+
+
+def test_the_engine_contract_reads_settings_and_snapshot_through_their_one_reader(monkeypatch):
+    """It read settings.json from three guessed folders, so a settings-file override and the
+    loader's own artifacts folder were not seen and the fields said "unknown"; it also called
+    every provider a GGUF one."""
+    from eli.contracts import runtime_status as rs
+    import eli.core.runtime_settings as settings_owner
+    import eli.runtime.live_introspection as snapshot_owner
+    monkeypatch.setattr(settings_owner, "load_settings",
+                        lambda *a, **k: {"provider": "ollama", "max_tokens": 777, "temperature": 0.3})
+    monkeypatch.setattr(snapshot_owner, "runtime_snapshot", lambda: {"n_ctx": 4321, "n_batch": 64})
+    ev = rs.build_live_evidence()
+    assert (ev.provider, ev.max_tokens, ev.context_size, ev.batch_size) == ("ollama", 777, 4321, 64)
+    assert "gguf" not in ev.role.lower()

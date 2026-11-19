@@ -366,13 +366,6 @@ _REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
 _REPEAT_RETRY_TEMP_BUMP = 0.35  # widen sampling on the retry — see the retry path
 
 
-def _repeat_norm(text: str) -> str:
-    """Punctuation- and case-insensitive form. Apostrophes are deleted rather than
-    spaced so "what's" and "whats" collapse together instead of leaving "what s"."""
-    lowered = str(text or "").lower().replace("'", "").replace("’", "")
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
-
-
 _REPEAT_REQUESTED_RE = re.compile(
     r"\b(say (that|it) again|repeat (that|it|yourself)|come again|again please"
     r"|what did you (just )?say|read (that|it) back|one more time"
@@ -926,5 +919,3 @@ def _redact_prior_replies(text: str, prior_replies) -> str:
             continue
         kept.append(line)
     return "\n".join(kept)
-
-

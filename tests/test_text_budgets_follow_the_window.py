@@ -120,3 +120,44 @@ def test_whisper_is_never_put_on_the_gpu_on_a_guess(monkeypatch, tmp_path):
     monkeypatch.setattr(w, "_measured_footprint_mb", lambda c, m: None)
     monkeypatch.setattr(w, "_whisper_weights_mb", lambda m, d: 0.0)         # not downloaded
     assert w._gpu_room_for_whisper("small.en", str(tmp_path)) is False
+
+
+def test_the_evidence_prompt_quotes_what_the_bus_ran_instead_of_running_it_again(monkeypatch):
+    """The action the agent bus had already run was run a second time, with other arguments, only
+    to quote its output."""
+    from types import SimpleNamespace
+    from eli.kernel.stages import prompt_assembly as pa
+
+    ran = []
+    monkeypatch.setattr(pa, "execute_action",
+                        lambda action, args: ran.append(action) or {"ok": True, "content": "second run"})
+    me = SimpleNamespace(_runtime_n_ctx=lambda: 4096, _compact_persona=lambda: "persona",
+                         _cap_text=pa.PromptAssemblyMixin._cap_text)
+    bus = SimpleNamespace(intent_action="RUNTIME_STATUS", agents_used=[], memory_context="", agent_results=[],
+                          action_result={"ok": True, "action": "RUNTIME_STATUS", "content": "first run: 4096 context"})
+    prompt = pa.PromptAssemblyMixin._build_evidence_prompt(me, "what are you running on", bus)
+    assert ran == [] and "first run: 4096 context" in prompt
+    bus.action_result = None      # the bus has nothing for it: it is run here, once
+    prompt = pa.PromptAssemblyMixin._build_evidence_prompt(me, "what are you running on", bus)
+    assert ran == ["RUNTIME_STATUS"] and "second run" in prompt
+
+
+def test_the_self_model_is_read_once_for_a_prompt():
+    """Both places the system prompt carries ELI's self-model read it afresh, and each read asks
+    the ledger, the goals and the document index."""
+    from eli.kernel.engine import CognitiveEngine
+
+    class _Awareness:
+        reads = 0
+        capability_count = 0
+
+        def context_block(self):
+            type(self).reads += 1
+            return "SELF-MODEL: seven agents, one room"
+
+    engine = CognitiveEngine()
+    engine._awareness = _Awareness()
+    system = engine._build_enhanced_system(memory_context="notes on rivers",
+                                           user_input="tell me how rivers shape a valley")
+    assert _Awareness.reads == 1
+    assert system.count("SELF-MODEL: seven agents, one room") == 2, "the prompt itself is unchanged"

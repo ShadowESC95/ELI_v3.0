@@ -202,18 +202,6 @@ class SelfUpgrader:
             return f"Patch applied successfully: {p.name}"
         return f"Patch apply failed:\n{r2['stderr']}"
 
-    def self_test(self) -> str:
-        """Run the project test suite and return a summary."""
-        self._log("Running self-tests…")
-        r = _run(
-            [sys.executable, "-m", "pytest", "tests/", "-x", "-q",
-             "--tb=short", "--no-header"],
-            timeout=180,
-        )
-        if r["ok"]:
-            return f"✅ All tests passed.\n{r['stdout'][:1500]}"
-        return f"❌ Tests failed.\n{r['stdout'][:800]}\n{r['stderr'][:400]}"
-
     # ── Private step implementations ──────────────────────────────────────────
 
     def _local_version(self) -> str:
@@ -545,10 +533,6 @@ class SelfUpgrader:
             update_capability_manifest()
             return True, "Manifest updated."
         except Exception as e:
-            script = PROJECT_ROOT / "canonical_capability_inventory.py"
-            if script.exists():
-                r = _run([sys.executable, str(script)], timeout=60)
-                return r["ok"], "Manifest updated via script." if r["ok"] else r["stderr"][:80]
             return False, str(e)[:120]
 
     def _refresh_system_index(self):

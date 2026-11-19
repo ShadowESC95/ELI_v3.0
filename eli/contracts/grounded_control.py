@@ -65,16 +65,6 @@ RUNTIME_STATUS_REQUIRED_TERMS = (
 )
 
 
-BAD_CLARIFY_PATTERNS = (
-    "what specific details",
-    "what specific aspects",
-    "could you please clarify",
-    "please clarify",
-    "what do you need to know specifically",
-    "model, context size, gpu layers",
-)
-
-
 def _safe_str(value: Any, *, limit: int = 6000) -> str:
     try:
         if value is None:
@@ -113,48 +103,6 @@ def _collect_text(value: Any, *, limit: int = 50000, depth: int = 0) -> str:
         return "\n".join(p for p in parts if p)[:limit]
 
     return _safe_str(value, limit=limit)
-
-
-def _lookup_action(local_vars: Mapping[str, Any]) -> str:
-    direct_names = (
-        "action",
-        "final_action",
-        "route_action",
-        "control_action",
-        "intent_action",
-        "routed_action",
-    )
-
-    for name in direct_names:
-        value = local_vars.get(name)
-        if value:
-            return str(value).strip().upper()
-
-    container_names = (
-        "route",
-        "router_result",
-        "parsed",
-        "intent",
-        "agent_result",
-        "bus_result",
-        "result",
-        "executor_result",
-        "control",
-    )
-
-    for name in container_names:
-        value = local_vars.get(name)
-        if isinstance(value, Mapping):
-            for key in ("action", "final_action", "routed_action"):
-                if value.get(key):
-                    return str(value.get(key)).strip().upper()
-
-    blob = _collect_text(local_vars, limit=20000).upper()
-    for action in GROUNDED_CONTROL_ACTIONS:
-        if action in blob:
-            return action
-
-    return ""
 
 
 def _looks_like_runtime_status_complete(text: str) -> bool:
@@ -248,31 +196,3 @@ def evidence_gap_reason(action: str, local_vars: Mapping[str, Any]) -> str:
         pass
 
     return "incomplete"
-
-
-def should_suppress_clarification(local_vars: Mapping[str, Any]) -> bool:
-    """
-    Called from the final synthesis confidence branch.
-
-    Return True only when:
-    - the routed action is grounded/control;
-    - evidence is already complete;
-    - therefore asking the user to clarify would be wrong.
-    """
-    if not isinstance(local_vars, Mapping):
-        return False
-
-    action = _lookup_action(local_vars)
-    if action not in GROUNDED_CONTROL_ACTIONS:
-        return False
-
-    return evidence_complete_for_action(action, local_vars)
-
-
-def looks_like_bad_clarification(text: str) -> bool:
-    low = str(text or "").lower().strip()
-    if not low:
-        return False
-    if not low.endswith("?"):
-        return False
-    return any(pattern in low for pattern in BAD_CLARIFY_PATTERNS)

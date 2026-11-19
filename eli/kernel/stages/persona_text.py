@@ -10,8 +10,6 @@ they moved here — one source both sides import.
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import List
 
 from eli.core import config
 
@@ -40,26 +38,6 @@ _BAD_ASSISTANT_IDENTITY_DRIFT_SNIPPETS = (
     "recent_test: hello",
 )
 
-def _clean_persona(raw: str) -> str:
-    clean_lines: List[str] = []
-    in_template_block = False
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.upper().startswith(("PARAMETER ", "FROM ")):
-            continue
-        if stripped.upper().startswith("TEMPLATE "):
-            in_template_block = True
-            continue
-        if in_template_block:
-            if '"""' in stripped:
-                in_template_block = False
-            continue
-        if stripped.startswith("# Model parameters") or stripped.startswith(
-            "# Template for conversation"):
-            continue
-        clean_lines.append(line)
-    return "\n".join(clean_lines).rstrip()
-
 def _load_persona_text() -> str:
     """
     Canonical persona loader.
@@ -72,9 +50,9 @@ def _load_persona_text() -> str:
     files are missing. The old lookup paths caused ELI to ignore its real
     persona and drift into base-model AI-disclaimer behaviour.
     """
-    # Single source of truth: delegate the base+overlay read to eli.cognition.persona (one
-    # `_clean_persona`, env-override aware), composed as before (base + "\n\n" + overlay). The
-    # legacy candidate/config chain below is only a fallback for odd layouts or missing files.
+    # One source: eli.cognition.persona reads and cleans the base and the overlay (env-override
+    # aware); they are composed as before (base + "\n\n" + overlay). The configured persona
+    # below is only for when both files are missing.
     try:
         from eli.cognition.persona import read_base_persona as _canon_base, read_auto_persona as _canon_auto
         _cb = (_canon_base() or "").strip()
@@ -87,52 +65,6 @@ def _load_persona_text() -> str:
             return _ca
     except Exception:
         logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-
-    root = Path(__file__).resolve().parents[2]
-
-    # Base identity candidates — stop at first found
-    base_candidates = [
-        root / "eli" / "cognition" / "persona.txt",
-        root / "config" / "persona.txt",
-        Path(__file__).resolve().parents[1] / "persona" / "persona.txt",
-        Path(__file__).resolve().parent / "persona.txt",
-    ]
-    # Dynamic overlay — auto-updated every 120s by persona_updater
-    overlay_candidates = [
-        root / "eli" / "cognition" / "persona.auto.txt",
-        root / "config" / "persona.auto.txt",
-    ]
-
-    base = ""
-    for cand in base_candidates:
-        try:
-            if cand.exists() and cand.is_file():
-                raw = cand.read_text(encoding="utf-8", errors="replace")
-                cleaned = _clean_persona(raw).strip()
-                if cleaned:
-                    base = cleaned
-                    break
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-
-    overlay = ""
-    for cand in overlay_candidates:
-        try:
-            if cand.exists() and cand.is_file():
-                raw = cand.read_text(encoding="utf-8", errors="replace")
-                cleaned = _clean_persona(raw).strip()
-                if cleaned:
-                    overlay = cleaned
-                    break
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-
-    if base and overlay:
-        return base + "\n\n" + overlay
-    if base:
-        return base
-    if overlay:
-        return overlay
 
     try:
         forced = (config.get_eli_persona() or "").strip()

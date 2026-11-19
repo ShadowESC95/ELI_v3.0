@@ -239,7 +239,10 @@ class PromptAssemblyMixin:
         try:
             _ev_action = (bus_result.intent_action or '').upper()
             if _ev_action and _ev_action != 'CHAT':
-                _ev_result = execute_action(_ev_action, {'query': user_input})
+                # What the agent bus already ran this turn is the evidence; the action is run here
+                # only when the bus has no result for it (it ran twice, the second time with other arguments).
+                _ev_result = (_eli_bus_first_ok_result(bus_result, _ev_action)
+                              or execute_action(_ev_action, {'query': user_input}))
                 _ev_text = (
     _ev_result or {}).get('content') or (
         _ev_result or {}).get('response') or ''
@@ -397,10 +400,11 @@ Answer:"""
         # Live self-model: inject ELI's current agents, capabilities, model and world room, read
         # fresh each turn, so its self-knowledge tracks the code. Private context: used for
         # accuracy, narrated only when asked.
+        _awareness_text = None   # read once a turn: each read asks the ledger, the goals and the document index
         try:
             _aw = getattr(self, "_awareness", None)
             if _aw is not None:
-                _sm = _aw.context_block()
+                _sm = _awareness_text = _aw.context_block()
                 if _sm and _sm.strip():
                     situation_brief = (_sm.strip() + "\n\n" + (situation_brief or "")).strip()
         except Exception:
@@ -564,7 +568,8 @@ Answer:"""
         _awareness_block = ""
         try:
             if self._awareness:
-                _awareness_block = self._awareness.context_block()
+                _awareness_block = (_awareness_text if _awareness_text is not None
+                                    else self._awareness.context_block())
         except Exception:
             _awareness_block = ""
 
@@ -1000,16 +1005,13 @@ Answer:"""
         except Exception:
             action = ""
 
-        # Actions that actually change the machine, files, or app/media state.
-        _SIDE_EFFECTING = {
-            "RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT",
-            "FIX_FILE", "CODE_SOLVE", "CREATE_FOLDER", "DELETE_FILE",
-            "OPEN_APP", "CLOSE_APP", "MINIMIZE_APP", "OPEN_URL", "OPEN_IDE",
-            "VOLUME", "PLAY_MEDIA", "PAUSE_MEDIA", "NEXT_MEDIA", "SELF_PATCH",
-        }
+        # Whether the action changes the machine, files, or app/media state is one rule
+        # (route_contracts.changes_something); a list kept here said "nothing ran" after a
+        # file was written or a timer set.
+        from eli.execution.route_contracts import changes_something
         result_text = ""
         executed = False
-        if bus_result is not None and action in _SIDE_EFFECTING:
+        if bus_result is not None and changes_something(action):
             try:
                 res = _eli_bus_first_ok_result(bus_result, action)
             except Exception:

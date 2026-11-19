@@ -33,11 +33,6 @@ from eli.kernel.stages.output_text import _normalize_assistant_text
 from eli.kernel.stages.model_runtime import gguf_inference, _get_inference_broker
 from eli.cognition import context_budget as _ctx_budget
 from eli.kernel.stages._common import _phatic_generation_budget
-# Tokens reserved for the reply when sizing the evidence budget. `max_tokens` is a
-# ceiling (~3461 in quick mode) and reserving all of it starved the evidence — see
-# the note at the streaming context-size guard. A reply longer than this simply eats
-# into the 20% headroom the budget already keeps.
-_OUTPUT_RESERVE_TOKENS = int(os.environ.get("ELI_OUTPUT_RESERVE_TOKENS", "1024"))
 
 
 from eli.kernel.stages.guards import (
@@ -162,23 +157,19 @@ def _eli_is_rapport_prompt(text: str) -> bool:
 
 # What ELI may do because its own reply said it would: look something up. Anything that changes
 # the calendar, the screen, files or settings waits for the user (see pending_proposal).
-_FOLLOWTHROUGH_READS = frozenset((
-    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT", "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "LIST_EVENTS",
-    "NOW_PLAYING",
-    "SEARCH_NOTES", "LIST_NOTES", "MEMORY_RECALL", "CHECK_JOB", "BACKGROUND_JOBS", "SYSTEM_STATS", "CPU_USAGE",
-    "RAM_USAGE", "GPU_STATUS", "LIST_DIR", "READ_FILE",
-    # status reports: surfaced only when the reply promised to report (handled where they return)
-    "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY", "EXPLAIN_MEMORY_RUNTIME",
-    "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS", "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT",
-    "REASONING_MODE_STATUS", "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS", "HABIT_STATUS",
-    "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
-))
+# status reports: surfaced only when the reply promised to report (handled where they return)
 _FOLLOWTHROUGH_REPORTS = frozenset((
     "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY", "EXPLAIN_MEMORY_RUNTIME",
     "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS", "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT",
     "REASONING_MODE_STATUS", "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS", "HABIT_STATUS",
     "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
 ))
+_FOLLOWTHROUGH_READS = frozenset((
+    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT", "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "LIST_EVENTS",
+    "NOW_PLAYING",
+    "SEARCH_NOTES", "LIST_NOTES", "MEMORY_RECALL", "CHECK_JOB", "BACKGROUND_JOBS", "SYSTEM_STATS", "CPU_USAGE",
+    "RAM_USAGE", "GPU_STATUS", "LIST_DIR", "READ_FILE",
+)) | _FOLLOWTHROUGH_REPORTS
 _FT_PROMISED_REPORT = re.compile(
     r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
     r"(?:flag|report|tell you|let you know|surface|call out|point out|highlight|come back to you)\b")
@@ -2048,26 +2039,16 @@ class GenerationMixin:
             # Followthrough is for actions ELI promised to perform for the user (fetch news, play media,
             # search, open), never for internal status dumps. A casual "I've been checking my memory" must
             # not auto-run MEMORY_STATUS and bury the user in evidence they didn't ask for.
-            _ft_dump_actions = {
-                "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY",
-                "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS",
-                "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT", "REASONING_MODE_STATUS",
-                "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS",
-                "HABIT_STATUS", "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
-            }
             if (real_txt and real_act not in ("", "CHAT", "UNKNOWN", "NOOP")
-                    and real_act not in _ft_dump_actions):
+                    and real_act not in _FOLLOWTHROUGH_REPORTS):
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' → executed {real_act}")
                 yield "\n\n" + real_txt
                 self._store_followthrough_reply(full, real_txt)
-            elif real_act in _ft_dump_actions:
+            elif real_act in _FOLLOWTHROUGH_REPORTS:
                 # Suppressing a dump nobody asked for is right. Suppressing one ELI just promised to report
                 # breaks its word (it said "I'll flag any lingering hiccups", found a real defect and dropped
                 # it). If the reply promised to report, surface the findings only, never the full PASS listing.
-                _ft_promised = bool(re.search(
-                    r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
-                    r"(?:flag|report|tell you|let you know|surface|call out|point out|"
-                    r"highlight|come back to you)\b",
+                _ft_promised = bool(_FT_PROMISED_REPORT.search(
                     # `full` is the complete streamed reply -- the promise lives
                     # there, not necessarily in the matched clause alone.
                     str(commit.get("clause") or "") + " " + str(full or "")))
@@ -2671,28 +2652,9 @@ class GenerationMixin:
         except Exception as _p41_suppress_err:
             log.debug(f"[COGNITIVE][PHASE41] no-visible suppressor skipped: {_p41_suppress_err}")
         try:
-            _p43_silent_actions = {'VOLUME'}
-            _p43_action = ''
-            for _p43_k in ('action', '_action', 'intent_action', 'routed_action'):
-                _p43_v = locals().get(_p43_k)
-                if isinstance(_p43_v, str) and _p43_v.strip():
-                    _p43_action = _p43_v.strip().upper()
-                    break
-            if not _p43_action:
-                for _p43_k in ('route', 'intent', 'parsed', 'routed'):
-                    _p43_obj = locals().get(_p43_k)
-                    if isinstance(_p43_obj, dict):
-                        _p43_v = _p43_obj.get('action') or _p43_obj.get('name')
-                        if isinstance(_p43_v, str) and _p43_v.strip():
-                            _p43_action = _p43_v.strip().upper()
-                            break
-            _p43_user = str(
-                locals().get('user_input')
-                or locals().get('text')
-                or locals().get('message')
-                or ''
-            ).strip().lower()
-            if _p43_action in _p43_silent_actions or _p43_user in ('volume up', 'volume down', 'volume mute', 'mute', 'unmute'):
+            # (the routed action is not a name in this function; the check above routes for it)
+            _p43_user = str(user_input or '').strip().lower()
+            if _p43_user in ('volume up', 'volume down', 'volume mute', 'mute', 'unmute'):
                 log.debug('[COGNITIVE][PHASE43] silent direct action completed; suppressing no-visible-output error.')
                 return
         except Exception as _p43_e:

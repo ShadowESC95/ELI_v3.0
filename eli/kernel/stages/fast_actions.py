@@ -85,22 +85,11 @@ def _catalogue_controls() -> set:
         return set()
 
 
-_PHASE45_DIRECT_FAST_ACTIONS |= _catalogue_controls()
+_PHASE45_DIRECT_FAST_ACTIONS = frozenset(_PHASE45_DIRECT_FAST_ACTIONS | _catalogue_controls())
 
 # NOOP = fragment rejected or truly empty input; return silence, store nothing
-_PHASE45_SILENT_FAST_ACTIONS = {'NOOP'}
+_PHASE45_SILENT_FAST_ACTIONS = frozenset({'NOOP'})
 
-# Actions where the executor payload is the answer (control/OS, status/self-report), returned
-# straight out rather than back through the model. Single source of truth for the direct-return
-# block and _is_soft_informational_action(). Fails closed for side-effecting actions if the
-# authority gate misbehaves; read-only ones fail open so ELI is never mute.
-_AUTHORITY_FAILCLOSED_ACTIONS = frozenset({
-    "RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT",
-    "FIX_FILE", "CODE_SOLVE", "CREATE_FOLDER", "DELETE_FILE",
-    "OPEN_APP", "CLOSE_APP", "MINIMIZE_APP", "OPEN_URL", "OPEN_IDE", "OPEN_IN_IDE",
-    "VOLUME", "PLAY_MEDIA", "PAUSE_MEDIA", "NEXT_MEDIA", "SELF_PATCH", "SELF_UPGRADE",
-    "KEYBOARD", "MOUSE_CONTROL",
-})
 
 # Declared by each action (direct=True: eli/tools/registry/capabilities_doc.py, or where its effector
 # registers it): read from the action registry, not a list kept here.

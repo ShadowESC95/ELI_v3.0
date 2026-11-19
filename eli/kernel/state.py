@@ -33,11 +33,6 @@ def _state_path() -> Path:
     return _runtime_dir() / "state.json"
 
 
-def _legacy_profile_path() -> Path:
-    # Legacy global profile path. Kept only for repair/cleanup, not normal identity lookup.
-    return _runtime_dir() / "user_profile.json"
-
-
 def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if path.exists():
@@ -205,10 +200,6 @@ def _clear_settings_copy(key: str) -> None:
         log.debug("settings copy of %s not cleared: %s", key, failure)
 
 
-def clear_user_name(user_id: str | None = None) -> None:
-    set_user_name("", user_id=user_id)
-
-
 def update_user_profile(update: Dict[str, Any] | None = None, user_id: str | None = None, **kwargs: Any) -> Dict[str, Any]:
     profile = load_user_profile(user_id)
 
@@ -315,14 +306,6 @@ def get_communication_style(user_id: str | None = None) -> str:
     return str(load_user_profile(user_id).get("communication_style") or "").strip()
 
 
-def world_model_snapshot_bridge():
-    try:
-        from eli.kernel.world_model import world_model_snapshot
-        return world_model_snapshot()
-    except Exception:
-        return {}
-
-
 def sync_identity_to_world_model(user_id: str | None = None) -> None:
     try:
         from eli.kernel.world_model import get_world_model, save_world_model
@@ -338,57 +321,6 @@ def sync_identity_to_world_model(user_id: str | None = None) -> None:
         log.debug("suppressed exception", exc_info=True)
 
 
-def repair_identity_state() -> Dict[str, Any]:
-    """
-    Remove invalid/global identity fragments from runtime artifacts.
-
-    This deliberately does not promote any hardcoded name. User identity must come
-    from active-user-scoped profile extraction.
-    """
-    state = load_state()
-    changed: Dict[str, Any] = {
-        "state_removed": [],
-        "profile_removed": [],
-        "legacy_profile_path": str(_legacy_profile_path()),
-    }
-
-    if "user_name" in state:
-        state.pop("user_name", None)
-        changed["state_removed"].append("user_name")
-
-    # Clean active user profile.
-    profile = load_user_profile()
-    for key in ("name", "preferred_name", "nickname"):
-        if key in profile and not normalize_identity_candidate(profile.get(key, "")):
-            profile.pop(key, None)
-            changed["profile_removed"].append(key)
-
-    if isinstance(profile.get("aliases"), list):
-        aliases = [
-            v for v in (
-                normalize_identity_candidate(x)
-                for x in profile.get("aliases", [])
-            )
-            if v
-        ]
-        if aliases:
-            profile["aliases"] = aliases
-        else:
-            profile.pop("aliases", None)
-            changed["profile_removed"].append("aliases")
-
-    save_state(state)
-    save_user_profile(profile)
-    sync_identity_to_world_model()
-
-    changed["ok"] = True
-    changed["active_user_id"] = get_active_user_id()
-    changed["active_profile_path"] = str(_profile_path())
-    changed["state"] = state
-    changed["profile_keys"] = sorted(profile.keys())
-    return changed
-
-
 __all__ = [
     "load_state",
     "save_state",
@@ -398,10 +330,7 @@ __all__ = [
     "save_user_profile",
     "get_user_name",
     "set_user_name",
-    "clear_user_name",
     "update_user_profile",
     "get_user_profile_text",
-    "world_model_snapshot_bridge",
     "sync_identity_to_world_model",
-    "repair_identity_state",
 ]

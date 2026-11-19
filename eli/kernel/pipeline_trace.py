@@ -27,23 +27,6 @@ STAGE_NAMES: Dict[int, str] = {
     12: "LEARNING_STATE_UPDATE",
 }
 
-# Orchestrator internal trace keys → canonical stage numbers (for cross-path debug).
-ORCH_KEY_TO_STAGE: Dict[str, int] = {
-    "stage_1": 3,
-    "stage_2": 2,
-    "stage_3": 5,
-    "stage_4": 5,
-    "stage_5_6_7": 6,
-    "stage_8": 7,
-    "stage_9": 7,
-    "stage_10": 7,
-    "stage_10_5": 7,
-    "stage_11": 9,
-    "stage_12": 12,
-    "agent_bus_nonchat": 6,
-    "agent_bus_specialists": 6,
-}
-
 
 def stage_label(stage: int) -> str:
     return STAGE_NAMES.get(int(stage), f"STAGE_{stage}")
@@ -71,15 +54,3 @@ def log_pipeline_stage(
     for k, v in fields.items():
         parts.append(f"{k}={v}")
     log.debug("[PIPELINE] " + " ".join(parts))
-
-
-def map_orch_trace_key(key: str) -> int:
-    return int(ORCH_KEY_TO_STAGE.get(str(key or ""), 0))
-
-
-def orch_trace_note(key: str, value: str = "") -> str:
-    """Human-readable note tying an orchestrator sub-step to the canonical stage."""
-    st = map_orch_trace_key(key)
-    if not st:
-        return str(value or key)
-    return f"canonical=S{st:02d} {stage_label(st)} | {key}={value}"
