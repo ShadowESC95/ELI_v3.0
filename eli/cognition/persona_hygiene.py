@@ -12,7 +12,9 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
+
+from eli.cognition.persona_updater import _dedup_lines
 
 log = logging.getLogger(__name__)
 
@@ -24,14 +26,10 @@ def clean_auto_persona(repo_root: Optional[Path] = None) -> Dict[str, object]:
     """
     Read persona.auto.txt, deduplicate entries within each section,
     prune stale/noisy patterns, write back, return stats.
-    """
-    if repo_root is None:
-        try:
-            from eli.core.paths import get_paths
-            repo_root = get_paths().project_root
-        except Exception:
-            repo_root = Path(__file__).resolve().parents[2]
 
+    `repo_root` is not read (the overlay is where eli.core.paths says it is); it is still taken
+    because eli/runtime/awareness_boot.py passes it.
+    """
     from eli.core.paths import persona_auto_path
     auto_path = persona_auto_path()
     if not auto_path.exists():
@@ -43,7 +41,7 @@ def clean_auto_persona(repo_root: Optional[Path] = None) -> Dict[str, object]:
 
     for title, entries in sections.items():
         before = len(entries)
-        entries = _dedup(entries)
+        entries = _dedup_lines(entries)
         entries = _prune_noise(entries)
         entries = entries[-_MAX_ENTRIES_PER_SECTION:]  # keep newest
         sections[title] = entries
@@ -53,9 +51,9 @@ def clean_auto_persona(repo_root: Optional[Path] = None) -> Dict[str, object]:
     if not changed:
         return {"ok": True, "action": "persona_hygiene", "changed": False}
 
-    rebuilt = _rebuild(sections)
-    from eli.cognition.persona import write_auto_persona
-    write_auto_persona(rebuilt)
+    # written the way every other overlay refresh is (one layout, one empty-section mark)
+    from eli.cognition.persona import update_auto_sections
+    update_auto_sections(sections)
     log.info("persona_hygiene: cleaned auto-overlay (%d sections)", len(sections))
     return {"ok": True, "action": "persona_hygiene", "changed": True, "sections": len(sections)}
 
@@ -74,19 +72,6 @@ def _parse_sections(text: str) -> Dict[str, List[str]]:
             sections[current_title].append(stripped[2:].strip())
         # Skip comment lines and blank lines
     return sections
-
-
-def _dedup(entries: List[str]) -> List[str]:
-    """Remove exact duplicates, preserving order (keep last occurrence)."""
-    seen: Set[str] = set()
-    result: List[str] = []
-    for entry in reversed(entries):
-        normalized = entry.strip().lower()
-        if normalized not in seen:
-            seen.add(normalized)
-            result.append(entry)
-    result.reverse()
-    return result
 
 
 def _prune_noise(entries: List[str]) -> List[str]:
@@ -110,21 +95,3 @@ def _prune_noise(entries: List[str]) -> List[str]:
             continue
         result.append(entry)
     return result
-
-
-def _rebuild(sections: Dict[str, List[str]]) -> str:
-    """Rebuild the auto-overlay text from sections."""
-    lines = [
-        "# Auto-updated persona overlay",
-        "# Generated from habits, reflection, self-improvement, memory, and runtime signals.",
-        "",
-    ]
-    for title, entries in sections.items():
-        lines.append(f"## {title}")
-        if entries:
-            for entry in entries:
-                lines.append(f"- {entry}")
-        else:
-            lines.append("- (none)")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"

@@ -40,23 +40,6 @@ def append_record(record: ProposalRecord) -> ProposalRecord:
     return record
 
 
-def append_proposal(
-    kind: str,
-    payload: Dict,
-    source: str = "unknown",
-    priority: int = 50,
-    cwd: Optional[str] = None,
-) -> ProposalRecord:
-    rec = ProposalRecord(
-        kind=kind,
-        payload=dict(payload or {}),
-        source=source,
-        priority=priority,
-        cwd=cwd,
-    )
-    return append_record(rec)
-
-
 def append_governed_proposal(
     kind: str,
     payload: Dict,

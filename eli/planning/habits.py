@@ -14,7 +14,6 @@ from eli.memory import get_memory
 from eli.planning import routine_stats as _rs
 
 
-
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -185,24 +184,6 @@ def _extract_day_key(ts):
         return datetime.fromtimestamp(float(ts)).date().toordinal()
     except (OverflowError, OSError, ValueError):
         return None
-
-
-def _round_up_to_next_5(minute: int) -> tuple[int, int]:
-    """
-    Round minute UP to the next 5-minute boundary.
-    00 -> 05
-    01 -> 05
-    02 -> 05
-    05 -> 05
-    58 -> 00 with carry handled by caller
-    """
-    if minute <= 0:
-        return 0, 5
-
-    rounded = ((minute + 4) // 5) * 5
-    if rounded >= 60:
-        return 1, 0
-    return 0, rounded
 
 
 def detect_habits(days: int = 14, min_occurrences: int = 3, min_days: int = 3):
@@ -398,14 +379,3 @@ def _write_behavior_observations(mem, counts: Counter, examples: dict, min_occur
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-
-def schedule_detection_loop(interval_hours: int = 12):
-    """Run habit detection periodically."""
-    import threading
-
-    def loop():
-        while True:
-            time.sleep(interval_hours * 3600)
-            detect_habits()
-
-    threading.Thread(target=loop, daemon=True).start()

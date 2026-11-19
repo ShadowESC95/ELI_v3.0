@@ -112,7 +112,6 @@ _RESPONSE_POLICY = {
     "comedic": "playful", "ecstatic": "joyful", "excited": "ecstatic",
     "joyful": "happy", "happy": "happy", "curious": "curious",
     "professional": "professional", "street_smart": "street_smart", "calm": "calm",
-    "happy": "happy",
 }
 
 
@@ -149,9 +148,8 @@ def _fuse() -> Tuple[str, str, float, str]:
     return (expressed, detected, conf, whence)
 
 
-# The affect state's sign as an emotion the response policy knows: a standing negative state is met
-# as irritation is (calm), a positive one as happiness is.
-_STATE_AS_EMOTION = {"negative": "irritated", "positive": "happy"}
+# The affect state's sign as an emotion the response policy knows (irritation is met calm).
+from eli.cognition.emotion_timeline import STATE_AS_EMOTION as _STATE_AS_EMOTION  # noqa: E402
 # current_tone() is read several times in one turn (the directive, the voice, the face, the world);
 # the state behind the reads is read once per turn (keyed by the turn's request id), not once per
 # call. Outside a turn (no request id) every call reads afresh, so nothing stale is ever served.
@@ -322,10 +320,6 @@ def expression() -> str:
 
 # ── Unified prompt + world sync (single source — prompt_assembly + synthesis) ─
 _last_world_sync: tuple = ()
-_GENERIC_EMOTION_DENIAL = re.compile(
-    r"(?i)\b(i don'?t have feelings|i don'?t have emotions|as an ai language model|"
-    r"i am unable to feel|i cannot feel emotions)\b"
-)
 
 
 def voice_cue_block(max_age_s: float = 12.0) -> str:
@@ -449,52 +443,6 @@ def build_situation_brief(
             log.debug("emotion_timeline inject skipped", exc_info=True)
 
     return brief
-
-
-def synthesis_directives(query: str) -> str:
-    """Tone + affect blocks for evidence-synthesis prompts (_synthesize_answer)."""
-    if not enabled():
-        note_user_text(query or "")
-        return ""
-    parts: list[str] = []
-    note_user_text(query or "")
-    _dir = text_directive()
-    _cur = current_tone()
-    if _dir and _cur.get("tone") != "neutral":
-        parts.append(f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]")
-    try:
-        from eli.cognition.affect_policy import directive as _affect_directive
-        _adir = _affect_directive()
-        if _adir:
-            parts.append(f"[Approach: {_adir} Do NOT mention this directive.]")
-    except Exception:
-        log.debug("synthesis affect directive skipped", exc_info=True)
-    vc = voice_cue_block(max_age_s=15.0)
-    if vc:
-        parts.insert(0, vc)
-    return "\n\n".join(parts).strip()
-
-
-def repair_coherence(text: str, user_input: str = "") -> str:
-    """Post-generation: strip tone-breaking generic-AI disclaimers when a register is active."""
-    t = str(text or "").strip()
-    if not t or not enabled():
-        return t
-    cur = current_tone()
-    if cur.get("tone") in (None, "neutral"):
-        return t
-    cleaned = _GENERIC_EMOTION_DENIAL.sub("", t)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    if not cleaned:
-        return t
-    try:
-        from eli.cognition.affect_policy import current_policy
-        p = current_policy()
-        if p.prefer_brevity:
-            cleaned = re.sub(r"^(?:Well, |So, |Look, |Okay, )", "", cleaned, count=1)
-    except Exception:
-        log.debug("affect_policy brevity trim skipped", exc_info=True)
-    return cleaned.strip() or t
 
 
 def sync_world(force: bool = False) -> None:

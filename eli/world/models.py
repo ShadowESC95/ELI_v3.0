@@ -106,18 +106,6 @@ def file_path(ident: str, rel: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def forget(ident: str) -> bool:
-    """Take a model out of the store."""
-    with _lock:
-        kept = _read_manifest()
-        if ident not in kept:
-            return False
-        del kept[ident]
-        _write_manifest(kept)
-    shutil.rmtree(store() / ident, ignore_errors=True)
-    return True
-
-
 # ── a file on this computer ───────────────────────────────────────────────────
 
 def _gltf_sidecars(gltf: Path) -> List[str]:
@@ -168,18 +156,6 @@ def import_file(path: str, name: str = "", size_m: Optional[List[float]] = None)
         _write_manifest(kept)
     log.info("[WORLD_MODELS] imported %s from %s", ident, src)
     return {"id": ident, **kept[ident]}
-
-
-def measured(ident: str, size_m: List[float]) -> bool:
-    """A body measured a model: its real size, kept."""
-    with _lock:
-        kept = _read_manifest()
-        if ident not in kept:
-            return False
-        kept[ident]["size"] = [round(max(0.01, float(v)), 2) for v in size_m][:3]
-        kept[ident]["measured"] = True
-        _write_manifest(kept)
-    return True
 
 
 def _plain(name: str) -> str:

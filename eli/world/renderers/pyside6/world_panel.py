@@ -87,8 +87,6 @@ class EliWorldPanel(QWidget):
         self.objects.setWordWrap(True)
         self.recent = QLabel("")
         self.recent.setWordWrap(True)
-        self.actions = QLabel("")
-        self.actions.setWordWrap(True)
         self.bars: Dict[str, QProgressBar] = {}
         self._tone_label = QLabel("Tone: —")
         self._tone_label.setWordWrap(True)
@@ -259,7 +257,6 @@ class EliWorldPanel(QWidget):
                     bar.setFormat(f"{_percent(awareness.get(key))}%")
             self.objects.setText(self._object_summary(state))
             self.recent.setText(_recent_lines(state.get("events") or [], limit=6))
-            self.actions.setText(_recent_lines(state.get("actions") or [], limit=6))
             self.identity.setText(self._identity_summary(state))
             try:
                 from eli.cognition import tone_adaptor as _ta

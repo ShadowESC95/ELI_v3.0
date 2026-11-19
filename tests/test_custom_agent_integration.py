@@ -82,7 +82,6 @@ def test_trust_round_trip(tmp_path, monkeypatch):
     The registry used to be `{basename: sha256}`, so two files with the same name
     shared one entry and approving either authorised both. It is now keyed on the
     resolved path and carries who approved it, when, and what the scan found.
-    `_trust_custom_agent` is kept as a shim over the real chain.
     """
     from eli.cognition import agent_trust
 
@@ -92,7 +91,7 @@ def test_trust_round_trip(tmp_path, monkeypatch):
 
     f = tmp_path / "myagent.py"
     f.write_text("# agent\n", encoding="utf-8")
-    AB._trust_custom_agent(f)
+    assert agent_trust.grant(f, approved_by="test")["ok"] is True
 
     verdict = agent_trust.inspect(f)
     assert verdict["ok"] is True

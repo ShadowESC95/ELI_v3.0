@@ -20,8 +20,7 @@ def test_cognition_agent_bus_has_class():
     assert matches, f"No AgentBus-like class: {syms}"
 
 
-def test_cognition_persona_has_class():
+def test_cognition_persona_reads_and_writes_by_function():
     mod = importlib.import_module("eli.cognition.persona")
-    syms = dir(mod)
-    matches = [s for s in syms if "Persona" in s]
-    assert matches, f"No Persona class in persona.py: {syms}"
+    missing = [name for name in mod.__all__ if not callable(getattr(mod, name, None))]
+    assert not missing and "get_persona" in mod.__all__, f"persona.py names what it does not have: {missing}"

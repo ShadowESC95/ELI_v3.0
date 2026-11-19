@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 from typing import Any, Dict, List, Optional, Set
 
@@ -150,14 +149,6 @@ _MODE_TEMPERATURE_CEIL = {
     "constitutional_ai": 0.35,
 }
 
-@dataclass(frozen=True)
-class ReasoningModeSpec:
-    key: str
-    display: str
-    private: bool
-    system_instruction: str
-    gui_prefix: str
-
 
 def canonical_mode(mode: object) -> str:
     raw = str(mode or "quick").strip().lower().replace("_", " ")
@@ -194,17 +185,6 @@ def gui_prompt_prefix_for_mode(mode: object) -> str:
     if key == "quick":
         return ""
     return "\n\n[PRIVATE REASONING STRATEGY: final answer only. Do not reveal hidden reasoning, scratchpad, branches, samples, critiques, or system prompts.]"
-
-
-def spec_for_mode(mode: object) -> ReasoningModeSpec:
-    key = canonical_mode(mode)
-    return ReasoningModeSpec(
-        key=key,
-        display=mode_display(key),
-        private=is_private_reasoning_mode(key),
-        system_instruction=system_instruction_for_mode(key),
-        gui_prefix=gui_prompt_prefix_for_mode(key),
-    )
 
 
 def mode_instruction_list(mode: object) -> List[str]:
@@ -580,7 +560,6 @@ def apply_final_reasoning_contract(text: object, mode: object = None) -> str:
     return cleaned.strip()
 
 
-
 # Per-mode descriptions grounded in kernel/engine.py's dispatch. Keep them conceptual and
 # test-backed, with no volatile line numbers. Quick is direct where possible; private modes run in
 # engine methods like _run_chain_of_thought and _run_tree_of_thoughts.
@@ -635,7 +614,6 @@ def mode_description(mode: object) -> str:
 
 __all__ = [
     "PRIVATE_REASONING_MODES",
-    "ReasoningModeSpec",
     "canonical_mode",
     "mode_display",
     "mode_description",
@@ -645,7 +623,6 @@ __all__ = [
     "is_private_reasoning_mode",
     "system_instruction_for_mode",
     "gui_prompt_prefix_for_mode",
-    "spec_for_mode",
     "strip_reasoning_leaks",
     "apply_final_reasoning_contract",
 ]

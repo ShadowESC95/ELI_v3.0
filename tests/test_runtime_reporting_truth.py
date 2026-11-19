@@ -76,3 +76,21 @@ def test_partial_iteration_then_str_keeps_everything():
     first = next(iter(stream))
     assert first == {"response": "one "} or first == "one "
     assert "two" in str(stream) and "three" in str(stream)
+
+
+# ── 4. the introspection agent's runtime lines read what is loaded now ─────
+def test_the_introspection_runtime_lines_are_the_live_load_not_a_file_left_on_disk(monkeypatch, tmp_path):
+    """The agent read only runtime_snapshot.json, so a load in this process was reported with
+    whatever an earlier process had written there."""
+    import json
+    from types import SimpleNamespace
+    from eli.cognition import context_synthesiser, introspection_agent
+    (tmp_path / "runtime_snapshot.json").write_text(json.dumps({"n_ctx": 2048, "n_batch": 64}), encoding="utf-8")
+    import eli.core.paths as paths
+    monkeypatch.setattr(paths, "get_paths", lambda *a, **k: SimpleNamespace(artifacts_dir=tmp_path))
+    monkeypatch.setattr(gi, "_live_runtime_params", {"n_ctx": 16384, "n_batch": 512, "loaded": True}, raising=False)
+    lines = introspection_agent.IntrospectionAgent().get_runtime()
+    assert "Context size: 16384" in lines and "Batch size: 512" in lines, lines
+    monkeypatch.setattr(gi, "_live_runtime_params", {}, raising=False)
+    assert context_synthesiser._runtime_snapshot()["n_ctx"] == 2048, "nothing live: the file is the answer"
+    assert "Context size: 2048" in introspection_agent.IntrospectionAgent().get_runtime()

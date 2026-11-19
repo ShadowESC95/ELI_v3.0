@@ -95,18 +95,6 @@ def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
         return default
 
 
-def _env_bool(name: str, default: Optional[bool] = None) -> Optional[bool]:
-    v = os.environ.get(name)
-    if v is None or v == "":
-        return default
-    v = v.strip().lower()
-    if v in ("1", "true", "yes", "y", "on"):
-        return True
-    if v in ("0", "false", "no", "n", "off"):
-        return False
-    log.debug(f"[GGUF] Warning: {name}={v!r} is not a bool; ignoring")
-    return default
-
 def _load_runtime_settings() -> Dict[str, Any]:
     try:
         from eli.core import runtime_settings
@@ -130,7 +118,6 @@ def _as_int(value, fallback):
         return int(fallback)
 
 
-
 # Set when llama.cpp refused a quantized KV cache in this process (no flash attention on this
 # backend or build): from then on the default cache is asked for and fitted for.
 _kv_cache_refused = False
@@ -145,20 +132,6 @@ def _cache_types(settings: Dict[str, Any]) -> tuple:
     return (cache_setting(_runtime_value(settings, "cache_type_k", "type_k", default="")),
             cache_setting(_runtime_value(settings, "cache_type_v", "type_v", default="")))
 
-
-def _requested_ctx(settings: Dict[str, Any], model_path) -> int:
-    """The context to load this model with: the operator's (env, then settings), else auto for
-    this model on this machine. Never 0, which llama.cpp reads as the model's whole trained
-    context; with nothing measurable, the smallest window."""
-    n_ctx = _env_int("ELI_GGUF_N_CTX", None) or _as_int(_runtime_value(settings, "n_ctx", "context_size"), 0)
-    if int(n_ctx or 0) <= 0:
-        try:
-            from eli.core.hardware_profile import auto_ctx_for
-            n_ctx = int(auto_ctx_for(model_path) or 0)
-        except Exception:
-            log.debug("[GGUF] auto context unavailable", exc_info=True)
-            n_ctx = 0
-    return int(n_ctx) if int(n_ctx or 0) > 0 else 2048
 
 _last_error: Optional[str] = None
 _last_params: Dict[str, Any] = {}
@@ -2413,7 +2386,6 @@ def _generate_json_legacy_1(
         raise RuntimeError(f"Failed to generate JSON: {e}") from e
 
 
-
 def _chat_completion_legacy(prompt: str, system: Optional[str] = None, **kwargs) -> str:
     generator = _generate_impl(prompt=prompt, system=system, stream=False, **kwargs)
     for chunk in generator:
@@ -2428,33 +2400,6 @@ def _chat_completion_legacy(prompt: str, system: Optional[str] = None, **kwargs)
 _chat_completion_impl = _chat_completion_legacy
 _generate_impl = _generate_legacy
 _generate_json_impl = _generate_json_legacy_1
-
-
-def _coerce_chat_args(*args, **kwargs):
-    system_prompt = kwargs.pop("system_prompt", None)
-    user_prompt = kwargs.pop("user_prompt", None)
-
-    if "system" in kwargs and system_prompt is None:
-        system_prompt = kwargs.pop("system")
-    if "prompt" in kwargs and user_prompt is None:
-        user_prompt = kwargs.pop("prompt")
-
-    if len(args) == 2 and system_prompt is None and user_prompt is None:
-        system_prompt, user_prompt = args
-    elif len(args) == 1 and user_prompt is None:
-        user_prompt = args[0]
-    elif len(args) > 2:
-        if system_prompt is None:
-            system_prompt = args[0]
-        if user_prompt is None:
-            user_prompt = args[1]
-
-    if system_prompt is None:
-        system_prompt = ""
-    if user_prompt is None:
-        user_prompt = ""
-
-    return str(system_prompt), str(user_prompt), kwargs
 
 
 def _normalize_call_args(*args, **kwargs):
@@ -2627,11 +2572,6 @@ _reload_state: Dict[str, Any] = {
 }
 
 
-def get_reload_state() -> Dict[str, Any]:
-    """Return a copy of the current reload state for GUI/diag callers."""
-    return dict(_reload_state)
-
-
 def reload_model(*, await_completion: bool = True) -> Dict[str, Any]:
     """Unload and reload the GGUF model with current settings.
 
@@ -2768,24 +2708,6 @@ def _write_shared_runtime_snapshot(payload: Dict[str, Any]) -> None:
     except Exception as e:
         log.debug(f"[GGUF] shared runtime snapshot write failed: {e}")
 
-
-def set_runtime_override(payload: Dict[str, Any] | None) -> Dict[str, Any]:
-    clean: Dict[str, Any] = {}
-    payload = dict(payload or {})
-    for key in ("n_ctx", "n_gpu_layers", "n_threads", "n_batch"):
-        val = payload.get(key)
-        if val not in (None, "", 0):
-            clean[key] = int(val)
-    globals()["_live_runtime_override"] = dict(clean)
-    globals()["_live_runtime_params"] = dict(clean)
-    try:
-        _write_shared_runtime_snapshot(dict(clean))
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return dict(clean)
-
-def clear_runtime_override() -> None:
-    globals().pop("_live_runtime_override", None)
 
 def get_effective_runtime_report() -> Dict[str, Any]:
     """What the loaded model was asked for and loaded with; the snapshot below when nothing loaded here."""
@@ -2927,17 +2849,6 @@ def clear_live_runtime_override() -> None:
 
 def get_live_runtime_override():
     return _live_runtime_override
-
-def publish_live_runtime(runtime: dict) -> dict:
-    global _live_runtime_override, _live_runtime_params
-    snap = dict(runtime or {})
-    _live_runtime_override = dict(snap)
-    _live_runtime_params = dict(snap)
-    try:
-        _write_shared_runtime_snapshot(dict(snap))
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return snap
 
 
 # Stream-aware persona/role-prefix filter on inference output.

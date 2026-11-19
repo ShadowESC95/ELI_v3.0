@@ -16,7 +16,6 @@ from eli.execution.executor_enhanced import SUPPORTED_ACTIONS as _SUPPORTED_ACTI
 _VALID_ACTIONS = {str(a).strip().upper() for a in (_SUPPORTED_ACTIONS or [])}
 
 
-
 from eli.cognition import memory_diag as _memory_diag
 from eli.cognition import query_planner as _query_planner
 from eli.cognition.evidence_format import this_conversation as _this_conversation
@@ -467,61 +466,6 @@ class OrchestratorMemoryAgent:
             log.debug(f"[ORCHESTRATOR] Stage 5b: KG search error: {e}")
             return []
 
-    def conversation_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Stage 5c: FTS5 search over conversation_turns.
-
-        Filters out noise at query time (assistant runtime dumps, template tokens)
-        on top of the index-time filter applied during backfill.
-        """
-        try:
-            import sqlite3, re
-            mem = getattr(self.engine, "memory", None)
-            if mem is None:
-                return []
-            db_path = getattr(mem, "db_path", None) or getattr(mem, "_db_path", None)
-            if db_path is None:
-                try:
-                    from eli.core.paths import user_db_path
-                    db_path = str(user_db_path())
-                except Exception:
-                    return []
-            con = sqlite3.connect(str(db_path))
-            try:
-                # Token-split so FTS5 doesn't choke on punctuation
-                toks = [t for t in re.split(r"[^a-zA-Z0-9_]+", query or "") if len(t) > 1]
-                if not toks:
-                    return []
-                fts_q = " OR ".join(f'"{t}"' for t in toks[:8])
-                rows = con.execute(
-                    """
-                    SELECT ct.id, ct.role, ct.content, COALESCE(ct.timestamp, ct.ts, 0)
-                    FROM conversation_turns_fts f
-                    JOIN conversation_turns ct ON ct.id = f.rowid
-                    WHERE conversation_turns_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    (fts_q, int(limit)),
-                ).fetchall()
-            finally:
-                con.close()
-            normalized: List[Dict[str, Any]] = []
-            for (cid, role, content, ts) in rows:
-                txt = (content or "").strip()
-                if not txt:
-                    continue
-                # Role tag so the LLM understands provenance
-                prefix = "User said: " if role == "user" else "Assistant said: " if role == "assistant" else ""
-                normalized.append({
-                    "source": "conversation",
-                    "score": 0.85,  # conversation history is high-trust signal
-                    "text": f"{prefix}{txt}",
-                    "meta": {"id": cid, "role": role, "ts": ts},
-                })
-            return normalized
-        except Exception as e:
-            log.debug(f"[ORCHESTRATOR] Stage 5c: conversation search error: {e}")
-            return []
 
     def keyword_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
         # keyword_only=True: FAISS is skipped inside recall_memory so we don't

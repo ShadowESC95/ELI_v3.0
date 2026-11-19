@@ -13,6 +13,3 @@ def decay_goals(goals: List[Dict[str, Any]], decay: float = 0.02) -> List[Dict[s
             out.append(g)
     return out
 
-def add_goal(goals: List[Dict[str, Any]], title: str, source: str, urgency: float = 0.5) -> List[Dict[str, Any]]:
-    goals.append({"title": title, "source": source, "urgency": urgency, "created": time(), "status": "active"})
-    return goals

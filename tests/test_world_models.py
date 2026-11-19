@@ -44,7 +44,6 @@ def test_a_file_on_this_computer_is_brought_in_with_the_files_it_names(store, tm
     assert sorted(got["files"]) == ["lamp.bin", "lamp.gltf", "textures/lamp_diff.png"], "data uris and ../ are left out"
     assert (store / "Desk_lamp" / "textures" / "lamp_diff.png").read_bytes() == b"\x89PNG"
     assert models.listed()[0]["size"] == [1, 1, 1] and not got["measured"], "a body measures it"
-    assert models.measured("Desk_lamp", [0.3, 0.52, 0.3]) and models.listed()[0]["size"] == [0.3, 0.52, 0.3]
     assert models.file_path("Desk_lamp", "textures/lamp_diff.png") is not None
     assert models.file_path("Desk_lamp", "../models.json") is None, "only listed files are served"
     assert models.file_path("Desk_lamp", "lamp.gltf.import") is None

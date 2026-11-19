@@ -7,7 +7,6 @@ from __future__ import annotations
 from typing import List
 
 
-
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -35,35 +34,3 @@ def expand_query_hyde(
             log.debug("suppressed exception", exc_info=True)
     return hypotheticals
 
-
-def hyde_vector_search(
-    query: str,
-    inference_fn,
-    k: int = 5,
-) -> List[dict]:
-    """
-    Full HyDE pipeline: generate hypothetical doc → embed → vector search.
-    Returns merged, deduplicated results.
-    """
-    try:
-        from eli.memory.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs is None or vs.ntotal == 0:
-            return []
-
-        hypotheticals = expand_query_hyde(query, inference_fn, n_hypothetical=1)
-        seen_texts = set()
-        results = []
-        for hyp in hypotheticals:
-            hits = vs.search(hyp, limit=k)
-            for h in hits:
-                txt = h.get("text", "")
-                if txt and txt not in seen_texts:
-                    seen_texts.add(txt)
-                    results.append(h)
-        # Sort by score descending
-        results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return results[:k]
-    except Exception as e:
-        log.debug(f"[HyDE] search failed: {e}")
-        return []

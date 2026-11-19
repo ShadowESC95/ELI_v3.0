@@ -49,3 +49,20 @@ def test_refresh_all_overlays_updates_manifest(monkeypatch):
     out = smr.refresh_all_overlays_nonfatal(reason="test")
     assert out.get("capability_manifest") == {"total": 225}
     assert out.get("ok") is True
+
+
+def test_what_eli_holds_about_its_owner_is_written_whole_and_for_the_owner_only(tmp_path, monkeypatch):
+    """The user-info files were written by a private copy of an atomic write, with default
+    permissions: readable by every account on the machine."""
+    import os
+    import stat
+    import pytest
+    from eli.cognition import user_info_builder as builder
+    meta = tmp_path / "user_info.meta.json"
+    monkeypatch.setattr(builder, "_paths", lambda: {"meta": meta})
+    builder._save_meta({"dirty": True, "dirty_reasons": ["a new fact"]})
+    assert builder._load_meta()["dirty_reasons"] == ["a new fact"]
+    assert [p.name for p in tmp_path.iterdir()] == [meta.name], "no scratch file is left beside it"
+    if os.name != "posix":
+        pytest.skip("permission bits are POSIX")
+    assert stat.S_IMODE(meta.stat().st_mode) == 0o600

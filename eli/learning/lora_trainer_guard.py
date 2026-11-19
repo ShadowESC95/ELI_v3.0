@@ -198,7 +198,7 @@ def _row_targets(row: dict[str, Any]) -> set[str]:
     if isinstance(targets, list):
         out.update(str(x) for x in targets if str(x).strip())
 
-    return _eli_attach_base_resolution_any(out)
+    return out
 
 
 def _validate_dataset_rows(rows: list[dict[str, Any]], target: str) -> tuple[list[str], dict[str, int]]:
@@ -252,7 +252,7 @@ def _validate_dataset_rows(rows: list[dict[str, Any]], target: str) -> tuple[lis
     return problems, counts
 
 
-def build_training_plan(
+def _plan_before_base_resolution(
     target: str,
     *,
     registry_path: Path = REGISTRY_PATH,
@@ -398,7 +398,7 @@ def write_plan(plan: dict[str, Any], *, out: Path | None = None) -> Path:
         out = RUNS_DIR / f"lora_guard_{plan['target']}_{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_eli_json_dumps_hardened(plan, indent=2, ensure_ascii=False), encoding="utf-8")
-    return _eli_attach_base_resolution_any(out)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -432,66 +432,6 @@ def main(argv: list[str] | None = None) -> int:
     ok = all(r.get("ok") for r in reports)
     print(_eli_json_dumps_hardened({"ok": ok, "reports": reports}, indent=2, ensure_ascii=False))
     return 0 if ok else 2
-
-
-
-# ELI_BASE_RESOLVER_GUARD_V2
-# Strict trainable-base resolution. This must appear BEFORE the CLI entrypoint.
-# It recursively hardens target reports so CLI and imported test paths agree.
-
-def _eli_attach_base_resolution(report):
-    if not isinstance(report, dict):
-        return report
-
-    cfg = report.get("config") or {}
-    target = str(report.get("target") or cfg.get("target") or "").strip()
-
-    if target not in {"eli_phi", "eli_phi_ultra"}:
-        return report
-
-    requested = cfg.get("base_model_path") or report.get("base_model_path") or ""
-    resolution = resolve_base_model_path(requested or None)
-
-    report["base_model_resolution"] = resolution
-
-    warnings = list(report.get("warnings") or [])
-    problems = list(report.get("problems") or [])
-
-    warnings = [
-        w for w in warnings
-        if not str(w).startswith("base model path missing:")
-    ]
-
-    if not resolution.get("ok"):
-        msg = "trainable Phi-3 base model unresolved"
-        if msg not in problems:
-            problems.append(msg)
-
-    report["warnings"] = warnings
-    report["problems"] = problems
-
-    dataset_rows = int((report.get("dataset") or {}).get("rows") or 0)
-    report["train_ready"] = bool(dataset_rows > 0 and not problems and resolution.get("ok"))
-
-    if report.get("dry_run", True):
-        report["will_train"] = False
-
-    return report
-
-
-def _eli_attach_base_resolution_any(obj):
-    if isinstance(obj, list):
-        return [_eli_attach_base_resolution_any(x) for x in obj]
-
-    if isinstance(obj, dict):
-        if "reports" in obj and isinstance(obj["reports"], list):
-            obj["reports"] = [_eli_attach_base_resolution_any(x) for x in obj["reports"]]
-
-        if "config" in obj and ("target" in obj or "target" in (obj.get("config") or {})):
-            obj = _eli_attach_base_resolution(obj)
-
-    return obj
-
 
 
 # ELI_BASE_RESOLVER_GUARD_V4
@@ -559,17 +499,10 @@ def _eli_json_dumps_hardened(obj, *args, **kwargs):
     return _ELI_ORIG_JSON_DUMPS(_eli_harden_lora_guard_payload(obj), *args, **kwargs)
 
 
-
 # ELI_BUILD_PLAN_BASE_RESOLUTION_V5
 # Harden the actual plan object, not just CLI JSON rendering.
 # This prevents stale ./phi-3-mini-base from surviving after a valid HF base
 # has been downloaded under models/hf/Phi-3-mini-4k-instruct.
-try:
-    _ELI_ORIGINAL_BUILD_TRAINING_PLAN_V5
-except NameError:
-    _ELI_ORIGINAL_BUILD_TRAINING_PLAN_V5 = build_training_plan
-
-
 def _eli_normalize_plan_base_model_v5(report):
     if not isinstance(report, dict):
         return report
@@ -625,9 +558,8 @@ def _eli_normalize_plan_base_model_v5(report):
 
 
 def build_training_plan(*args, **kwargs):
-    return _eli_normalize_plan_base_model_v5(
-        _ELI_ORIGINAL_BUILD_TRAINING_PLAN_V5(*args, **kwargs)
-    )
+    """The plan for a target, with the base model it will really train on resolved in it."""
+    return _eli_normalize_plan_base_model_v5(_plan_before_base_resolution(*args, **kwargs))
 
 
 if __name__ == "__main__":

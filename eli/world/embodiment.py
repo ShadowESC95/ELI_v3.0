@@ -50,6 +50,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from eli.utils.log import get_logger
+from eli.world.building import _number, _text  # the one reading of a number and of a line of text a body sends
 
 FRESH_SECONDS = 45.0       # a scene older than this is not where anyone is
 SCENE_MAX = 4000           # characters of JSON a report may be
@@ -60,18 +61,6 @@ log = get_logger(__name__)
 PROPS_MAX = 400            # real things one body may offer
 _lock = threading.Lock()
 _body: Dict[str, Any] = {}       # the last body that said what it can draw
-
-
-def _text(value: Any, limit: int = _TEXT) -> str:
-    return " ".join(str(value or "").split())[:limit].strip()
-
-
-def _number(value: Any, fallback: float = 0.0) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    return number if math.isfinite(number) else fallback
 
 
 def _triple(value: Any) -> Optional[List[float]]:
@@ -86,9 +75,9 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
         "surface": _text(scene.get("surface") or "spatial_client", 32),
         "session": _text(scene.get("session"), 64),
         "room": _text(scene.get("room"), 40).lower().replace(" ", "_"),
-        "room_name": _text(scene.get("room_name")),
+        "room_name": _text(scene.get("room_name"), _TEXT),
         "place": _text(scene.get("place"), 40),
-        "place_name": _text(scene.get("place_name")),
+        "place_name": _text(scene.get("place_name"), _TEXT),
         "seen_as": _text(scene.get("seen_as"), _LONG),
         "headset": bool(scene.get("headset")),
         "screen": bool(scene.get("screen")),
@@ -100,7 +89,7 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
         "pos": _triple(user.get("pos")) or [0.0, 1.7, 0.0],
         "facing": [round(_number(v), 3) for v in user.get("facing", [])][:2]
         if isinstance(user.get("facing"), (list, tuple)) and len(user.get("facing")) >= 2 else [0.0, 1.0],
-        "looking_at": {"kind": _text(looking.get("kind"), 24), "name": _text(looking.get("name"))},
+        "looking_at": {"kind": _text(looking.get("kind"), 24), "name": _text(looking.get("name"), _TEXT)},
     }
     eli = scene.get("eli") if isinstance(scene.get("eli"), dict) else {}
     out["eli"] = {
@@ -116,8 +105,8 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
                           "lines": [_text(line, 160) for line in (holding.get("lines") or [])[:HELD_LINES] if _text(line, 160)]}
     things = []
     for thing in (scene.get("things") or [])[:12]:
-        if isinstance(thing, dict) and _text(thing.get("name")):
-            things.append({"name": _text(thing.get("name")), "kind": _text(thing.get("kind"), 24),
+        if isinstance(thing, dict) and _text(thing.get("name"), _TEXT):
+            things.append({"name": _text(thing.get("name"), _TEXT), "kind": _text(thing.get("kind"), 24),
                            "distance": round(max(0.0, _number(thing.get("distance"))), 1)})
     out["things"] = things
     return out

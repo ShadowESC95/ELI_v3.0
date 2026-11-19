@@ -153,7 +153,6 @@ def describe_turn(facts: Dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
-
 def _user_turns(mem: Any, since: float, user_id: str) -> List[Dict[str, Any]]:
     try:
         return list(mem.get_recent_conversation(limit=60, user_id=user_id or None, since=since, role="user") or [])
@@ -315,10 +314,6 @@ def record_block(lines: List[str]) -> str:
             "Asked why you did something or what went wrong, explain from these rows and the period log "
             "only. Where a row does not show the cause, say the record does not show it; never name a "
             "mechanism, setting or component that is not written here.\n" + "\n".join(lines))
-
-
-def turn_record_block(mem: Any, *, user_id: str = "", limit: int = 8, now: Optional[float] = None) -> str:
-    return record_block(turn_record_lines(mem, user_id=user_id, limit=limit, now=now))
 
 
 # ── the claim check ──────────────────────────────────────────────────────────
@@ -1806,5 +1801,4 @@ def drop_invented_self_claims(text: str, evidence: str = "") -> str:
     kept = "".join(gate_stream([body], evidence, rewrite=ask_again))
     kept = re.sub(r"[ \t]+\n", "\n", kept)
     return re.sub(r"\n{3,}", "\n\n", kept).strip() or body
-
 

@@ -90,3 +90,13 @@ def test_targeted_export_refuses_generic_target(tmp_path):
 
     with pytest.raises(SystemExit):
         export_for_target(src=src, target="generic_gguf", out=out)
+
+
+def test_a_reply_is_screened_by_one_rule_that_also_catches_the_scaffold():
+    """is_bad_response was defined twice, the second wrapping the first; it is one rule now and
+    judges every kind of reply as the pair did."""
+    from eli.learning.dataset_filters import is_bad_response
+    assert is_bad_response("") and is_bad_response(None) and is_bad_response("too short")
+    assert is_bad_response("The highest-scoring approach is to cache the index before reading it.")
+    assert is_bad_response("After the critique pass the answer was rewritten for clarity and length.")
+    assert not is_bad_response("The index is rebuilt once a night, after the last write has settled.")

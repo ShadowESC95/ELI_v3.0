@@ -443,6 +443,5 @@ class InferenceBroker:
                           temperature=temperature) or "").strip()
         raise RuntimeError("gguf_inference has neither generate() nor chat_completion()")
 
-# backwards-compat aliases — various modules import these names
-get_broker            = get_inference_broker
-get_inference_broker  = get_inference_broker   # idempotent re-export
+# the short name eli/coding/agent.py and the command dependency graph import
+get_broker = get_inference_broker

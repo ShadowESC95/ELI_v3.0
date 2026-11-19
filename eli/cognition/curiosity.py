@@ -13,17 +13,16 @@ questions still open (a claim in dispute). That is measurable from ELI's own rec
     about(text)       ELI's curiosity about what a text is about: the surprises about its subjects,
                       each weighed by its recency (half-life HALF_LIFE_DAYS), plus one for each open
                       conflict about them; 0 when nothing there has surprised ELI
-    subjects(limit)   the subjects ELI is most curious about now, each with its curiosity
-    sitting(reads)    the sitting's curiosity for the world's awareness bar: the running mean of
-                      the surprises' sizes (eli/world/agency/autonomy_engine.py keeps the mean)
 
-The world's urges are acted on in order of curiosity (eli/world/urges.py), not of age.
+The sitting's curiosity for the world's awareness bar is the running mean of the surprises' sizes
+(eli/world/agency/autonomy_engine.py keeps the mean). The world's urges are acted on in order of
+curiosity (eli/world/urges.py), not of age.
 """
 from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from eli.utils.log import get_logger
 
@@ -31,10 +30,11 @@ log = get_logger(__name__)
 
 # A surprise weighs half as much after a week: the shared recency weight (epistemics.recency_weight).
 from eli.cognition.epistemics import HALF_LIFE_DAYS, recency_weight  # noqa: E402
+from eli.cognition.scoring import STOPWORDS  # noqa: E402
 LOOKBACK_DAYS = 30.0            # how far back surprises count, as the ledger reads runs
 _WORD = re.compile(r"[a-z0-9][a-z0-9'-]{2,}")
-_STOP = frozenset("the a an and or of to in on for with at by from about this that these those it its is are was were "
-                  "be been you your me my we our i they them their what which who how why when where did do does".split())
+# The shared stopwords (eli/cognition/scoring.py) and the pointing words a subject is not.
+_STOP = STOPWORDS | frozenset("this that these those it its".split())
 
 
 def _words(text: Any) -> List[str]:
@@ -83,25 +83,4 @@ def about(text: Any, *, now: float | None = None) -> float:
     return round(total, 4)
 
 
-def subjects(limit: int = 6, *, now: float | None = None) -> List[Tuple[str, float]]:
-    """The subjects ELI is most curious about now, each with its curiosity, most first."""
-    now = time.time() if now is None else now
-    tally: Dict[str, float] = {}
-    try:
-        for thought in _surprises(now):
-            for subject in [s.strip() for s in str(thought.get("subject") or "").split(",") if s.strip()][:3]:
-                tally[subject.lower()] = tally.get(subject.lower(), 0.0) + _weight(float(thought.get("ts") or 0.0), now) * float(thought.get("chance") or 0.0)
-    except (OSError, ValueError, TypeError, ImportError):
-        log.debug("surprises unreadable", exc_info=True)
-    for conflict in _open_conflicts():
-        tally[conflict.lower()] = tally.get(conflict.lower(), 0.0) + 1.0
-    return sorted(((s, round(v, 4)) for s, v in tally.items()), key=lambda kv: kv[1], reverse=True)[:int(limit)]
-
-
-def sitting(magnitudes: List[float]) -> float:
-    """The sitting's curiosity: the mean size of its surprises, 0 with none."""
-    sizes = [max(0.0, min(1.0, float(m))) for m in (magnitudes or [])]
-    return sum(sizes) / len(sizes) if sizes else 0.0
-
-
-__all__ = ["HALF_LIFE_DAYS", "LOOKBACK_DAYS", "about", "sitting", "subjects"]
+__all__ = ["HALF_LIFE_DAYS", "LOOKBACK_DAYS", "about"]

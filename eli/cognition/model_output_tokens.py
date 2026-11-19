@@ -196,16 +196,6 @@ def detect_template_family_from_embedded(template: str) -> Optional[str]:
     return None
 
 
-def glm_filename_hint(path: str) -> bool:
-    """Deprecated: use ``model_identity.is_glm_model`` (template/arch first)."""
-    try:
-        from eli.cognition.model_identity import is_glm_model
-        return is_glm_model(path=path)
-    except Exception:
-        name = str(path or "").lower()
-        return any(x in name for x in ("glm-", "glm_", "chatglm", "glm4", "glm-4", "glm."))
-
-
 _LOADED_MODEL_TOKENS: Tuple[str, ...] = ()
 _CONTROL_ATTR = 1 << 3      # llama.cpp's LLAMA_TOKEN_ATTR_CONTROL
 

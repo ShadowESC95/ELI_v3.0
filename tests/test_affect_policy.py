@@ -121,3 +121,14 @@ def test_emotional_checkin_is_not_gated_by_the_same_path():
     idx = src.index("emotion_checkin")
     window = src[max(0, idx - 2000):idx]
     assert "_should_emit(\"emotion_checkin\"" not in window
+
+
+def test_a_standing_state_is_named_by_one_table_for_the_tone_and_the_policy():
+    """The policy called a standing negative state 'frustrated' and the tone called it 'irritated',
+    each from its own table. One table (emotion_timeline) names it for both, in words both know."""
+    from eli.cognition import affect_policy, emotion_timeline, tone_adaptor
+    assert tone_adaptor._STATE_AS_EMOTION is emotion_timeline.STATE_AS_EMOTION
+    for sign, emotion in emotion_timeline.STATE_AS_EMOTION.items():
+        assert emotion_timeline.valence_of(emotion) == sign
+        assert emotion in tone_adaptor._RESPONSE_POLICY
+    assert emotion_timeline.STATE_AS_EMOTION["negative"] in affect_policy._FRUSTRATED, "met as frustration is"

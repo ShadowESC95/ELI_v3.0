@@ -10,11 +10,6 @@ except Exception:  # pragma: no cover - fallback during partial imports
     def apply_final_reasoning_contract(text, mode=None):
         return str(text or "")
 
-_ERROR_PATTERNS = (
-    "gguf streaming failed", "gguf error", "model not ready",
-    "requested tokens", "exceed context window", "inference failed",
-    "context window", "broker unavailable", "gguf returned empty", "llama_",
-)
 # Strip chat-template role leaks from the start of output (including "User" variants seen from
 # mistral-7b-instruct). Start-of-string only; a mid-sentence "user" is a persona-handoff issue, not
 # a prefix leak.
@@ -573,16 +568,6 @@ def govern_output(text: str, is_grounded: bool = False,
     return result
 
 
-def normalize_response(user_input: str, text: str) -> str:
-    result = govern_output(text or "")
-    result = normalize_assistant_text(user_input or "", result)
-    return result or ""
-
-
-normalise_assistant_text = normalize_assistant_text
-normalise_response = normalize_response
-
-
 _GENERIC_AI_IDENTITY_RE = re.compile(
     r"(?is)^\s*(?:"
     r"i[' ]?m an artificial intelligence[^.?!]*(?:[.?!]\s*)?"
@@ -1123,7 +1108,6 @@ def _strip_violating_lines(text: str, needle: str) -> str:
     return "\n".join(line for line in text.split("\n") if needle not in line)
 
 
-
 # === ELI_PHASE19_EVIDENCE_VALIDATOR_TRUTH_LOCK_V1 ===
 _ELI_PHASE19_GOV_LINE_CLAIM_RX = re.compile(
     r"\blines?\s+((?:\d+\s*(?:(?:,|/|-|and|or)\s*)?)+)",
@@ -1465,31 +1449,8 @@ def sanitize_assistant_text(text: Any) -> str:
     out = out.strip()
     return out or "..."
 
-# Merged in from eli.cognition.response_governance. Its normalize_response is now
-# clean_gguf_artifacts so it doesn't collide with this module's normalize_response(user_input,
-# text).
-# 1. Confabulation detection.
-
-
-
-
-
-
-
-
-# ============================================================================
-# 2. CONFIDENCE SCORING
-# ============================================================================
-
-
-
-# ============================================================================
-# 3. RESPONSE GOVERNANCE — the main entry point
-# ============================================================================
-
-# Threshold below which ELI should hedge or decline
-CONFIDENCE_THRESHOLD_HEDGE = 0.45
-CONFIDENCE_THRESHOLD_DECLINE = 0.30
+# The quality checks below were merged in from eli.cognition.response_governance; its
+# normalize_response is clean_gguf_artifacts here.
 
 # Error strings that should never appear in user-facing responses
 _ERROR_LEAKAGE_PATTERNS = [
@@ -1503,8 +1464,6 @@ _ERROR_LEAKAGE_PATTERNS = [
 
 # No canned hedge/decline phrases: the persona-bound model speaks for ELI. Confidence is flagged in
 # the governance result so the engine can re-prompt or escalate.
-
-
 
 
 # ============================================================================
@@ -1602,12 +1561,3 @@ def clean_gguf_artifacts(response: str, user_input: str = "") -> str:
     response = response.strip()
 
     return response
-
-
-
-# Role-prefix stripping, HR-phrase polish and self/user confusion repair live in output_governor
-# (govern_output -> clean_response_style + repair_self_user_confusion). This module is only the
-# governance/quality scoring layer.
-
-
-

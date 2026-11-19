@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from eli.runtime.identity_validation import normalize_identity_candidate
 
@@ -162,91 +162,11 @@ def _best_text_column(con: sqlite3.Connection, table: str) -> Optional[str]:
     return best_col
 
 
-
 def _count_table(con: sqlite3.Connection, table: str) -> int:
     try:
         return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     except Exception:
         return 0
-
-
-def _memory_like_rows(limit: int = 16) -> List[Tuple[str, str, str]]:
-    rows: List[Tuple[str, str, str]] = []
-
-    preferred_tables = [
-        "memories",
-        "observations",
-        "habits",
-        "improvements",
-        "conversation_turns",
-        "conversations",
-    ]
-
-    poison = (
-        "the user's name is the",
-        "your name is the",
-        "i don't remember your name",
-        "i have 1,442 memories stored",
-        "what is my preferred name or nickname",
-        "how do you have 1442 memories",
-        "what the fuck is in the memories",
-        "traditional file-based persona",
-        "--- eli persona ---",
-        "i'm an artificial intelligence",
-        "i am an artificial intelligence",
-
-        # Low-value auto-noise; valid internally, useless for user-facing inventory.
-        "proactive daemon started",
-        "reflection (24h): conversation volume",
-        "reflection (0h):",
-        "recent issues:",
-        "session context:",
-    )
-
-    for db in _db_paths():
-        con = _connect(db)
-        if con is None:
-            continue
-
-        try:
-            tables = set(_tables(con))
-
-            for table in preferred_tables:
-                if table not in tables:
-                    continue
-
-                col = _best_text_column(con, table)
-                if not col:
-                    continue
-
-                try:
-                    q = f"""
-                    SELECT {col} AS txt
-                    FROM {table}
-                    WHERE {col} IS NOT NULL AND length(trim({col})) > 0
-                    ORDER BY rowid DESC
-                    LIMIT ?
-                    """
-                    for r in con.execute(q, (limit * 6,)).fetchall():
-                        txt = " ".join(str(r["txt"]).split())
-                        low = txt.lower()
-
-                        if not txt:
-                            continue
-                        if any(bad in low for bad in poison):
-                            continue
-
-                        rows.append((db.name, table, txt[:260]))
-
-                        if len(rows) >= limit:
-                            return rows
-                except Exception:
-                    continue
-        finally:
-            con.close()
-
-    return rows[:limit]
-
 
 
 def _memory_counts() -> Dict[str, Any]:
@@ -277,7 +197,6 @@ def _memory_counts() -> Dict[str, Any]:
         out["databases"].append(db_info)
 
     return out
-
 
 
 def _clean_identity_candidate(value: str) -> str:
@@ -447,7 +366,6 @@ def format_user_identity() -> str:
     return "\n".join(lines).strip()
 
 
-
 def format_memory_inventory(limit: int = 16) -> str:
     """
     Structured memory inventory.
@@ -612,7 +530,6 @@ def format_memory_inventory(limit: int = 16) -> str:
         lines.append("- No non-noise conversation samples found.")
 
     return "\n".join(lines).strip()
-
 
 
 def direct_grounded_answer(user_text: str) -> Optional[str]:

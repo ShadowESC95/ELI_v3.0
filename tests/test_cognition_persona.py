@@ -122,3 +122,31 @@ def test_the_persona_and_the_live_lines_give_one_stance_on_elis_world():
     assert "real 3D place" in persona and "body of light" in persona
     assert "metaphor/visualisation" not in persona and "pretend it's literally real" not in persona
     assert "on record" in persona, "the visits the memory holds are the ones to answer from"
+
+
+# ── Overlay hygiene ───────────────────────────────────────────────────────
+
+def test_hygiene_dedups_prunes_and_writes_the_overlay_the_way_a_refresh_does(tmp_path, monkeypatch):
+    from eli.cognition import persona, persona_hygiene
+    from eli.cognition.persona_updater import _dedup_lines
+    overlay = tmp_path / "persona.auto.txt"
+    monkeypatch.setenv("ELI_PERSONA_AUTO_PATH", str(overlay))
+    overlay.write_text(
+        "# Auto-updated persona overlay\n\n"
+        "## Habits (Auto-Updated)\n- Opens the editor first\n- opens the editor first\n- Checks the weather\n\n"
+        "## Runtime Patterns (Auto-Updated)\n- proactive daemon started\n- this: pipe_12\n",
+        encoding="utf-8")
+    assert persona.auto_path() == overlay
+    result = persona_hygiene.clean_auto_persona(tmp_path / "not-read")
+    assert result["changed"] is True and result["sections"] == 2
+    text = overlay.read_text(encoding="utf-8")
+    habits, patterns = text.split("## Runtime Patterns (Auto-Updated)")
+    # one of a repeated line is kept (the later), in the order it had
+    assert [l for l in habits.splitlines() if l.startswith("- ")] == ["- opens the editor first", "- Checks the weather"]
+    # a section left empty carries the mark every overlay refresh writes, not a second spelling of it
+    assert patterns.strip() == "- none" and "(none)" not in text
+    persona.update_auto_sections({"Habits (Auto-Updated)": ["opens the editor first", "Checks the weather"],
+                                  "Runtime Patterns (Auto-Updated)": []})
+    assert overlay.read_text(encoding="utf-8") == text, "hygiene and a refresh write the same file"
+    assert _dedup_lines(["a", "B", "b ", "A"]) == ["b ", "A"]
+    assert persona_hygiene.clean_auto_persona()["changed"] is False, "a clean overlay is left alone"

@@ -96,7 +96,7 @@ def test_asked_about_itself_eli_is_handed_the_record(monkeypatch):
     ])
     mem = SimpleNamespace(get_recent_conversation=lambda **k: [
         {"role": "user", "timestamp": now - 66, "content": "can you tell me what has been going on the past day or two?"}])
-    block = sc.turn_record_block(mem, user_id="u", now=now)
+    block = sc.record_block(sc.turn_record_lines(mem, user_id="u", now=now))
     assert block.startswith("What you did on recent turns")
     assert "“can you tell me what has been going on" in block
     assert "searched the web" in block and "also executed: WEB_SEARCH" in block

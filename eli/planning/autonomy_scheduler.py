@@ -23,14 +23,6 @@ def _artifacts_dir() -> Path:
     return artifacts_dir()
 
 
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-        return get_paths().project_root
-    except Exception:
-        return Path(__file__).resolve().parents[3]
-
-
 def scheduler_state_path() -> Path:
     # artifacts_dir() rather than project_root()/artifacts: identical under the
     # frozen rthook (both pin the same user root) and correct for a bare pip

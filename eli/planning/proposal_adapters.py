@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import json
-import time
 from typing import Any, Optional, Sequence
 
 
@@ -126,78 +124,4 @@ def _run_read_only_git(argv: list, wd: Path, git_dir: Optional[Path], kwargs: di
     except OSError as failure:
         return CompletedLike(args=argv, returncode=126, stderr=f"git could not run: {failure}\n")
     return CompletedLike(args=argv, returncode=done.returncode, stdout=done.stdout or "", stderr=done.stderr or "")
-
-
-def proposal_only_enqueue(args: Sequence[str] | None = None, cwd: str | None = None, env: dict | None = None, **kwargs) -> CompletedLike:
-    argv = list(args or [])
-    from eli.core.paths import proactive_dir
-    out_dir = proactive_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    queue = out_dir / "proposal_queue.jsonl"
-
-    payload = {
-        "ts": int(time.time()),
-        "kind": "proposal_only_enqueue",
-        "args": argv,
-        "cwd": cwd,
-        "env_keys": sorted(list((env or {}).keys()))[:64],
-    }
-
-    with queue.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-    return CompletedLike(args=argv, returncode=0, stdout="enqueued proposal\n")
-
-def governed_proposal_enqueue(
-    kind,
-    payload=None,
-    source="unknown",
-    priority=50,
-    cwd=None,
-    action_class="observe-only",
-    emitter="unknown",
-    requested_by="system",
-    user_confirmed=False,
-    approver="user",
-):
-    from eli.planning.proposal_queue import append_governed_proposal
-    rec = append_governed_proposal(
-        kind=kind,
-        payload=payload or {},
-        source=source,
-        priority=priority,
-        cwd=cwd,
-        action_class=action_class,
-        emitter=emitter,
-        requested_by=requested_by,
-        user_confirmed=user_confirmed,
-        approver=approver,
-    )
-    return rec.to_dict() if hasattr(rec, "to_dict") else rec
-
-def proactive_governed_enqueue(
-    kind,
-    payload=None,
-    source="proactive",
-    priority=50,
-    cwd=None,
-    action_class="observe-only",
-    requested_by="system",
-    user_confirmed=False,
-    approver="user",
-):
-    from eli.planning.proposal_queue import append_governed_proposal
-    rec = append_governed_proposal(
-        kind=kind,
-        payload=payload or {},
-        source=source,
-        priority=priority,
-        cwd=cwd,
-        action_class=action_class,
-        emitter="proactive",
-        requested_by=requested_by,
-        user_confirmed=user_confirmed,
-        approver=approver,
-    )
-    return rec.to_dict() if hasattr(rec, "to_dict") else rec
 

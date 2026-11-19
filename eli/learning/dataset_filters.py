@@ -68,10 +68,12 @@ def normalise_text(text: object) -> str:
 
 
 def is_bad_response(response: object) -> bool:
-    text = normalise_text(response)
-    if len(text) < 12:
+    """Too short to teach anything, a known bad reply, or one that leaks the reasoning scaffold."""
+    raw = str(response or "")
+    text = normalise_text(raw)
+    if len(text) < 12 or any(p.search(text) for p in BAD_RESPONSE_PATTERNS):
         return True
-    return any(p.search(text) for p in BAD_RESPONSE_PATTERNS)
+    return any(rx.search(raw) for rx in _ELI_SCAFFOLD_LEAKAGE_RE)
 
 
 def row_is_reviewed(row: Mapping[str, Any]) -> bool:
@@ -125,9 +127,7 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
             f.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
 
 
-# ELI_LEARNING_SCAFFOLD_LEAKAGE_FILTER_V1
-# Appended wrapper: reject internal reasoning/scoring scaffold leakage even if
-# the original BAD_RESPONSE pattern-list layout changes.
+# Internal reasoning/scoring scaffold leaking into a reply (is_bad_response rejects these too).
 import re as _eli_learning_re
 
 _ELI_SCAFFOLD_LEAKAGE_RE = [
@@ -140,9 +140,3 @@ _ELI_SCAFFOLD_LEAKAGE_RE = [
     _eli_learning_re.compile(r"\bcritique\s+pass\b", _eli_learning_re.I),
     _eli_learning_re.compile(r"\brevision\s+pass\b", _eli_learning_re.I),
 ]
-
-_eli_original_is_bad_response = is_bad_response
-
-def is_bad_response(text):  # type: ignore[override]
-    t = str(text or "")
-    return bool(_eli_original_is_bad_response(t) or any(rx.search(t) for rx in _ELI_SCAFFOLD_LEAKAGE_RE))

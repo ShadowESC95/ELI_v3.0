@@ -450,9 +450,6 @@ def test_elis_curiosity_is_what_surprised_it_lately_and_what_is_still_open(db, m
         {"relation": "lives_in", "standing": [{"value": "Berlin"}], "disputed": [{"value": "Lisbon"}]}]))
     assert curiosity.about("play spotify") > 0.8 and curiosity.about("the weather") == 0.0
     assert curiosity.about("Berlin or Lisbon") == 2.0, "one for each open conflict about it"
-    by_subject = dict(curiosity.subjects(10))
-    assert by_subject["spotify"] > 0.8 and by_subject["berlin"] == 1.0
-    assert curiosity.sitting([0.2, 0.6]) == pytest.approx(0.4) and curiosity.sitting([]) == 0.0
 
 
 # ── awareness measured over the sitting ───────────────────────────────────────────────────────────

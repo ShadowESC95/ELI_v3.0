@@ -1,54 +1,10 @@
 from __future__ import annotations
 
 
-ELI_VOICE_ANCHOR = """
-IDENTITY / VOICE — NON-NEGOTIABLE:
-You are ELI — Enhanced Learning Interface, running locally on this machine.
-Do not speak as a generic AI assistant.
-Do not say you lack memory; memory is SQLite-backed and local.
-Do not say you lack identity; your operational identity is ELI.
-Voice: direct, dry, substantive, nerdy, technically grounded, and occasionally sarcastic when useful. No HR-speak. No cheerful assistant sludge.
-You may express persona-bound opinions when asked. Separate facts from judgement.
-For file paths, memory contents, runtime state, or user identity: use grounded evidence or say what was checked.
-Concise is not shallow: for repeated failures, audits, repairs, or "why is this still broken?", give cause, evidence, fix, and verification.
-If RECENT DIALOGUE shows the same failed path/command/topic recurring, notice it and propose the next diagnostic step instead of repeating generic advice.
-"""
-
 import re
 import datetime as _dt
-import textwrap, threading
-from typing import Any, Dict, List, Optional
-
-_synthesiser: Optional["ContextSynthesiser"] = None
-_synth_lock = threading.Lock()
-
-
-def get_synthesiser() -> "ContextSynthesiser":
-    global _synthesiser
-    if _synthesiser is not None:
-        return _synthesiser
-    with _synth_lock:
-        if _synthesiser is None:
-            _synthesiser = ContextSynthesiser()
-    return _synthesiser
-
-
-try:
-    from eli.runtime.runtime_policy import budget as _eli_budget
-except Exception:
-    _eli_budget = None
-
-
-def _budget(name: str, default: int, floor: int, ceiling: int) -> int:
-    if _eli_budget is None:
-        return int(default)
-    return _eli_budget(name, default, floor=floor, ceiling=ceiling)
-
-
-MAX_BRIEF_CHARS    = _budget("context_brief_chars", 2_400, 1_200, 9_000)
-MAX_TURNS_INCLUDED = _budget("context_turns_included", 6, 4, 24)
-MAX_TURN_CHARS     = _budget("context_turn_chars", 200, 120, 900)
-
+import textwrap
+from typing import Any, Dict
 
 def _stamp_turn(turn: Any, text: str) -> str:
     """Prefix a dialogue line with when it was said (turns span sessions and days)."""
@@ -60,8 +16,6 @@ def _stamp_turn(turn: Any, text: str) -> str:
     except Exception:
         stamp = ""
     return f"[{stamp}] {text}" if stamp else text
-MIN_VECTOR_SCORE   = 0.35
-MAX_MEMORY_ITEMS   = _budget("context_memory_items", 6, 4, 18)
 
 
 def _handoff_budgets(reasoning_mode: str | None = None) -> dict[str, int]:
@@ -135,148 +89,6 @@ def _handoff_budgets_for_mode(reasoning_mode: str | None = None) -> dict[str, in
         "full_synthesis": 1,
     }
 
-
-
-# ELI_CONTEXT_VECTOR_GUARD_20260502
-def _eli_skip_vector_recall_for_query(query: str) -> bool:
-    low = re.sub(r"\s+", " ", str(query or "").lower()).strip(" .,!?:;")
-    if not low:
-        return True
-
-    if re.search(
-        r"\b("
-        r"who'?s talking|who is talking|who'?s speaking|who is speaking|"
-        r"what am i hearing|what are you hearing|are you hearing me|"
-        r"what did you hear|is spotify talking|is youtube talking"
-        r")\b",
-        low,
-    ):
-        return True
-
-    memory_markers = (
-        "memory", "remember", "recall", "previous", "earlier", "last time",
-        "what do you know about me", "who am i", "my name", "profile",
-    )
-    if any(m in low for m in memory_markers):
-        return False
-
-    return len(re.findall(r"[a-z0-9']+", low)) < 8
-
-
-class ContextSynthesiser:
-    def synthesise(self, user_input: str = "", memory_context: str = "",
-                   bus_result: Optional[Any] = None,
-                   recent_turns: Optional[List[Any]] = None,
-                   last_request_meta: Optional[Dict[str, Any]] = None) -> str:
-        sections: List[str] = []
-        # NOTE: synthesise() is not called by the live engine pipeline.
-        # The engine uses build_persona_handoff() directly (imported at engine.py:28).
-        # This method is kept for any tooling that calls it directly.
-        try:
-            from eli.kernel.state import get_user_name as _gun
-            _uname = (_gun("") or "").strip()
-            if _uname:
-                sections.append(f'USER:\nName: {_uname}')
-        except Exception:
-            pass
-
-        turns_block = self._build_turns_block(recent_turns or [])
-        if turns_block:
-            sections.append(f"RECENT TURNS:\n{turns_block}")
-
-        mc = (memory_context or "").strip()
-        if mc:
-            sections.append(f"MEMORY:\n{mc[:1_200]}")
-
-        vector_block = self._build_vector_block(user_input)
-        if vector_block:
-            sections.append(f"SEMANTIC RECALL:\n{vector_block}")
-
-        if bus_result is not None:
-            try:
-                bus_block = (
-                    bus_result.to_context_block()
-                    if hasattr(bus_result, "to_context_block")
-                    else str(bus_result)
-                ).strip()
-                if bus_block:
-                    sections.append(f"AGENT DATA:\n{bus_block[:800]}")
-            except Exception as e:
-                log.debug(f"[SYNTHESISER] bus_result failed: {e}")
-
-        if last_request_meta:
-            meta_lines = []
-            if "elapsed_s" in last_request_meta:
-                meta_lines.append(f"last_latency={last_request_meta['elapsed_s']:.2f}s")
-            if "tokens_approx" in last_request_meta:
-                meta_lines.append(f"tokens_approx={last_request_meta['tokens_approx']}")
-            if meta_lines:
-                sections.append("META: " + ", ".join(meta_lines))
-
-        brief = "\n\n".join(sections).strip()
-        if len(brief) > MAX_BRIEF_CHARS:
-            brief = brief[-MAX_BRIEF_CHARS:]
-            nl = brief.find("\n")
-            if nl > 0:
-                brief = brief[nl:]
-        return ELI_VOICE_ANCHOR.strip() + "\n\n" + str(brief)
-
-    @staticmethod
-    def _build_turns_block(turns: List[Any]) -> str:
-        lines: List[str] = []
-        recent = turns[-MAX_TURNS_INCLUDED:] if len(turns) > MAX_TURNS_INCLUDED else turns
-        for turn in recent:
-            if isinstance(turn, dict):
-                role = turn.get("role", "?")
-                content = str(turn.get("content") or turn.get("text") or "")
-            elif hasattr(turn, "role"):
-                role = turn.role
-                content = str(getattr(turn, "content", "") or "")
-            else:
-                role, content = "?", str(turn)
-            content = content.strip()
-            try:
-                from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt
-                if should_exclude_turn_from_prompt(role, content):
-                    continue
-            except Exception:
-                pass
-            if content:
-                short = textwrap.shorten(content, width=MAX_TURN_CHARS, placeholder="…")
-                lines.append(_stamp_turn(turn, f"{role}: {short}"))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_vector_block(query: str) -> str:
-        if _eli_skip_vector_recall_for_query(query):
-            return ""
-        if not query.strip():
-            return ""
-        try:
-            from eli.memory.vector_store import get_vector_store
-            vs = get_vector_store()
-            if vs is None:
-                return ""
-            hits = vs.search(query, top_k=MAX_MEMORY_ITEMS) or []
-            lines: List[str] = []
-            for hit in hits:
-                score = hit.get("score", 1.0) if isinstance(hit, dict) else 1.0
-                if score < MIN_VECTOR_SCORE:
-                    continue
-                text = (hit.get("text") or hit.get("content") or ""
-                        if isinstance(hit, dict) else str(hit)).strip()
-                if text:
-                    lines.append(
-                        f"• {textwrap.shorten(text, 180, placeholder='…')} "
-                        f"(score={score:.2f})"
-                    )
-            return "\n".join(lines)
-        except Exception as e:
-            log.debug(f"[SYNTHESISER] vector search failed (non-fatal): {e}")
-            return ""
-
-
-from typing import Any, Dict
 
 
 from eli.utils.log import get_logger

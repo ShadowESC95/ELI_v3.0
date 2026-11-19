@@ -91,8 +91,8 @@ class TestCustomAgentTrust:
         )
 
         before_count = len(_ALL_AGENTS)
-        with patch("eli.cognition.agent_bus._get_trusted_agents_registry", return_value={}):
-            _load_custom_agents()
+        monkeypatch.setenv("ELI_AGENT_TRUST_FILE", str(tmp_path / "trusted_agents.json"))  # no approval on record
+        _load_custom_agents()
 
         # The untrusted agent must not have been added to _ALL_AGENTS
         after_count = len(_ALL_AGENTS)
@@ -102,30 +102,3 @@ class TestCustomAgentTrust:
             f"New agents: {new_names}"
         )
 
-    def test_trusted_agent_hash_check_passes_with_matching_hash(self, tmp_path, monkeypatch):
-        """A file whose hash matches the registry is not rejected by the security gate."""
-        import hashlib
-        from eli.cognition.agent_bus import _load_custom_agents
-
-        monkeypatch.setenv("ELI_CUSTOM_AGENTS_DIR", str(tmp_path))
-        monkeypatch.delenv("ELI_TRUST_ALL_AGENTS", raising=False)
-
-        agent_src = "# trusted minimal agent\nclass TrustedAgent:\n    name='TrustedAgent'\n"
-        agent_file = tmp_path / "trusted_agent.py"
-        agent_file.write_text(agent_src)
-
-        file_hash = hashlib.sha256(agent_file.read_bytes()).hexdigest()
-        registry = {"trusted_agent.py": file_hash}
-
-        # Should not raise; agent may fail to instantiate but must not be security-blocked
-        import sys as _sys, io as _io
-        captured = _io.StringIO()
-        with patch("eli.cognition.agent_bus._get_trusted_agents_registry", return_value=registry), \
-             patch("builtins.print", side_effect=lambda *a, **k: captured.write(" ".join(str(x) for x in a) + "\n")):
-            _load_custom_agents()
-
-        output = captured.getvalue()
-        # If the hash matches, there must be no "hash mismatch" log line for this file
-        assert "trusted_agent.py" not in output or "hash mismatch" not in output, (
-            f"Trusted agent was incorrectly rejected: {output}"
-        )

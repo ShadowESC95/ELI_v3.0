@@ -107,16 +107,6 @@ def test_auto_does_not_leave_a_stale_number_in_the_environment(monkeypatch):
     assert os.environ["ELI_GGUF_N_CTX"] == "10000"
 
 
-def test_the_headless_loader_never_hands_llama_cpp_a_zero(monkeypatch):
-    import eli.core.hardware_profile as hp
-    monkeypatch.delenv("ELI_GGUF_N_CTX", raising=False)
-    monkeypatch.setattr(hp, "auto_ctx_for", lambda p: 18432)
-    assert G._requested_ctx({"n_ctx": 0}, "/m/model.gguf") == 18432
-    assert G._requested_ctx({"n_ctx": 9000}, "/m/model.gguf") == 9000
-    monkeypatch.setattr(hp, "auto_ctx_for", lambda p: 0)
-    assert G._requested_ctx({}, "/m/model.gguf") > 0
-
-
 # ── the KV cache type that was asked for is the one that loads ───────────────
 
 class _Llama:

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from eli.core.secure_io import secure_write_text
+
 _LOCK = threading.RLock()
 _BG_THREAD = None
 _BG_STARTED = False
@@ -58,13 +60,9 @@ def _paths() -> Dict[str, Path]:
         "profile": profile_path,
     }
 
-def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
 def _atomic_write_json(path: Path, obj: Dict[str, Any]) -> None:
-    _atomic_write(path, json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+    # what ELI holds about its owner: written whole or not at all, readable by the owner only
+    secure_write_text(path, json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
 
 def _load_json(path: Path, default: Any) -> Any:
     try:
@@ -669,7 +667,7 @@ def refresh_user_info(force: bool = False, reason: str = "manual") -> Dict[str, 
             txt.append(_render_section(name, sections.get(name, [])))
         final_text = "\n".join(txt).rstrip() + "\n"
 
-        _atomic_write(paths["txt"], final_text)
+        secure_write_text(paths["txt"], final_text)
         summary = _make_summary(changed_sections)
         _append_diff(changed_sections, summary, reason)
 

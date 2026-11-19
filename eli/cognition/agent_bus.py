@@ -76,9 +76,8 @@ from dataclasses import dataclass, field
 
 # Canonical confidence primitives — one owner for the per-agent evidence→confidence policy
 # (was 10 ad-hoc inline formulas).
-from eli.cognition.scoring import conf_from_flag, conf_from_count, term_overlap, relevance_gate
+from eli.cognition.scoring import STOPWORDS, conf_from_flag, conf_from_count, term_overlap, relevance_gate
 from typing import Any, Dict, List, Optional, Set, Tuple
-
 
 
 from eli.utils.log import get_logger
@@ -882,7 +881,6 @@ class _BaseAgent:
         raise NotImplementedError
 
 
-
 # ELI_MEMORY_RELEVANCE_GUARD_20260502
 def _eli_memory_should_run(user_input: str, action: str) -> bool:
     low = re.sub(r"\s+", " ", str(user_input or "").lower()).strip(" .,!?:;")
@@ -957,9 +955,10 @@ def _eli_memory_should_run(user_input: str, action: str) -> bool:
     return True
 
 
-_MEM_HOP_STOP = {
-    "about", "would", "could", "should", "there", "their", "these", "those",
-    "which", "where", "what", "your", "yours", "really", "thing", "things",
+# The shared stopwords (eli/cognition/scoring.py) and the words a stored memory is written in that
+# name no topic.
+_MEM_HOP_STOP = STOPWORDS | {
+    "there", "these", "those", "yours", "really", "thing", "things",
     "stuff", "something", "anything", "everything", "currently", "actually",
     "prefers", "prefer", "wants", "user", "uses", "using", "works", "working",
 }
@@ -2419,8 +2418,10 @@ class AgentBus:
         return self._run_agents_flat(active_agents, user_input, intent, session_id, user_id)
 
     def _agent_timeout(self, agent: "_BaseAgent", intent: Dict[str, Any]) -> float:
-        """Effective per-agent timeout (mode + model-tier scaled; generous ceiling for
-        synthesis-heavy system actions). Mirrors _collect_layer so both paths agree."""
+        """Effective per-agent timeout, for both dispatch paths: the agent's own, scaled by the
+        reasoning mode's budget; a system action that runs a full local synthesis (30-60 s and more
+        on a CPU-offloaded load, nearly alone in its layer) gets a ceiling scaled by the model tier,
+        so its answer is not dropped on the evidence timeout."""
         _SLOW = {"NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT"}
         _ia = str((intent or {}).get("action") or "").upper()
         _mm = float((intent or {}).get("_mode_budget_mult", 1.0) or 1.0)
@@ -2484,29 +2485,12 @@ class AgentBus:
                        intent: Dict[str, Any], session_id: str, user_id: str) -> List[AgentResult]:
         """Run one layer in parallel with per-agent hard timeouts; robust to the
         outer as_completed timeout (stragglers recorded as timeouts)."""
-        # Some system actions run a full local LLM synthesis and can take 30-60s+ on CPU-offloaded
-        # loads. They run nearly alone in their layer, so a generous ceiling is safe; don't drop the
-        # answer on the evidence timeout.
-        _SLOW_SYNTH_ACTIONS = {"NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT"}
-        _intent_action = str((intent or {}).get("action") or "").upper()
-
-        # Per-mode budget multiplier (Stage 1b): scales every agent's timeout by
-        # the reasoning mode's budget (1.0 for quick/normal; >1 for deeper modes).
-        _mode_mult = float((intent or {}).get("_mode_budget_mult", 1.0) or 1.0)
-        # Model-tier multiplier (readiness #4): a bigger/slower model needs a
-        # proportionally larger ceiling for synthesis-heavy actions. 1.0 for the
-        # current small model → unchanged.
-        try:
-            from eli.core.model_tier import tier_scale as _ts
-            _tier_mult = float(_ts())
-        except Exception:
-            _tier_mult = 1.0
+        # Each agent's timeout for this turn (mode, model tier, the long ceiling for a system action
+        # that runs a full synthesis: _agent_timeout), worked out once per agent.
+        timeouts = {id(a): self._agent_timeout(a, intent) for a in layer_agents}
 
         def _eff_to(a) -> float:
-            base = float(getattr(a, "timeout_s", 4.0) or 4.0) * _mode_mult
-            if getattr(a, "name", "") == "system" and _intent_action in _SLOW_SYNTH_ACTIONS:
-                return max(base, 180.0 * _tier_mult)
-            return base
+            return timeouts[id(a)]
 
         # Each agent runs in a copy of this turn's context (one copy each: a context cannot be
         # entered by two threads at once). A pool thread does not inherit it, so what an agent's
@@ -2649,10 +2633,10 @@ except NameError:
     from pathlib import Path as Path
 # === ELI FILECODE PATH GLOBAL GUARD END ===
 
-_FILECODE_STOP = {
-    "file", "files", "code", "which", "where", "what", "your", "about",
-    "does", "the", "this", "that", "function", "functions", "memory",
-    "agent", "agents", "have", "with", "from", "into", "show", "tell",
+# The shared stopwords and the words a question about code is asked in that name no file or symbol.
+_FILECODE_STOP = STOPWORDS | {
+    "file", "files", "code", "this", "that", "function", "functions", "memory",
+    "agent", "agents", "have", "show", "tell",
     "explain", "find", "look", "class", "method", "methods", "module",
 }
 
@@ -3489,39 +3473,7 @@ _DIRECT_ACTIONS: Set[str] = SystemAgent.SYSTEM_ACTIONS | PluginAgent.PLUGIN_ACTI
 
 
 # Custom agents load at import from eli/brain/agents/custom/ (wizard) or eli/cognition/custom/, so
-# register_agent() attaches them.
-def _get_trusted_agents_registry() -> dict:
-    """Load the trusted-agents hash registry from config/trusted_agents.json.
-
-    Returns a dict mapping filename → sha256_hex for all pre-approved agents.
-    The file is created on first trust grant; missing file means no trusted agents.
-    """
-    import json as _json_ta
-    from eli.core.paths import get_paths as _get_paths_ta
-    try:
-        registry_path = _get_paths_ta().config_dir / "trusted_agents.json"
-        if registry_path.exists():
-            return _json_ta.loads(registry_path.read_text(encoding="utf-8"))
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return {}
-
-
-def _trust_custom_agent(py_file: Path) -> None:
-    """Deprecated shim — delegates to `eli.cognition.agent_trust.grant`.
-
-    The original wrote `{basename: sha256}` into the v1 registry with no provenance
-    and no look at the code. Kept so any remaining caller keeps working, but it now
-    produces a proper grant rather than a legacy entry the loader has to tolerate.
-    """
-    try:
-        from eli.cognition import agent_trust
-        result = agent_trust.grant(py_file, approved_by="legacy-api")
-        if not result.get("ok"):
-            log.warning(f"[AGENTBUS] Refused to approve {py_file.name}: "
-                        + "; ".join(result.get("problems", [])))
-    except Exception as _e:
-        log.debug(f"[AGENTBUS] Failed to register agent trust for {py_file.name}: {_e}")
+# register_agent() attaches them. What code may load is eli.cognition.agent_trust's to say.
 
 
 class SpecAgent(_BaseAgent):

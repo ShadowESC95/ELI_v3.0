@@ -1,7 +1,5 @@
 import os
-import json
 import sqlite3
-from pathlib import Path
 
 from eli.kernel.pipeline import get_pipeline_description
 from eli.core.paths import get_paths
@@ -42,15 +40,10 @@ class IntrospectionAgent:
         return f"Total conversation turns: {turn_count}\nTotal stored memories: {mem_count}"
 
     def get_runtime(self) -> str:
-        snapshot = {}
+        # what is loaded now when this process holds it, else what the loader last wrote to disk
+        from eli.cognition.context_synthesiser import _runtime_snapshot
+        snapshot = _runtime_snapshot()
         settings = {}
-
-        try:
-            snap_path = Path(get_paths().artifacts_dir) / "runtime_snapshot.json"
-            if snap_path.exists():
-                snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
-        except Exception:
-            snapshot = {}
 
         try:
             from eli.core import runtime_settings as _rs
@@ -125,40 +118,3 @@ class IntrospectionAgent:
 
         return "\n".join(lines)
 
-    def run_audit(self) -> str:
-        from eli.execution.executor_enhanced import _audit_python_file
-
-        # Path(__file__).parents[2] resolves to the project root
-        # (eli/cognition/introspection_agent.py -> eli -> project_root).
-        # We then descend back into eli/ for actual source files.
-        root = get_paths().project_root
-        eli_dir = root / "eli"
-        files = [
-            str(eli_dir / "kernel" / "engine.py"),
-            str(eli_dir / "cognition" / "gguf_inference.py"),
-            str(eli_dir / "cognition" / "agent_bus.py"),
-            str(eli_dir / "cognition" / "orchestrator.py"),
-            str(eli_dir / "cognition" / "inference_broker.py"),
-            str(eli_dir / "cognition" / "output_governor.py"),
-            str(eli_dir / "memory" / "memory.py"),
-            str(eli_dir / "memory" / "__init__.py"),
-            str(eli_dir / "memory" / "vector_store.py"),
-            str(eli_dir / "execution" / "router_enhanced.py"),
-            str(eli_dir / "execution" / "executor_enhanced.py"),
-            str(eli_dir / "planning" / "proactive_daemon.py"),
-            str(eli_dir / "core" / "paths.py"),
-            str(eli_dir / "core" / "runtime_settings.py"),
-        ]
-
-        results = []
-        for f in files:
-            entry = _audit_python_file(f)
-            status = entry.get("status", "?")
-            issues = entry.get("issues", [])
-            results.append(f"{status} {f}")
-            for issue in issues:
-                results.append(
-                    f"  - line {issue.get('line')} [{issue.get('type')}] {issue.get('message')}"
-                )
-
-        return "\n".join(results)

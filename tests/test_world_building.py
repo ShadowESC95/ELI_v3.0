@@ -1150,3 +1150,37 @@ def test_a_thought_of_elis_is_a_moment_it_may_act_on_and_a_note_it_writes_is_pin
                                   composer.plan("build me a lamp", things, True))
     assert "To write a note of your own" not in asked and "note" not in composer.plan("build me a lamp", things, True)
     assert "note" in composer.plan(None, things, True) and "note" in composer.grammar_text(True, composer.plan(None, things, True))
+
+
+def test_a_body_and_an_edit_read_numbers_and_text_the_same_way():
+    """The body's report had its own copies of the two readers an edit uses."""
+    from eli.world import building, embodiment
+    assert embodiment._number is building._number and embodiment._text is building._text
+    for raw, fallback, read in ((float("nan"), 0.0, 0.0), (float("inf"), 2.0, 2.0), ("3.5", 0.0, 3.5),
+                                (None, 1.0, 1.0), ("wide", 0.0, 0.0)):
+        assert building._number(raw, fallback) == read
+    assert building._number("none") == 0.0, "with no fallback named, nothing"
+    scene = embodiment.clean_scene({"room_name": "  a   long  hall " + "x" * 200, "minutes": float("nan")}) \
+        if hasattr(embodiment, "clean_scene") else None
+    assert building._text("  a   long  hall ", embodiment._TEXT) == "a long hall"
+    assert len(building._text("x" * 200, embodiment._TEXT)) == embodiment._TEXT
+    assert scene is None or len(scene.get("room_name", "")) <= embodiment._TEXT
+
+
+def test_the_world_reads_the_persona_eli_runs_on_from_wherever_it_was_started(tmp_path, monkeypatch):
+    """The world read persona files by a path relative to the folder ELI was started in, so anywhere
+    but the source tree it had no persona, and with one it read the overlay's heading first."""
+    from eli.cognition import persona
+    from eli.world.agency import reflection_bridge
+    base, overlay = tmp_path / "persona.txt", tmp_path / "persona.auto.txt"
+    base.write_text("Direct and dry.\n", encoding="utf-8")
+    overlay.write_text("## Habits (Auto-Updated)\n- Opens the editor first\n", encoding="utf-8")
+    monkeypatch.setattr(persona, "_PERSONA_FILE", base)
+    monkeypatch.setenv("ELI_PERSONA_AUTO_PATH", str(overlay))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    text = reflection_bridge.load_persona_text()
+    assert text.startswith("Direct and dry.") and "Opens the editor first" in text
+    overlay.unlink()
+    assert reflection_bridge.load_persona_text() == persona.read_base_persona()

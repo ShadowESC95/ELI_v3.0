@@ -16,6 +16,30 @@ def test_seed_terms_salient_only():
     assert _memory_seed_terms("what do you know") == []
 
 
+def test_the_private_word_lists_are_the_shared_stopwords_and_their_own_words():
+    """Three lists were kept apart from eli/cognition/scoring.py's and each missed words the others
+    dropped. Every word any of them dropped is still dropped, and the shared ones are dropped by all."""
+    from eli.cognition import agent_bus, curiosity
+    from eli.cognition.scoring import STOPWORDS
+    for kept_apart in (agent_bus._MEM_HOP_STOP, agent_bus._FILECODE_STOP, curiosity._STOP):
+        assert STOPWORDS <= kept_apart
+    # what each dropped before it was built on the shared list
+    seed = ("about would could should there their these those which where what your yours really thing things "
+            "stuff something anything everything currently actually prefers prefer wants user uses using works working")
+    code = ("file files code which where what your about does the this that function functions memory agent agents "
+            "have with from into show tell explain find look class method methods module")
+    subject = ("the a an and or of to in on for with at by from about this that these those it its is are was were be "
+               "been you your me my we our i they them their what which who how why when where did do does")
+    assert set(seed.split()) <= agent_bus._MEM_HOP_STOP and _memory_seed_terms(seed) == []
+    assert set(code.split()) <= agent_bus._FILECODE_STOP
+    assert agent_bus._filecode_extract_terms(" ".join(f"'{word}'" for word in code.split())) == set()
+    assert set(subject.split()) <= curiosity._STOP and curiosity._words(subject) == []
+    # a word only the shared list had names no topic for any of them either
+    assert _memory_seed_terms("whose might under again being") == []
+    assert curiosity._words("could more garden") == ["garden"]
+    assert agent_bus._filecode_extract_terms("'would' 'reranker'") == {"reranker"}
+
+
 class _FakeMem:
     db_path = "/tmp/x.sqlite3"
     def __init__(self):

@@ -13,5 +13,3 @@ ROOM_COORDS: Dict[str, Tuple[float, float]] = {
     "evidence_wall": (220.0, 180.0),
 }
 
-def target_for_room(room: str) -> Tuple[float, float]:
-    return ROOM_COORDS.get(room, (0.0, 0.0))

@@ -91,7 +91,7 @@ class AffectState:
     tau_minutes: float = 60.0
     q_scale: float = 0.25                 # the state's wander per time constant, as a share of the spread
     label: str = ""                       # "negative" | "positive" | "neutral" | "" (nothing read)
-    confidence: float = 0.0               # the chance the state is meant: Φ(|valence| / σ)
+    confidence: float = 0.0               # the chance the state is meant: 2Φ(|valence| / σ) − 1
     run_length: int = 0                   # reads in a row whose filtered sign is the label's
     transition: Dict[str, str] = field(default_factory=dict)
     at: float = 0.0
@@ -235,10 +235,6 @@ def identify(obs: Sequence[Dict[str, Any]], **spreads) -> Tuple[float, float]:
     return best
 
 
-def identify_tau(obs: Sequence[Dict[str, Any]], **spreads) -> float:
-    return identify(obs, **spreads)[0]
-
-
 def _spreads(obs: Sequence[Dict[str, Any]]) -> Dict[str, float]:
     """What the state's long-run spread and the reads' noise floor are for this user: measured
     from the reads, the spread with the prior until there are two, the floor weighed with it."""
@@ -317,4 +313,4 @@ def estimate(user_id: str = "", *, rows: Optional[Sequence[Dict[str, Any]]] = No
 
 
 __all__ = ["AffectState", "SURPRISE_95", "SURPRISE_WINDOW", "FLOOR_PRIOR", "FLOOR_MEASURED_AT", "IDENTIFY_MIN_READS", "Q_GRID", "STATE_MIN", "TAU_GRID_MINUTES", "Z_SIG",
-           "estimate", "identify", "identify_tau", "observations", "trajectory"]
+           "estimate", "identify", "observations", "trajectory"]

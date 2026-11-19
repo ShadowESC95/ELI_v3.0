@@ -147,7 +147,7 @@ _HEX = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 
 # ── reading an edit ──────────────────────────────────────────────────────────
-def _number(value: Any, fallback: float) -> float:
+def _number(value: Any, fallback: float = 0.0) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):

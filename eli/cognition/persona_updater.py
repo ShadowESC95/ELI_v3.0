@@ -9,7 +9,6 @@ cognitive engine.
 """
 
 from __future__ import annotations
-from pathlib import Path
 import re
 
 import logging
@@ -185,38 +184,6 @@ def _merge_memory_rows(*groups: Any, preferred_keys: tuple = ()) -> List[Dict[st
             merged.append(row)
     return merged
 
-def _sanitize_release_overlay_text(text: str) -> str:
-    text = text or ""
-
-    line_rules = [
-        (r'(?m)^- Runtime status:.*$', '- Runtime status: sanitized'),
-        (r'(?m)^- Cognition runtime:.*$', '- Cognition runtime: sanitized'),
-        (r'(?m)^- Memory recall:.*$', '- Memory recall: sanitized'),
-    ]
-    for patt, repl in line_rules:
-        text = re.sub(patt, repl, text)
-
-    inline_rules = [
-        (r'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<LOCAL_EMAIL>'),
-        (r'(?<![A-Za-z0-9_])/(?:home|Users|mnt)/\S+', '<LOCAL_PATH>'),
-        (r'\b[A-Za-z]:\\\S+', '<LOCAL_PATH>'),
-    ]
-    for patt, repl in inline_rules:
-        text = re.sub(patt, repl, text)
-
-    return text
-
-def _post_sanitize_overlay_file(path) -> bool:
-    try:
-        path = Path(path)
-        raw = path.read_text(encoding='utf-8', errors='replace')
-        clean = _sanitize_release_overlay_text(raw)
-        if clean != raw:
-            path.write_text(clean, encoding='utf-8')
-            return True
-    except Exception:
-        return False
-    return False
 
 def _get_reflection_themes(memory: Any, limit: int = 6) -> List[str]:
     """

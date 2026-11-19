@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 _PERSONA_DIR = Path(__file__).resolve().parent
 _PERSONA_FILE = Path(
@@ -30,7 +30,6 @@ def _default_persona_auto_file() -> Path:
         return persona_auto_path()
     except Exception:
         return _PERSONA_DIR / "persona.auto.txt"
-
 
 
 _cached_persona: Optional[str] = None
@@ -177,46 +176,6 @@ def write_auto_persona(text: str) -> str:
     auto_path().write_text(clean, encoding="utf-8")
     return reload()
 
-def clear_auto_persona() -> str:
-    if auto_path().exists():
-        auto_path().unlink()
-    return reload()
-
-
-def append_preference(pref: str) -> bool:
-    pref = (pref or "").strip()
-    if not pref:
-        return False
-
-    marker = "## User Preferences (Auto-Updated)"
-    current = _read_raw(auto_path()).rstrip()
-
-    if marker in current:
-        new_text = f"{current}\n- {pref}\n"
-    else:
-        if current:
-            current += "\n\n"
-        new_text = f"{current}{marker}\n- {pref}\n"
-
-    write_auto_persona(new_text)
-    return True
-
-
-def get_preferences() -> list[str]:
-    content = read_auto_persona()
-    marker = "## User Preferences (Auto-Updated)"
-    if marker not in content:
-        return []
-    section = content.split(marker, 1)[1]
-    out: list[str] = []
-    for line in section.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            break
-        if stripped.startswith("-"):
-            out.append(stripped.lstrip("- ").strip())
-    return out
-
 
 def update_auto_sections(sections: Mapping[str, Any]) -> str:
     lines = [
@@ -257,24 +216,8 @@ def update_auto_sections(sections: Mapping[str, Any]) -> str:
     return write_auto_persona("\n".join(lines).rstrip() + "\n")
 
 
-def status() -> Dict[str, Any]:
-    persona = get_persona()
-    prefs = get_preferences()
-    return {
-        "ok": True,
-        "module": "persona",
-        "mode": "active",
-        "base_file": str(_PERSONA_FILE),
-        "auto_file": str(auto_path()),
-        "base_exists": _PERSONA_FILE.exists(),
-        "auto_exists": auto_path().exists(),
-        "loaded": bool(persona),
-        "length": len(persona),
-        "preferences_count": len(prefs),
-    }
-
-
-__all__ = ["Persona", "base_path",
+__all__ = [
+    "base_path",
     "auto_path",
     "read_base_persona",
     "read_auto_persona",
@@ -282,91 +225,5 @@ __all__ = ["Persona", "base_path",
     "reload",
     "write_base_persona",
     "write_auto_persona",
-    "clear_auto_persona",
-    "append_preference",
-    "get_preferences",
     "update_auto_sections",
-    "status", "Persona"]
-
-
-# --- Added load_persona for compatibility with audit ---
-_persona_singleton = None
-
-def load_persona(reload: bool = False):
-    """Load or reload the global persona instance."""
-    global _persona_singleton
-    if _persona_singleton is None or reload:
-        _persona_singleton = Persona()
-        _persona_singleton.load_from_db()
-    return _persona_singleton
-
-
-# --- Production Persona class with auto-update support ---
-class Persona:
-    """
-    Full persona manager with auto-update from runtime signals.
-    Integrates with persona.auto.txt and update_auto_sections().
-    """
-    def __init__(self):
-        self._persona_text = None
-        self._auto_sections = {}
-        self._preferences = []
-        self.load_from_db()
-
-    def load_from_db(self):
-        """Load the current persona (base + auto overlay)."""
-        self._persona_text = get_persona()
-        self._auto_sections = self._parse_auto_sections()
-        self._preferences = get_preferences()
-        return self
-
-    def _parse_auto_sections(self) -> dict:
-        """Parse the auto persona file into sections."""
-        auto_text = read_auto_persona()
-        sections = {}
-        current_section = None
-        for line in auto_text.splitlines():
-            line = line.strip()
-            if line.startswith('## '):
-                current_section = line[3:].strip()
-                sections[current_section] = []
-            elif current_section and line and not line.startswith('#'):
-                sections[current_section].append(line)
-        return sections
-
-    def get_persona(self) -> str:
-        """Return the full persona text (base + auto overlay)."""
-        if self._persona_text is None:
-            self.load_from_db()
-        return self._persona_text
-
-    def update_auto_sections(self, sections: dict) -> bool:
-        """
-        Update auto persona sections.
-        Sections dict: { "section_title": "text" or ["item1","item2"] }
-        """
-        result = update_auto_sections(sections)
-        self.load_from_db()  # reload
-        return True
-
-    def add_preference(self, pref: str) -> bool:
-        """Add a user preference to the auto persona."""
-        result = append_preference(pref)
-        self.load_from_db()
-        return result
-
-    def get_preferences(self) -> list:
-        """Return current user preferences."""
-        return self._preferences
-
-    def get_auto_sections(self) -> dict:
-        """Return parsed auto sections."""
-        return self._auto_sections
-
-    def refresh(self):
-        """Reload persona from disk (useful after external changes)."""
-        self.load_from_db()
-        return self
-
-    def __str__(self):
-        return f"<Persona: {len(self.get_persona())} chars, {len(self._preferences)} preferences>"
+]

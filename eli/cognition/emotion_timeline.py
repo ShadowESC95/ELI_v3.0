@@ -53,6 +53,9 @@ MIN_CONFIDENCE = 0.45            # ignore reads we do not really believe
 _NEGATIVE = {"sad", "angry", "irritated", "confused", "frustrated"}
 _POSITIVE = {"happy", "joyful", "ecstatic", "comedic", "playful"}
 _NEUTRAL = {"neutral", "calm", "curious", "professional", "street_smart", "deadpan"}
+# The affect state's sign as an emotion (tone_adaptor's reply table and affect_policy's sets both know
+# these two): a standing negative state is met as irritation is, a positive one as happiness is.
+STATE_AS_EMOTION = {"negative": "irritated", "positive": "happy"}
 
 
 def _knob(key: str, fallback):

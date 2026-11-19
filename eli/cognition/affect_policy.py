@@ -128,9 +128,9 @@ def current_policy(user_id: str = "") -> AffectPolicy:
         label = ""
     if label:
         # a state stands: its own sureness is the measure, and a read of the other sign is a spike
-        from eli.cognition.emotion_timeline import valence_of
+        from eli.cognition.emotion_timeline import STATE_AS_EMOTION, valence_of
         if label != "neutral" and valence_of(detected) != label:
-            detected = {"negative": "frustrated", "positive": "happy"}.get(label, detected)
+            detected = STATE_AS_EMOTION.get(label, detected)
         confidence = state_confidence if label != "neutral" else min(confidence, state_confidence)
     if confidence < _MIN_CONFIDENCE or detected in ("neutral", "") or label == "neutral":
         return _NEUTRAL

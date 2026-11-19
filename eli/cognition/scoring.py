@@ -1,21 +1,19 @@
 """Canonical scoring + confidence primitives for ELI.
 
 ONE owner for the small numeric helpers that were copy-pasted across retrieval, ranking,
-reflection, and the agent bus: text tokenisation + stopwords, time-recency decay, term
+reflection, and the agent bus: text tokenisation + stopwords, term
 overlap, and the agent evidence→confidence mappings. Pure, dependency-free, deterministic.
 
 Import from here instead of re-deriving the same maths inline:
 
     from eli.cognition.scoring import (
-        tokenize, STOPWORDS, term_overlap, recency_score,
+        tokenize, STOPWORDS, term_overlap,
         conf_from_flag, conf_from_count,
     )
 """
 from __future__ import annotations
 
 import re
-import time
-from typing import Optional
 
 # General-purpose retrieval stopwords (seeded from the reranker's set — its behaviour is the
 # reference). Topic-detection code that needs a HEAVIER list (reflection/proactive) keeps its
@@ -52,21 +50,6 @@ def jaccard(a_tokens, b_tokens) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
-
-
-def recency_score(ts: float, now: Optional[float] = None,
-                  window_days: float = 30.0) -> float:
-    """Linear-decay recency in 0..1 over `window_days` (1.0 = now, 0.0 = at/past the window).
-    0.0 for a missing/invalid timestamp."""
-    try:
-        ts = float(ts or 0)
-    except Exception:
-        return 0.0
-    if ts <= 0:
-        return 0.0
-    now = now or time.time()
-    age_days = (now - ts) / 86400.0
-    return max(0.0, 1.0 - age_days / max(1e-6, window_days))
 
 
 # Maximal marginal relevance (Carbonell & Goldstein, 1998): the share of the choice that goes to
@@ -143,7 +126,7 @@ def conf_from_count(n: int, *, base: float = 0.3, step: float = 0.04,
 
 
 __all__ = [
-    "STOPWORDS", "tokenize", "term_overlap", "jaccard", "recency_score",
+    "STOPWORDS", "tokenize", "term_overlap", "jaccard",
     "relevance_gate", "RELEVANCE_OVERLAP_FLOOR",
     "conf_from_flag", "conf_from_count",
     "mmr_select", "MMR_LAMBDA",
