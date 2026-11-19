@@ -873,9 +873,8 @@ def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
         assert client.post("/v1/world/scene", json={"scene": {"surface": "eli_vr", "session": "eli-vr-link",
                                                               "room": "workshop"}}).status_code == 200
         assert [b["session"] for b in embodiment.present()] == ["eli-vr-link"]
-    for _ in range(100):                       # the server side finishes the closed socket on its own thread
-        if not embodiment.present():
-            break
+    until = _time.monotonic() + 30.0           # the server side finishes the closed socket on its own thread,
+    while embodiment.present() and _time.monotonic() < until:      # when the runner gets to it
         _time.sleep(0.02)
     assert embodiment.present() == []
     ended = [s for s in embodiment.sessions_between(0, _time.time() + 1) if s["session"] == "eli-vr-link"]
