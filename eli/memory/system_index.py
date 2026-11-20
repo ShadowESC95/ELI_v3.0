@@ -12,17 +12,17 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-def _default_db_path() -> Path:
+def db_path() -> Path:
+    """The index's database, where the data folder is when it is opened (a constant fixed it at import)."""
     from eli.core.paths import db_dir
-    return Path(os.environ.get("ELI_DB_DIR") or db_dir()) / "system_index.sqlite3"
-
-
-DB_PATH = Path(os.environ.get("ELI_SYSTEM_INDEX") or _default_db_path())
+    return Path(os.environ.get("ELI_SYSTEM_INDEX")
+                or Path(os.environ.get("ELI_DB_DIR") or db_dir()) / "system_index.sqlite3")
 
 class SystemIndex:
     def __init__(self):
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self._init_db()
     
     def _init_db(self):
@@ -280,4 +280,4 @@ if __name__ == "__main__":
     print(f"✅ Found {apps} desktop applications")
     print(f"✅ Found {exes} executables in PATH")
     print(f"✅ Found {dirs} user directories")
-    print(f"📁 Index stored at: {DB_PATH}")
+    print(f"📁 Index stored at: {db_path()}")

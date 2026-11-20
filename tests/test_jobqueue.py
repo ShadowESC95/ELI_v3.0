@@ -9,8 +9,7 @@ from eli.planning import jobqueue_cli as cli
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(jq, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(jq, "DB_PATH", tmp_path / "jobs" / "jobs.sqlite")
+    monkeypatch.setattr(jq, "jobs_dir", lambda: tmp_path / "jobs")
 
 
 def test_a_queued_job_runs_and_its_output_is_kept():

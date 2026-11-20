@@ -20,7 +20,7 @@ except Exception:
 
 log = get_logger(__name__)
 # runs are recorded where ELI keeps its training (learning_dir), never inside the install
-from eli.learning.lora_trainer_guard import RUNS_DIR  # noqa: E402
+from eli.learning.lora_trainer_guard import runs_dir  # noqa: E402
 
 ALLOWED_TARGETS = {"eli_phi", "eli_phi_ultra"}
 
@@ -821,8 +821,9 @@ def main(argv: list[str] | None = None) -> int:
             "error": str(exc),
         }
 
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    plan_path = RUNS_DIR / f"lora_train_{args.target}_{_stamp()}.json"
+    runs = runs_dir()
+    runs.mkdir(parents=True, exist_ok=True)
+    plan_path = runs / f"lora_train_{args.target}_{_stamp()}.json"
     job["plan_path"] = str(plan_path)
     _safe_write_json(plan_path, job)
 

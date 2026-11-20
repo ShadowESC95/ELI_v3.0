@@ -8,7 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-def _jobs_dir() -> Path:
+def jobs_dir() -> Path:
+    """The queue's folder (its database and each job's output), where the data folder is when a job is
+    submitted or run: a constant fixed it at import."""
     # Canonical artifacts dir — the package-adjacent default wrote inside
     # eli/ (read-only in frozen builds).
     try:
@@ -18,14 +20,13 @@ def _jobs_dir() -> Path:
         return Path(__file__).resolve().parent.parent / "artifacts" / "jobs"
 
 
-JOBS_DIR = _jobs_dir()
-DB_PATH = JOBS_DIR / "jobs.sqlite"
-
 def _db() -> sqlite3.Connection:
-    JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    folder = jobs_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    db_path = folder / "jobs.sqlite"
+    conn = sqlite3.connect(db_path)
     from eli.core.sqlite_util import apply_pragmas
-    apply_pragmas(conn, db_path=str(DB_PATH), synchronous="")
+    apply_pragmas(conn, db_path=str(db_path), synchronous="")
     conn.execute("""
     CREATE TABLE IF NOT EXISTS jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,8 +54,8 @@ def submit(argv: List[str], cwd: str=".", timeout_s: int=3600, meta: Optional[Di
     )
     jid = int(cur.lastrowid)
 
-    stdout = JOBS_DIR / f"job_{jid}_stdout.txt"
-    stderr = JOBS_DIR / f"job_{jid}_stderr.txt"
+    stdout = jobs_dir() / f"job_{jid}_stdout.txt"
+    stderr = jobs_dir() / f"job_{jid}_stderr.txt"
     stdout.write_text("", encoding="utf-8")
     stderr.write_text("", encoding="utf-8")
 

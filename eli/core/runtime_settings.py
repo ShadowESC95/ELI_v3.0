@@ -65,8 +65,6 @@ def _settings_file() -> Path:
     return (PROJECT_ROOT / "config" / "settings.json").resolve()
 
 
-SETTINGS_FILE = _settings_file()
-
 # n_ctx 0 is "auto": sized for the model in use on this machine when it is read
 # (config.get_gguf_n_ctx). A fixed number here was every new user's "setting".
 AUTO_N_CTX: int = 0

@@ -24,29 +24,24 @@ try:
     PROJECT_ROOT = canonical_root(Path(__file__).resolve().parents[2])
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-# Read the SQLite stores from the SAME directory the runtime writes them to.
-# The runtime uses paths.db_dir() (= data_dir()/db); hardcoding
-# PROJECT_ROOT/artifacts/db here diverged on any redistributed / per-user
-# install where data_dir() is NOT the project tree — the builder then opened
-# empty databases and produced a zero-example dataset (the adapter trained on
-# nothing). Same latent bug already fixed for CONV_DIR just below.
-try:
-    from eli.core.paths import db_dir as _db_dir
-    _DB_DIR = _db_dir()
-except Exception:
-    _DB_DIR = PROJECT_ROOT / "artifacts" / "db"
-USER_DB = _DB_DIR / "user.sqlite3"
-AGENT_DB = _DB_DIR / "agent.sqlite3"
-# Read conversation logs from the SAME directory the runtime writes them to.
-# The writers (log_rotation / executor convlog) use paths.conversations_dir()
-# (= data_dir()/conversations); hardcoding PROJECT_ROOT/artifacts/conversations
-# here diverged on any redistributed install where data_dir() is a per-user
-# directory rather than the project tree — the builder then saw an empty folder.
-try:
-    from eli.core.paths import conversations_dir as _conversations_dir
-    CONV_DIR = _conversations_dir()
-except Exception:
-    CONV_DIR = PROJECT_ROOT / "artifacts" / "conversations"
+# Read the SQLite stores and the conversation logs from the SAME folders the runtime writes them to
+# (paths.db_dir() and paths.conversations_dir()), asked when a build runs. Hardcoding
+# PROJECT_ROOT/artifacts diverged on any redistributed / per-user install (the builder opened empty
+# databases and trained on nothing), and constants fixed at import kept the folder of that moment.
+def _db_dir() -> Path:
+    try:
+        from eli.core.paths import db_dir
+        return Path(db_dir())
+    except Exception:
+        return PROJECT_ROOT / "artifacts" / "db"
+
+
+def _conversations_dir() -> Path:
+    try:
+        from eli.core.paths import conversations_dir
+        return Path(conversations_dir())
+    except Exception:
+        return PROJECT_ROOT / "artifacts" / "conversations"
 
 # Where ELI keeps its training state (paths.training_path: learning_dir()), read when a build runs.
 DEFAULT_OUT = "training/datasets/eli_supervised_v0.jsonl"
@@ -384,10 +379,11 @@ def flatten_messages(obj: Any) -> list[dict[str, Any]]:
 
 def examples_from_conversation_files(stats: BuildStats) -> list[SupervisedExample]:
     out: list[SupervisedExample] = []
-    if not CONV_DIR.exists():
+    conv_dir = _conversations_dir()
+    if not conv_dir.exists():
         return out
 
-    files = sorted(CONV_DIR.rglob("*.json")) + sorted(CONV_DIR.rglob("*.jsonl")) + sorted(CONV_DIR.rglob("*.jsonl.gz"))
+    files = sorted(conv_dir.rglob("*.json")) + sorted(conv_dir.rglob("*.jsonl")) + sorted(conv_dir.rglob("*.jsonl.gz"))
 
     for path in files[-200:]:
         objs = load_jsonish_file(path)
@@ -471,7 +467,7 @@ def _normalise_db_paths(db_paths: Any) -> list[Path]:
     - list[Path | str]      -> explicit DB list
     """
     if db_paths is None:
-        return [USER_DB, AGENT_DB]
+        return [_db_dir() / "user.sqlite3", _db_dir() / "agent.sqlite3"]
     if isinstance(db_paths, (str, Path)):
         return [Path(db_paths)]
     return [Path(x) for x in db_paths]

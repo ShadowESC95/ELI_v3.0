@@ -55,15 +55,9 @@ def test_project_root_constant_matches_function():
 
 # ── where data is kept is asked when it is used, not fixed at import ──────────────────────────────
 
-# Store paths still fixed when their module is imported. Each kept the folder that was current then,
-# so a folder set afterwards (a test lane setting its stores aside) was not followed: the executor's
-# state file did so and a test read this checkout's own file. To be moved to a lookup at use and
-# taken off this list; nothing is added to it.
-_FIXED_AT_IMPORT = {
-    "eli/core/runtime_settings.py", "eli/gui/main_window/_common.py", "eli/learning/dataset_builder.py",
-    "eli/learning/lora_trainer_guard.py", "eli/memory/system_index.py", "eli/planning/jobqueue.py",
-    "eli/runtime/personal_memory_clean_response.py", "eli/runtime/test_generator.py",
-}
+# A store path fixed when its module is imported keeps the folder that was current then, so a folder
+# set afterwards (a test lane setting its stores aside) is not followed: the executor's state file did
+# so and a test read this checkout's own file. Every store is asked for when it is used.
 _STORE_RESOLVERS = frozenset((
     "data_dir", "artifacts_dir", "config_dir", "cache_dir", "logs_dir", "log_dir", "db_dir", "learning_dir",
     "user_db_path", "memory_db_path", "agent_db_path", "conversations_dir", "proactive_dir", "documents_dir",
@@ -120,8 +114,7 @@ def test_no_store_path_is_fixed_when_its_module_is_imported():
                             if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)) and _resolves_a_store(d))
             if any(_resolves_a_store(s, own) for s in _run_at_import(tree)):
                 found.add(py.relative_to(root).as_posix())
-    assert found <= _FIXED_AT_IMPORT, f"a store path fixed at import: {sorted(found - _FIXED_AT_IMPORT)}"
-    assert _FIXED_AT_IMPORT <= found, f"no longer fixed at import, take off the list: {sorted(_FIXED_AT_IMPORT - found)}"
+    assert not found, f"a store path fixed at import: {sorted(found)}"
 
 
 # ── Dev mode detection ────────────────────────────────────────────────────

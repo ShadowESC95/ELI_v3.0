@@ -20,15 +20,14 @@ except Exception:
 
 log = get_logger(__name__)
 REGISTRY_PATH = PROJECT_ROOT / "models/lora/registry/eli_phi_targets.json"
-def _runs_dir() -> Path:
+def runs_dir() -> Path:
+    """Where training runs are written: the learning folder as it is when a run is written."""
     try:
         from eli.core.paths import learning_dir
         return Path(learning_dir()) / "runs"
     except Exception:
         return PROJECT_ROOT / "training" / "runs"
 
-
-RUNS_DIR = _runs_dir()
 
 # Built-ins. `allowed_targets()` is the live allowlist — built-ins PLUS whatever the
 # operator declared in the registry. The contract is unchanged (nothing trains unless
@@ -392,10 +391,11 @@ def _plan_before_base_resolution(
 
 
 def write_plan(plan: dict[str, Any], *, out: Path | None = None) -> Path:
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs = runs_dir()
+    runs.mkdir(parents=True, exist_ok=True)
     if out is None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        out = RUNS_DIR / f"lora_guard_{plan['target']}_{stamp}.json"
+        out = runs / f"lora_guard_{plan['target']}_{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_eli_json_dumps_hardened(plan, indent=2, ensure_ascii=False), encoding="utf-8")
     return out

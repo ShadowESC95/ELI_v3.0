@@ -669,7 +669,7 @@ def _h_generate_tests(a, args):
                f"test(s) (rejected {res.get('rejected', 0)} of {res.get('targets', 0)} "
                f"targets — those failed verification). "
                + ("Accepted: " + ", ".join(files) if files else "Nothing accepted this run.")
-               + f" They are drafts in {TG.GEN_DIR} (manifest: _manifest.json); read one before moving it into tests/.")
+               + f" They are drafts in {TG.drafts_dir()} (manifest: _manifest.json); read one before moving it into tests/.")
         return {"ok": True, "action": a, "content": msg, "response": msg, "result": res}
     except Exception as e:
         msg = f"GENERATE_TESTS failed: {e}"

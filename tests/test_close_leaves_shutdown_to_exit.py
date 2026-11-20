@@ -48,7 +48,7 @@ def test_the_conversation_is_saved_as_it_grows_into_one_file(tmp_path):
 
     src = next(p.read_text(encoding="utf-8") for p in sorted((ROOT / "eli/gui").rglob("*.py"))
                if "def save_conversation" in p.read_text(encoding="utf-8"))
-    ns = {"datetime": datetime, "json": json, "CONVERSATIONS_DIR": tmp_path, "now_timestamp": lambda: "now",
+    ns = {"datetime": datetime, "json": json, "gui_conversations_dir": lambda: tmp_path, "now_timestamp": lambda: "now",
           "QMessageBox": None, "log": logging.getLogger("test")}
     exec(compile(ast.Module([_function(src, "save_conversation")], []), "save", "exec"), ns)
     window = types.SimpleNamespace(conversation_history=[{"role": "user", "content": "hi"}],

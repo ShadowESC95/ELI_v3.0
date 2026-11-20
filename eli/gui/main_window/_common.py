@@ -169,14 +169,36 @@ APP_VERSION = _current_version()
 PROJECT_ROOT = _BOOT_PROJECT_ROOT
 
 
-try:
-    from eli.core.paths import config_dir as _config_dir
-    APP_DIR = Path(_config_dir())
-except Exception:
-    APP_DIR = PROJECT_ROOT / "config"
+# Where ELI keeps its settings, memory and conversations is asked when it is used: these were
+# constants fixed when this module loaded, so a folder set afterwards was not followed.
+def gui_config_dir() -> Path:
+    try:
+        from eli.core.paths import config_dir as _config_dir
+        return Path(_config_dir())
+    except Exception:
+        return PROJECT_ROOT / "config"
 
 
-SETTINGS_FILE = APP_DIR / "settings.json"
+def gui_custom_models_dir() -> Path:
+    return gui_config_dir() / "models"
+
+
+def gui_memory_db() -> Path:
+    if CENTRAL_IMPORTS_AVAILABLE and get_paths:
+        return Path(get_paths().memory_db)
+    return PROJECT_ROOT / "artifacts" / "db" / "user.sqlite3"
+
+
+def gui_conversations_dir() -> Path:
+    if CENTRAL_IMPORTS_AVAILABLE and get_paths:
+        return Path(get_paths().conversations_dir)
+    return PROJECT_ROOT / "artifacts" / "conversations"
+
+
+def gui_data_dir() -> Path:
+    if CENTRAL_IMPORTS_AVAILABLE and get_paths:
+        return Path(get_paths().artifacts_dir)
+    return PROJECT_ROOT / "artifacts"
 
 
 # No model filename is hardcoded — scan models/ for any .gguf at startup.
@@ -196,19 +218,11 @@ def _eli_pick_any_bundled_model() -> str:
 
 if CENTRAL_IMPORTS_AVAILABLE and get_paths:
     _paths = get_paths()
-    MEMORY_DB = _paths.memory_db
-    CONVERSATIONS_DIR = _paths.conversations_dir
-    ARTIFACTS_DIR = _paths.artifacts_dir
     DEFAULT_MODEL_PATH = str(_paths.model) if _paths.model and _paths.model.exists() else _eli_pick_any_bundled_model()
     BUNDLED_MODEL_DIR = PROJECT_ROOT / "models"
-    CUSTOM_MODELS_DIR = APP_DIR / "models"
 else:
-    MEMORY_DB = PROJECT_ROOT / "artifacts" / "db" / "user.sqlite3"
-    CONVERSATIONS_DIR = PROJECT_ROOT / "artifacts" / "conversations"
-    ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
     DEFAULT_MODEL_PATH = _eli_pick_any_bundled_model()
     BUNDLED_MODEL_DIR = PROJECT_ROOT / "models"
-    CUSTOM_MODELS_DIR = APP_DIR / "models"
 
 
 if CENTRAL_IMPORTS_AVAILABLE and config:
@@ -237,7 +251,7 @@ MODEL_PROVIDER_LABELS = {
 
 
 def ensure_dirs():
-    for d in [APP_DIR, CONVERSATIONS_DIR, ARTIFACTS_DIR]:
+    for d in [gui_config_dir(), gui_conversations_dir(), gui_data_dir()]:
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -263,7 +277,7 @@ def classify_gguf_source(path: str) -> str:
         p = Path(str(path or "")).expanduser().resolve()
         bundled_root = BUNDLED_MODEL_DIR.expanduser().resolve()
         bundled_base = (BUNDLED_MODEL_DIR / "gguf" / "base").expanduser().resolve()
-        custom_root = CUSTOM_MODELS_DIR.expanduser().resolve()
+        custom_root = gui_custom_models_dir().expanduser().resolve()
 
         if custom_root in p.parents:
             return "custom"
@@ -354,7 +368,7 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
     results: List[Dict[str, Any]] = []
     seen: set[str] = set()
     if not base_dirs:
-        base_dirs = [BUNDLED_MODEL_DIR, CUSTOM_MODELS_DIR]
+        base_dirs = [BUNDLED_MODEL_DIR, gui_custom_models_dir()]
         try:
             from eli.core.model_folders import model_folders
             base_dirs += model_folders()          # the folders the settings name and the user named

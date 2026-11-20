@@ -101,8 +101,7 @@ def test_travel_stale_faster_than_general_project(tmp_path, monkeypatch):
     )
     con.commit()
     con.close()
-    monkeypatch.setattr(PM, "USER_DB", db)
-    monkeypatch.setattr(PM, "AGENT_DB", tmp_path / "a.sqlite3")
+    monkeypatch.setattr(PM, "db_paths", lambda: (db, tmp_path / "a.sqlite3"))
     facts, _ = PM._collect_facts()
     blob = " | ".join(facts)
     assert "Sam" not in blob

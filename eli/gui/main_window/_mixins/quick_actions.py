@@ -157,8 +157,9 @@ class QuickActionsMixin:
         """Persist pinned actions to quick_actions.json."""
         try:
             import json as _j
-            self.__class__._QA_SAVE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            self.__class__._QA_SAVE_FILE.write_text(
+            saved = gui_config_dir() / "quick_actions.json"
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text(
                 _j.dumps(self._qa_board.action_names(), indent=2),
                 encoding="utf-8",
             )
@@ -169,7 +170,7 @@ class QuickActionsMixin:
         """Restore previously pinned actions."""
         try:
             import json as _j
-            f = self.__class__._QA_SAVE_FILE
+            f = gui_config_dir() / "quick_actions.json"
             if f.exists():
                 for name in _j.loads(f.read_text(encoding="utf-8")):
                     self._qa_board.add_card(str(name))

@@ -46,8 +46,7 @@ def two_users(tmp_path, monkeypatch):
     con.execute("INSERT INTO conversation_turns(role, content, ts, user_id) VALUES ('user', 'my name is Tamsin', 2, 'api-user-b')")
     con.commit()
     con.close()
-    monkeypatch.setattr(clean, "USER_DB", db)
-    monkeypatch.setattr(clean, "AGENT_DB", tmp_path / "db" / "agent.sqlite3")
+    monkeypatch.setattr(clean, "db_paths", lambda: (db, tmp_path / "db" / "agent.sqlite3"))
     monkeypatch.setattr(surface, "_artifacts_dir", lambda: tmp_path)
     monkeypatch.setattr(state, "load_user_profile",
                         lambda user_id=None: {"name": "Rowan"} if user_id in (None, owner) else {})

@@ -48,8 +48,7 @@ def test_generate_test_strips_fences():
 
 def test_run_testgen_pipeline_accepts_and_writes(tmp_path, monkeypatch):
     # redirect the generated area to a temp dir so the real suite isn't touched
-    monkeypatch.setattr(TG, "GEN_DIR", tmp_path)
-    monkeypatch.setattr(TG, "MANIFEST", tmp_path / "_manifest.json")
+    monkeypatch.setattr(TG, "drafts_dir", lambda: tmp_path)
     # stub the model to return a valid, passing test
     ask = lambda *a, **k: "def test_generated_ok():\n    assert sum([1, 2, 3]) == 6\n"
     res = TG.run_testgen(limit=1, ask=ask, modules=["eli.core.dag"])
@@ -62,8 +61,7 @@ def test_run_testgen_pipeline_accepts_and_writes(tmp_path, monkeypatch):
 
 
 def test_run_testgen_rejects_bad_candidate(tmp_path, monkeypatch):
-    monkeypatch.setattr(TG, "GEN_DIR", tmp_path)
-    monkeypatch.setattr(TG, "MANIFEST", tmp_path / "_manifest.json")
+    monkeypatch.setattr(TG, "drafts_dir", lambda: tmp_path)
     ask = lambda *a, **k: "def test_bad():\n    assert False\n"
     res = TG.run_testgen(limit=1, ask=ask, modules=["eli.core.dag"])
     assert res["ok"] and res["accepted"] == 0 and res["rejected"] >= 1

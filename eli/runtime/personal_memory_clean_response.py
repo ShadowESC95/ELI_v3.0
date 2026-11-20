@@ -16,8 +16,9 @@ except Exception:
     ROOT = Path(__file__).resolve().parents[2]
 
 
-def _db_paths() -> tuple[Path, Path]:
-    """(user_db, agent_db) as the running install actually uses them.
+def db_paths() -> tuple[Path, Path]:
+    """(user_db, agent_db) as the running install actually uses them, asked when they are read (a
+    pair of constants fixed them at import).
 
     project_root() and the artifacts dir are the SAME directory in a source
     checkout and different ones in a shipped build: the code lives on the
@@ -35,8 +36,6 @@ def _db_paths() -> tuple[Path, Path]:
         base = ROOT / "artifacts" / "db"
         return base / "user.sqlite3", base / "agent.sqlite3"
 
-
-USER_DB, AGENT_DB = _db_paths()
 
 _POISON_PATTERNS = [
     r"Reflection \(24h\)",
@@ -299,7 +298,7 @@ def _collect_facts() -> tuple[list[str], dict[str, int]]:
     facts: list[str] = []
     counts: dict[str, int] = {}
 
-    for db_label, db in [("user_db", USER_DB), ("agent_db", AGENT_DB)]:
+    for db_label, db in zip(("user_db", "agent_db"), db_paths()):
         con = _connect(db)
         if con is None:
             counts[f"{db_label}:missing"] = 1
@@ -367,8 +366,9 @@ def build_clean_personal_memory_response(user_input: str = "", mode_label: str =
     lines.append("Personal memory evidence report")
     lines.append("")
     lines.append(f"- Durable personal-memory rows currently visible: {durable_total}")
-    lines.append(f"- User DB: {USER_DB}")
-    lines.append(f"- Agent DB: {AGENT_DB}")
+    user_db, agent_db = db_paths()
+    lines.append(f"- User DB: {user_db}")
+    lines.append(f"- Agent DB: {agent_db}")
     lines.append("- Excluded from this answer: conversation archives, runtime truth dumps, news cache, reflection spam, generated scripts, schema dumps, prompt echoes, and quarantine folders.")
     lines.append("")
 

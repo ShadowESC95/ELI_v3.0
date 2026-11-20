@@ -1376,7 +1376,7 @@ class ChromeIoMixin:
         filename = getattr(self, "_conversation_file", None)
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = self._conversation_file = CONVERSATIONS_DIR / f"conversation_{timestamp}.json"
+            filename = self._conversation_file = gui_conversations_dir() / f"conversation_{timestamp}.json"
         try:
             part = filename.with_suffix(".json.part")
             with open(part, 'w', encoding='utf-8') as f:

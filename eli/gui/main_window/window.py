@@ -13,8 +13,8 @@ if CENTRAL_IMPORTS_AVAILABLE and get_memory:
 else:
     # Fallback local MemorySystem
     class MemorySystem:
-        def __init__(self, db_path: Path = MEMORY_DB):
-            self.db_path = db_path
+        def __init__(self, db_path: Optional[Path] = None):
+            self.db_path = db_path or gui_memory_db()
             self._init_db()
         def _init_db(self):
             import sqlite3
@@ -833,7 +833,6 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         layout.addWidget(input_group, stretch=2)
         self.tabs.addTab(chat_widget, "💬 Chat")
 
-    _QA_SAVE_FILE = APP_DIR / "quick_actions.json"
 
     _QA_ACTION_ARGS = {
         "OPEN_APP":       ("App name (e.g. firefox)", "app"),

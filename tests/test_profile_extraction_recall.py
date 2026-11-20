@@ -90,8 +90,7 @@ def test_stale_volatile_dropped_stable_kept(tmp_path, monkeypatch):
     PE._insert_user_pattern(cur, "preference.style", "User dislikes vague descriptions and wants concrete detail.", ts_value=old)
     PE._insert_user_pattern(cur, "research.science", "User references a custom field-theory framework in research/simulation work.", ts_value=old)
     con.commit(); con.close()
-    monkeypatch.setattr(PM, "USER_DB", db)
-    monkeypatch.setattr(PM, "AGENT_DB", tmp_path / "a.sqlite3")
+    monkeypatch.setattr(PM, "db_paths", lambda: (db, tmp_path / "a.sqlite3"))
     facts, _ = PM._collect_facts()
     blob = " | ".join(facts)
     assert "image generator" not in blob          # stale volatile project dropped

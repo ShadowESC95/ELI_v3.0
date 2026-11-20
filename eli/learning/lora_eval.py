@@ -15,7 +15,7 @@ try:
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # runs are recorded where ELI keeps its training (learning_dir), never inside the install
-from eli.learning.lora_trainer_guard import RUNS_DIR  # noqa: E402
+from eli.learning.lora_trainer_guard import runs_dir  # noqa: E402
 
 ALLOWED_TARGETS = {"eli_phi", "eli_phi_ultra"}
 DEFAULT_EVAL_PATH = PROJECT_ROOT / "training/evals/eli_self_model_eval.jsonl"
@@ -463,10 +463,11 @@ def run_eval(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_report(job: dict[str, Any]) -> dict[str, Any]:
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs = runs_dir()
+    runs.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     mode = "base" if job.get("base_only") else "adapter"
-    path = RUNS_DIR / f"lora_eval_{job['target']}_{mode}_{stamp}.json"
+    path = runs / f"lora_eval_{job['target']}_{mode}_{stamp}.json"
     path.write_text(json.dumps(job, indent=2, ensure_ascii=False), encoding="utf-8")
     job["report_path"] = str(path)
     return job
