@@ -175,25 +175,6 @@ def media_kind(query: str) -> Optional[str]:
     return _MEDIA_KINDS.get(kind, kind)
 
 
-# Words that signal the utterance is a question/instruction about an app, not
-# a launch command. If any of these appear in the tail, OPEN_APP/CLOSE_APP/etc.
-# should NOT capture the entire sentence as the app name.
-_APP_TAIL_REJECT_TOKENS = frozenset({
-    "and", "or", "but", "so", "then", "tell", "show", "explain", "describe",
-    "say", "report", "what", "why", "how", "when", "where", "who", "which",
-    "please", "thanks", "thank", "to", "for", "about", "regarding", "if",
-    "whether", "could", "would", "should", "can", "may", "might", "do",
-    "does", "did", "is", "are", "was", "were", "the",
-    # Prepositions and search verbs: "open a browser on kite" was taken whole as an app called "a
-    # browser on kite" and offered for install. "of" is deliberately absent: plenty of apps are named
-    # "<x> of <y>".
-    "on", "in", "into", "onto", "with", "from", "via", "using",
-    "search", "searching", "find", "google", "lookup",
-    # Deictic / meta words — "run that command" is not an app named "that command".
-    "that", "this", "it", "command",
-})
-
-
 # A generic browser request is a browser request, not an app called "browser kite". OPEN_BROWSER
 # already accepts a query and makes a search page; this contract matched first at 0.995 and shadowed
 # it.
@@ -251,33 +232,10 @@ def site_named(target: str) -> str:
 
 
 def _looks_like_app_target(target: str) -> bool:
-    """
-    A real OPEN/CLOSE/RUN target is a short app/binary identifier.
-    Reject anything that looks like a sentence: multiple words containing
-    natural-language fillers, conjunctions, or wh-words.
-    """
-    s = str(target or "").strip()
-    if not s:
-        return False
-    tokens = s.split()
-    if len(tokens) > 4:
-        return False
-    if any(tok.lower() in _APP_TAIL_REJECT_TOKENS for tok in tokens):
-        return False
-    # First token must look like an app/binary name: letters/digits/dot/dash/underscore.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-+]{0,40}", tokens[0]):
-        return False
-    # "start over", "run away", "start with the outline": the verb is not opening anything.
-    if tokens[0].lower() in _NOT_AN_APP_NAME:
-        return False
-    return True
-
-
-# Words that follow "start"/"run"/"open" in ordinary speech and are never what gets opened.
-_NOT_AN_APP_NAME = frozenset((
-    "over", "again", "away", "now", "up", "off", "out", "with", "by", "from", "on", "at", "in", "to", "through",
-    "that", "this", "it", "them", "me", "us", "as", "for", "into", "around", "ahead", "fresh", "afresh", "here", "there",
-))
+    """A real OPEN/CLOSE/RUN target is an app's name, by the command language's one test
+    (routing/command_parser.names_an_app): not a sentence, not a word pointing at something."""
+    from eli.execution.routing.command_parser import names_an_app
+    return names_an_app(target)
 
 
 # Common TLDs the user might dictate. STT drops the dot, so "open github com"

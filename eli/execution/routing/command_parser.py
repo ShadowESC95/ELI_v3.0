@@ -296,12 +296,33 @@ _NOT_AN_APP = re.compile(r"^(?:window|this|everything|all|all\s+windows|workspac
 # listed, not an app: words that point at things, and a long phrase, are not a name.
 _POINTS_AT_THINGS = frozenset(("each", "every", "those", "these", "that", "this", "all", "them", "it", "again",
                                "more", "last", "previous", "earlier", "findings", "results", "one", "ones", "once"))
+# Nor is a phrase with the words of a sentence in it: conjunctions, question words, courtesy,
+# prepositions and search verbs ("open a browser on kite" is no app called "a browser on kite").
+# "of" is absent: plenty of apps are named "<x> of <y>".
+_NOT_IN_A_NAME = _POINTS_AT_THINGS | frozenset((
+    "and", "or", "but", "so", "then", "tell", "show", "explain", "describe", "say", "report", "what", "why",
+    "how", "when", "where", "who", "which", "please", "thanks", "thank", "to", "for", "about", "regarding", "if",
+    "whether", "could", "would", "should", "can", "may", "might", "do", "does", "did", "is", "are", "was",
+    "were", "the", "on", "in", "into", "onto", "with", "from", "via", "using", "search", "searching", "find",
+    "google", "lookup", "command"))
+# A name never starts with a preposition, a particle or a pronoun: "start over", "open with a short
+# story", "launch into the history of...", "run me through it" open nothing.
+_NOT_A_NAME_FIRST = frozenset((
+    "over", "again", "away", "now", "up", "down", "off", "out", "with", "by", "from", "on", "at", "in", "to",
+    "through", "that", "this", "it", "them", "me", "us", "as", "for", "into", "around", "ahead", "fresh",
+    "afresh", "here", "there"))
 _APP_NAME_WORDS = 4
 
 
-def _names_an_app(obj: str) -> bool:
-    words = obj.lower().split()
-    return bool(words) and len(words) <= _APP_NAME_WORDS and not any(w in _POINTS_AT_THINGS for w in words)
+def names_an_app(obj: str) -> bool:
+    """Whether a phrase can be an app's name: a short phrase, starting with a word an app or a
+    program can be called, holding no word of a sentence. The one test every rule that opens,
+    closes or installs a named app asks."""
+    words = str(obj or "").split()
+    return (0 < len(words) <= _APP_NAME_WORDS
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-+]{0,40}", words[0]) is not None
+            and words[0].lower() not in _NOT_A_NAME_FIRST
+            and not any(w.lower() in _NOT_IN_A_NAME for w in words))
 # "start with the outline", "run through it again": the verb opens nothing (app_launch has the same test)
 _NOT_AN_OBJECT = re.compile(r"^(?:with|by|from|on|at|in|to|through|over|again|now|off|out|as|for|into|away|around|"
                             r"ahead|here|there|up|down)\b", re.I)
@@ -396,6 +417,32 @@ def _classify_open(obj: str) -> Tuple[str, Any]:
     return "app", obj
 
 
+def app_to_open(text: str) -> Optional[str]:
+    """The app an "open / launch / start / run ..." sentence opens, as the language reads it, or
+    None when it opens no app by name: "open with a short story about ...", "launch into the history
+    of ...", "run me through how ..." and "start the timer" open nothing; "open it" and "open each
+    of those findings" point at things. "open up spotify" opens spotify and "open firefox in a new
+    window" firefox. The rules that open an app by any name ask this."""
+    cmd = read(text)
+    if cmd is None or "open" not in cmd.verbs or cmd.said in _ADDRESS_ONLY:
+        return None
+    obj = _split_modifiers(cmd.object, ("in",))[0]
+    # "open steam and chill": what follows is talk, not a second instruction (an instruction beside
+    # other words is one by its form, command_splitter.tells_by_form), so steam is what is opened.
+    # "open spotify and play some jazz" holds a second one: that is read as several, not here.
+    joined = re.match(r"^(.+?)\s+(?:and\s+then|and|then)\s+(.+)$", obj, re.I)
+    if joined:
+        from eli.runtime.command_splitter import tells_by_form
+        if tells_by_form(joined.group(2)):
+            return None
+        obj = joined.group(1)
+    obj = re.sub(r"\s+app$", "", obj, flags=re.I).strip()
+    if (not obj or _NOT_AN_APP.match(obj) or _TIMER_HEAD.match(obj) or _ALARM_HEAD.match(obj)
+            or _classify_open(obj)[0] != "app" or not names_an_app(obj)):
+        return None
+    return obj
+
+
 def _by_the_rules(frame: Frame, cmd: Command, obj: str, entities: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The command said in the catalogue's words ("fire up spotify" as "open spotify"), put to the
     rules, which know more of objects than a frame does (a file manager, a site said by name, a
@@ -463,7 +510,7 @@ def _realise(frame: Frame, cmd: Command, *, strict: bool) -> Optional[Dict[str, 
         if kind == "app":
             if _NOT_AN_APP.match(obj) or (strict and not pronoun) or cmd.said in _ADDRESS_ONLY:
                 return None
-            if not pronoun and not _names_an_app(obj):
+            if not pronoun and not names_an_app(obj):
                 return None
             by_rule = _by_the_rules(frame, cmd, obj, entities)
             if by_rule is not None:

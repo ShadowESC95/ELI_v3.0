@@ -2685,7 +2685,15 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             and (not _rest
                  or all(re.sub(r'[.!?,]', '', w).lower() in _DEICTIC for w in _rest))
         )
-        if (not re.search(r'\b(script|function|program|code)\b', _cmd, re.I)
+        # A command is run only when one is named: said as one ("run the command ...", "run the rm
+        # command ..."), or a program on this machine is what comes first. "run me through how a bill
+        # becomes law" ran `me through how a bill becomes law`.
+        import shutil as _shutil
+        _names_a_program = bool(
+            re.match(r'^run\s+(?:the\s+)?command\b', raw, re.I) or _idiom
+            or (_parts and _shutil.which(_parts[0])))
+        if (_names_a_program
+                and not re.search(r'\b(script|function|program|code)\b', _cmd, re.I)
                 and not _vague_destructive):
             return _mk("SHELL_EXEC", {"cmd": _cmd}, 0.95, matched_by="shell.run_command",
                        entities={"cmd": _cmd})

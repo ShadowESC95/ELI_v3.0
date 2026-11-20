@@ -63,9 +63,11 @@ def test_apps_still_route_to_open_app(phrase):
 
 
 def test_conjunction_in_an_app_name_is_not_split():
+    """Not split into two launches. What follows "and" is talk, not an instruction, so the app is
+    steam (an app called "steam and chill" was looked for and offered for install)."""
     out = _route("open steam and chill")
     assert out["action"] == "OPEN_APP"
-    assert "steam and chill" in str(out.get("args"))
+    assert str(out["args"].get("name")).lower() == "steam"
 
 
 def test_bare_domain_still_opens_a_url():

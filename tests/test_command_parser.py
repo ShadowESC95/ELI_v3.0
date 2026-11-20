@@ -208,6 +208,44 @@ def test_what_is_not_a_command_of_the_language_is_left_to_the_rules(said):
     assert not str((route(said).get("meta") or {}).get("matched_by") or "").startswith("parser.")
 
 
+# ── an app is opened only when the sentence names one ───────────────────────────────────────────
+@pytest.mark.parametrize("said", [
+    "open with a short story about a lighthouse",
+    "launch into the history of the printing press",
+    "run me through how a bill becomes law",
+    "open each of those findings",
+    "start with the basics of how rivers form",
+])
+def test_a_sentence_that_names_nothing_opens_and_runs_nothing(said):
+    """The rules that open an app by any name, and the one that runs "run <anything>" as a shell
+    command, each had their own test of a name, and none was the language's: these sentences opened
+    an app called "with a short story about a lighthouse" and ran `me through how a bill becomes
+    law`."""
+    assert cp.app_to_open(said) is None
+    assert route(said).get("action") not in {"OPEN_APP", "SHELL_EXEC"}, said
+
+
+@pytest.mark.parametrize("said, name", [
+    ("open spotify", "spotify"),
+    ("open up spotify", "spotify"),
+    ("open the gimp app", "gimp"),
+    ("open firefox in a new window", "firefox"),
+    ("launch steam", "steam"),
+])
+def test_the_app_a_sentence_names_is_the_one_opened(said, name):
+    assert cp.app_to_open(said) == name
+    r = route(said)
+    assert r.get("action") == "OPEN_APP" and str(r["args"].get("name")).lower() in {name, "steam"}, r
+
+
+def test_a_command_is_run_when_one_is_named(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: "/usr/bin/" + name if name == "a-tool" else None)
+    assert route("run the command echo hi")["args"]["cmd"] == "echo hi"
+    assert route("run a-tool on the notes")["args"]["cmd"] == "a-tool on the notes"
+    assert route("run me through it")["action"] != "SHELL_EXEC"
+    assert route("run nothing-here on the notes")["action"] != "SHELL_EXEC"
+
+
 # ── a pronoun stands for what the last command was about ────────────────────────────────────────
 def test_a_pronoun_is_what_the_last_command_was_about():
     from eli.kernel.request_context import turn_facts_var

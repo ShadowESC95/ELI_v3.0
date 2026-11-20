@@ -121,7 +121,7 @@ def _pending_app_install():
 
 
 @pytest.mark.parametrize("said, takes_it_up", [
-    ("install an-editor", True), ("get an-editor.", True), ("download the an-editor app", False),
+    ("install an-editor", True), ("get an-editor.", True), ("download the an-editor app", True),
     ("install an-editor app", True), ("get the news at 7am", False), ("install plugin notes", False),
     ("an-editor", False)])
 def test_only_naming_what_was_offered_answers_the_offer(said, takes_it_up):
@@ -188,6 +188,16 @@ def test_what_is_plainly_about_an_application_is_still_answered_in_conversation(
         "nothing here or in a package source has that name"
     # Asked for as an application (the router chose the action), a name nothing has is said so.
     assert "No package source here has" in gr.try_handle_query("install a-made-up-tool")
+
+
+@pytest.mark.parametrize("said", ["install it", "download that", "is it installed?", "install each of those"])
+@pytest.mark.parametrize("chat", [True, False])
+def test_a_word_pointing_at_something_is_looked_up_as_no_app(said, chat, monkeypatch):
+    """"install it" with no offer open answered "it appears to be already installed": a desktop
+    file had "it" in its name."""
+    looked = _machine_has(monkeypatch, installed=("it", "that", "each of those"))
+    assert gr.try_handle_query(said, chat=chat) is None
+    assert looked == []
 
 
 def test_words_with_spaces_between_them_name_no_package(monkeypatch):

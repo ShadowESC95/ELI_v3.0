@@ -22,10 +22,10 @@ from eli.execution.routing._helpers import (
 def route_app_launch(text: str, raw: str, low: str, text_l: str):
     _open_m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
     # "start with the outline", "run through it again", "start over": the verb is not opening
-    # anything. An app's name does not begin with a preposition or a pronoun.
-    if _open_m and _open_m.group(1).lower() in ("start", "run") and re.match(
-            r"(?i)(?:with|by|from|on|at|in|to|through|over|again|that|this|it|them|me|us|now|off|out|as|for|into|"
-            r"away|around|ahead)\b", _open_m.group(2).strip()):
+    # anything. What a name never starts with is the command language's (command_parser).
+    from eli.execution.routing.command_parser import _NOT_A_NAME_FIRST, app_to_open
+    if _open_m and _open_m.group(1).lower() in ("start", "run") and \
+            _open_m.group(2).split()[0].lower().strip(",.") in _NOT_A_NAME_FIRST:
         _open_m = None
     if _open_m:
         target = re.sub(r"\s+app$", "", _open_m.group(2).strip(), flags=re.I)
@@ -108,7 +108,12 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
         if _web is not None:
             return _mk(_web[0], _web[1], 0.98, matched_by="open.web.literal_preempt")
 
-        canonical = app_aliases.get(target_low, target)
+        # Anything else is an app only when the sentence names one, as the command language reads it:
+        # "open with a short story about a lighthouse" opened an app of that name.
+        named = app_to_open(raw)
+        if not named:
+            return None
+        canonical = app_aliases.get(named.lower(), named)
         return _mk("OPEN_APP", {"name": canonical, "target": canonical}, 0.99,
                    matched_by="open.app.literal_preempt")
     return None

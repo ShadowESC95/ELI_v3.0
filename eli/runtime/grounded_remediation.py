@@ -703,6 +703,7 @@ def _mk_result(ok: bool, domain: str, subject: str, operation: str, reason_code:
 def extract_app_name(text: str) -> str:
     raw = str(text or "").strip().lower()
     raw = re.sub(r"^\s*(open|run|launch|start)\s+", "", raw)
+    raw = re.sub(r"^(?:the|a|an)\s+", "", raw)
     raw = re.sub(r"\s+app$", "", raw).strip()
 
     alias_map = {
@@ -1475,7 +1476,17 @@ def _names_an_application(result: dict) -> bool:
     return bool(result.get("ok") or result.get("repair_options"))
 
 
+def _a_name(subject: str) -> bool:
+    """Whether what was said can be an app's name at all (the command language's one test): "it",
+    "that" or "each of those" point at something and are looked up as nothing. "install it" with no
+    offer open said "it appears to be already installed" (a desktop file had "it" in its name)."""
+    from eli.execution.routing.command_parser import names_an_app
+    return names_an_app(subject)
+
+
 def status_message_for_app(app: str, *, chat: bool = False) -> str | None:
+    if not _a_name(extract_app_name(app)):
+        return None
     result = diagnose_app(app)
     if chat and not _names_an_application(result):
         return None
@@ -1634,7 +1645,7 @@ def try_handle_query(text: str, *, chat: bool = False) -> str | None:
                 return render_repair_preview(_plan)
             if _stage == "previewed":
                 return execute_pending_plan()
-        if chat and _idm.group(1).lower() == "get":
+        if (chat and _idm.group(1).lower() == "get") or not _a_name(subject):
             return None
         # No matching pending state — diagnose and offer
         diag = diagnose_app(subject)
