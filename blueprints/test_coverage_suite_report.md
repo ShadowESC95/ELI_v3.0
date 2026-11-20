@@ -1,6 +1,8 @@
 # ELI v3 — Test Coverage Suite & Results (Full Report)
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+>
+> **Gone since (noted 2026-11-20, at v3.0.167).** The `gui_eli_original.py` and `labs_tab.py` shims under `eli/gui/` were removed in v3.0.167; the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`.
 
 A full test-coverage suite was built for ELI and run end-to-end across **four lanes**.
 This document is the complete record: the suite, the methodology, the measured results

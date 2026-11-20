@@ -1,6 +1,8 @@
 # Session — 2026-07-01: Web/News Hardening, Test Coverage & Code-Health Pass
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+>
+> **Gone since (noted 2026-11-20, at v3.0.167).** The `gui_eli_original.py` and `labs_tab.py` shims under `eli/gui/` were removed in v3.0.167; the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`.
 
 Complete record of everything run and produced this session. Numbers are measured
 on the real interpreter (`.venv/bin/python`); coverage is reproducible via

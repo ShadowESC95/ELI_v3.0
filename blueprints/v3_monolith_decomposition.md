@@ -1,6 +1,8 @@
 # ELI v3 — Monolith decomposition & edition mapping
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+>
+> **Gone since (noted 2026-11-20, at v3.0.167).** The `gui_eli_original.py` and `labs_tab.py` shims under `eli/gui/` were removed in v3.0.167; the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`. `effectors/inference_backends.py` was removed in v3.0.166 (nothing imported it; the Ollama client is `eli/integrations/ollama/client.py`). The edition packs' `policy.py`, `tools/` and `capabilities/` stubs were removed in v3.0.166: a pack is its `manifest.json`, read by `eli/editions/__init__.py`.
 
 How the five god-files break into cohesive modules, and how each function family maps
 to the **shared core** vs a **specialised edition** — so versions/sectors compose

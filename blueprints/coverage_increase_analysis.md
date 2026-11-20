@@ -1,6 +1,8 @@
 # ELI v3 — Coverage Increase Analysis
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+>
+> **Gone since (noted 2026-11-20, at v3.0.167).** The `gui_eli_original.py` and `labs_tab.py` shims under `eli/gui/` were removed in v3.0.167; the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`.
 
 **Question:** can the 48.1% testable coverage go higher, and if so, where?
 **Short answer:** yes — a focused pass on *testable-but-untested logic* can realistically

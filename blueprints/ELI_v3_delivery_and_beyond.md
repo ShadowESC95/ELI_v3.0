@@ -1,5 +1,7 @@
 # ELI v3 — Delivery Report: Bringing ELI to v3 and Beyond
 
+> **Gone since (noted 2026-11-20, at v3.0.167).** The `gui_eli_original.py` and `labs_tab.py` shims under `eli/gui/` were removed in v3.0.167; the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`. `effectors/inference_backends.py` was removed in v3.0.166 (nothing imported it; the Ollama client is `eli/integrations/ollama/client.py`). The edition packs' `policy.py` stubs were removed in v3.0.166: a pack is its `manifest.json`, and licences name products (`eli/licensing/products.py`).
+
 *A single, detailed plan — technical and non-technical — for taking ELI from its current
 v2-grade codebase to the intended v3 architecture, a family of specialised editions, and the
 frontier past it. Written July 2026, grounded in a full read of the shipping code.*

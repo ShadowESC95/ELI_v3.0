@@ -1,6 +1,8 @@
 # Blueprint — Decomposing `_execute_impl` (the executor god-function)
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+>
+> **Gone since (noted 2026-11-20, at v3.0.167).** `effectors/inference_backends.py` was removed in v3.0.166 (nothing imported it; the Ollama client is `eli/integrations/ollama/client.py`). Effector modules are imported by `effectors.load_all()`, each on its own; `effectors.failed()` lists any that did not load.
 
 *Status: **IN PROGRESS** on `v3-modularisation`. Design dated 2026-06-26; build ongoing.*
 
