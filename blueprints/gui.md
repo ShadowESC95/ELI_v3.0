@@ -1,17 +1,17 @@
 # ELI GUI
 
-> **Updated for 3.0.128.** Ollama model selector fixed on packaged builds
+> **Updated for 3.0.167.** Ollama model selector fixed on packaged builds
 > (`QDialogButtonBox` exported via `eli/gui/qt_compat.py`).
 
-`eli/gui/` — 42.5k LOC across 63 modules (top-level launcher, `main_window/` package, `labs/` package, panels, tabs, docks, widgets). A full native PySide6/PyQt desktop app (with a
+`eli/gui/` — 28.2k LOC across 59 modules (top-level launcher, `main_window/` package, `labs/` package, panels, tabs, docks, widgets). A full native PySide6/PyQt desktop app (with a
 Qt-binding compat shim), plus a first-boot launcher and a large scientific
 "Labs" workspace.
 
-## Tab map (current — 15 main tabs)
+## Tab map
 
 ```mermaid
 flowchart TD
-    W([ELI Pro window]) --> T{15 main tabs}
+    W([ELI Pro window]) --> T{main tabs}
     T --> Chat[Chat]
     T --> Pro[Proactive · 6 sub-tabs]
     T --> Img[Images]
@@ -25,14 +25,14 @@ flowchart TD
     T --> Ext[Extensions]
     T --> Exp[Experimental · read-only workbench]
     T --> Wld[Eli's World]
-    T --> Set[Settings · 10 pages: Model · Runtime · Generation ·<br/>Identity · Audio · Application ·<br/>Agents · Gaze · Web Server · Advanced]
+    T --> Set[Settings · Model · Runtime · Generation ·<br/>Identity · Audio · Application ·<br/>Agents · Gaze · Web Server · Advanced]
     T --> Labs[Labs · 11 sub-tabs]
     Labs --> L1[Notebook · Memory · Jupyter · Calculator · Physics]
     Labs --> L2[File Chat · Workspaces · Sim/IDE]
     Labs --> L3[Orchestration · Test & Review<br/>dev/diagnostic tools]
     Labs --> L4[Training · LoRA wizard]
-    Set --> S1[Plugins · installed plugin management]
-    Set --> S2[Marketplace · browse · scan · permissions · sources]
+    Set --> S2[Marketplace · the Extensions tab opened at Browse]
+    Ext --> E1[Overview · Browse · Installed · Permissions ·<br/>MCP servers · Sources · Settings]
 ```
 
 ### Marketplace and training additions
@@ -40,7 +40,7 @@ flowchart TD
 | Surface | Where | What it is |
 |---|---|---|
 | 🎓 **Training** | Labs sub-tab | four-step LoRA wizard: Hardware → Target → Data → Train |
-| 🛒 **Marketplace** | Settings sub-tab | community plugins: browse, verify, scan, install, permissions, sources |
+| 🛒 **Marketplace** | Extensions tab; also shown under Settings | community plugins: browse, verify, scan, install, permissions, sources |
 | **Permission dialog** | anywhere | Android-style consent: Allow once · Always allow · Not now · Never allow |
 | 🎯 **Eval board** / ⚖️ **Eval + judge** | Labs ▸ Test & Review | behaviour regression board, run in-process |
 
@@ -48,34 +48,39 @@ flowchart TD
 
 | File | LOC | Role |
 |---|---:|---|
-| `app.py` | 829 | launcher, first-boot auto-tune, entry `main()` |
-| `main_window/window.py` | 1301 | `EliMainWindow` and `main()`, composed from the mixins below |
-| `main_window/_mixins/settings_model.py` | 2489 | settings pages and model loading |
-| `main_window/_mixins/chrome_io.py` | 1842 | window chrome, input/output plumbing |
-| `main_window/_mixins/tabs.py` | 1384 | builds the main tabs |
-| `main_window/_mixins/conversation.py` | 1219 | chat turn handling |
-| `main_window/_mixins/features.py` | 889 | feature toggles and panels |
-| `main_window/models.py` | 1029 | `LocalModelManager`, `OllamaModelManager` |
-| `main_window/adapters.py` | 617 | `CentralMemoryAdapter`, `ExecutorBridge`, `_GUIEngineAdapter` |
-| `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
-| `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
-| `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
-| `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
-| `tabs/extensions_tab.py` | 1991 | Extensions tab |
-| `tabs/marketplace_tab.py` | 991 | Settings ▸ Marketplace |
+| `app.py` | 369 | launcher, load plan for the chosen model, entry `main()` |
+| `main_window/window.py` | 1178 | `EliMainWindow` and `main()`, composed from the mixins below |
+| `main_window/_mixins/settings_model.py` | 3131 | settings pages and model loading |
+| `main_window/_mixins/chrome_io.py` | 2095 | window chrome, input/output plumbing |
+| `main_window/_mixins/tabs.py` | 1675 | builds the main tabs |
+| `main_window/_mixins/conversation.py` | 1268 | chat turn handling; commands that need no model (`_run_now`) |
+| `main_window/_mixins/features.py` | 910 | feature toggles and panels |
+| `main_window/models.py` | 315 | `LocalModelManager`, `OllamaModelManager` |
+| `main_window/adapters.py` | 260 | `CentralMemoryAdapter`, `ExecutorBridge` |
+| `main_window/widgets.py`, `_common.py` | 450, 555 | shared widgets and helpers |
+| `labs/` (16 modules) | 5.8k | the Labs sub-tabs; `report_tab.py` is the largest (3212) |
+| `panels/startup.py` | 2186 | guided first boot: hardware, model pick or download, tuning |
+| `panels/settings.py` | 652 | settings dialog: Agents, Models, Cognition, Marketplace, Self-Upgrade |
+| `tabs/extensions_tab.py` | 2024 | Extensions tab: plugins, MCP servers and the marketplace; the same widget is the Settings ▸ Marketplace page |
 | `tabs/training_tab.py` | 841 | Labs ▸ Training, the LoRA wizard |
 | `panels/permission_dialog.py` | 232 | plugin consent dialog and its thread bridge |
-| `docks/operator_console_dock.py` | 303 | operator console dock |
-| `widgets/ollama_model_selector.py` | 444 | optional Ollama model picker |
-| `license_dialog.py` | 208 | licence acceptance dialog |
+| `docks/operator_console_dock.py` | 294 | operator console dock |
+| `widgets/ollama_model_selector.py` | 509 | optional Ollama model picker |
+| `license_dialog.py` | 253 | licence activation and purchase dialogs |
+| `off_thread.py` | 41 | blocking work off the window's thread |
 
 ## Launcher (`app.py`)
 
-The entry path: `_detect_hardware` (queries **free** VRAM — the display server
-consumes VRAM before ELI launches, so free ≠ total), `_auto_tune(model_path, hw)`
-(picks n_ctx/layers/batch), `_pick_model`, `_confirm_params`, config load/save.
-`main()` either shows the startup model picker (first boot) or delegates to
-`main_window.window.main()`. `--setup` forces the wizard.
+The entry path: `_auto_tune(model_path)` (the load plan `gguf_inference.load_model` uses,
+from `core/load_plan.py`, as the values the setup screen shows and saves), `_pick_model`,
+`_confirm_params`, config load/save. `main()` runs the licence gate, the first-run database
+bootstrap and the bundle chooser, then either hands over to the window, whose startup model
+picker is shown (`show_startup_model_picker`), or loads the saved model and then calls
+`main_window.main()`. `--setup` forces the terminal setup.
+
+In a packaged build the entry is `packaging/pyinstaller/eli_entry.py`, which keeps one window
+at a time with an OS file lock (`_gui_singleton_or_exit`); a second start exits. The lock is
+released by the system when the process ends, however it ends.
 
 ## Main window (`main_window/`)
 
@@ -86,7 +91,6 @@ live beside it and are application logic, not just UI:
 - `OllamaModelManager` (`models.py`) — optional Ollama integration (legacy/optional;
   ELI's stance is 100% local GGUF, so this is a secondary path).
 - `ExecutorBridge` (`adapters.py`) — routes GUI actions into the executor/engine.
-- `_GUIEngineAdapter` — engine façade for the UI.
 - UI widgets: `_QABoard` (quick-action card board), `_MiniTelemetryGraph` (live
   telemetry), `_ZoomableSettingsView`, `_ZoomableImagePreview`, `_FlowLayout`,
   `_CapabilityList`.
@@ -124,9 +128,17 @@ show stale or wrong numbers:
 
 See `tests/test_confidence_badge_reflects_the_real_turn.py`.
 
+### Commands that need no model
+
+`ConversationMixin._needs_no_model` asks the engine whether a message is a command it runs
+without the model (pause, next, "volume 40%"). Such a command goes through `_run_now`: the
+engine on its own thread, at once, while a reply is coming, while the model loads, and when no
+model is loaded at all. Anything else with no model loaded gets the "no model is loaded"
+notice.
+
 ## Labs workspace (`labs/`)
 
-The "scientific workspace" tab (`labs/container.py` builds it; `labs_tab.py` is a shim) with **11 sub-tabs**: Notebook, Memory &
+The "scientific workspace" tab (`labs/container.py` builds it) with **11 sub-tabs**: Notebook, Memory &
 Conversations, Jupyter, Calculator, Physics constants, File Chat, Workspaces,
 Sim/IDE, **Orchestration**, **Test & Review**, **Training**. (Report Builder is its own main tab; Orchestration and Test & Review live in Labs as developer and diagnostic tools.) This is the research-bench surface (reflects whatever technical/research work
 the active user does, surfaced dynamically from their own data).
@@ -136,9 +148,11 @@ the active user does, surfaced dynamically from their own data).
 The GUI half of the LoRA pipeline. Four steps: Hardware → Target → Data → Train.
 Training reaches the GUI through **signals only** on a **QThread** with cancel.
 
-### Settings ▸ 🛒 Marketplace (`tabs/marketplace_tab.py`)
+### Extensions and Settings ▸ 🛒 Marketplace (`tabs/extensions_tab.py`)
 
-Five panes: **Browse**, **Installed**, **Permissions**, **MCP servers**, **Sources**. See `security.md` for the verification and scanning
+One widget, `ExtensionsTab`: the Extensions main tab, and the Settings dialog's Marketplace
+page, which is the same widget opened at Browse. Its pages: **Overview**, **Browse**,
+**Installed**, **Permissions**, **MCP servers**, **Sources**, **Settings**. See `security.md` for the verification and scanning
 model — the short version is that the install path is deliberately slow, nothing is
 written to disk before the operator has seen a scan result, and what is written
 arrives switched off with no permissions granted.
@@ -167,7 +181,7 @@ timeout that **denies** if the GUI never answers.
      `_common.py` had left the launched window unable to start with every test passing.
      `tests/test_gui_names_resolve.py` now resolves every name the modules use through their
      `import *`, checks every `self.` method the window calls, and builds the window offscreen.
-  2. **Ollama manager** (about 130 lines, plus the 444-line model selector widget) sits oddly against the "100% local GGUF,
+  2. **Ollama manager** (in `main_window/models.py`, plus the model selector widget) sits oddly against the "100% local GGUF,
      don't-care-about-Ollama" stance — it's an optional/legacy path carrying
      real weight; candidate for removal or clear quarantine.
   3. UI logic instantiating engine/memory directly makes a clean headless mode
@@ -176,8 +190,6 @@ timeout that **denies** if the GUI never answers.
 
 
 ### Marketplace panes and the one-click path
-
-Five panes: **Browse**, **Installed**, **Permissions**, **MCP servers**, **Sources**.
 
 Browse carries two buttons on purpose. **⬇ Install** is the one-click path — it
 downloads to memory, checks the checksum and signature, runs every scanner, and then

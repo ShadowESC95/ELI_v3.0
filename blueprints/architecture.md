@@ -1,4 +1,4 @@
-> **Updated for 3.0.128 (September 2026).** Every CHAT turn runs the gradient
+> **Updated for 3.0.167 (November 2026).** Every CHAT turn runs the gradient
 > orchestrator at a depth scaled to the reasoning mode, with the specialist bus composed
 > inside it after shared retrieval (`eli/memory/retrieval.py`). Canonical S01–S12 tracing is in
 > `eli/kernel/pipeline_trace.py`; stage 12 learning runs through `learning_coordinator.py`.
@@ -6,13 +6,13 @@
 # Blueprint — ELI Architecture
 
 The structural map of ELI v3. File paths, counts and names below were checked against the
-source tree on 2026-09-25; where something is only true at runtime it is marked *(runtime)*.
+source tree at 3.0.167; where something is only true at runtime it is marked *(runtime)*.
 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
 > `ELI_USER_MANUAL.md`). No cloud on the inference path, no hardcoded model.
-> **223,219 lines across 626 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
-> 239 capabilities in `capability_manifest.json`, 194 of them routable and 216 in the
+> **233,521 lines across 608 Python files in `eli/`**, plus `api/server.py` (5,647 lines).
+> 242 capabilities in `capability_manifest.json`, 200 of them routable and 224 in the
 > executor's supported list.
 
 ---
@@ -33,42 +33,43 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 
 ## 1. Repository map
 
-*Files and lines per package under `eli/`, measured 2026-10-11.*
+*Files and lines per package under `eli/`, measured at 3.0.167.*
 
 | Package | Lines | Files | Role |
 |---|---:|---:|---|
-| `eli/runtime` | 39,471 | 104 | Grounding spine, evidence, response and introspection surfaces, daemons, self-improvement |
-| `eli/execution` | 34,496 | 81 | Router and executor: intent → action → side effects. `effectors/` holds the handlers the executor dispatches registered actions to (189 of 217); `routing/` the intent stages `route()` delegates to |
-| `eli/gui` | 30,882 | 62 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
-| `eli/cognition` | 23,002 | 50 | Agent bus, 12-stage orchestrator, inference, persona, reasoning modes, tone and emotion |
-| `eli/kernel` | 19,438 | 23 | `CognitiveEngine` composed from `kernel/stages/` mixins, pipeline tracing, scheduler, self-upgrade, world model |
-| `eli/core` | 12,995 | 38 | netguard, paths, settings, hardware profile, model download, full control |
-| `eli/perception` | 11,341 | 26 | Vision, STT, TTS, wake word, voice tone, OS control, gaze |
-| `eli/memory` | 10,835 | 14 | SQLite, FTS5, FAISS, knowledge graph, storage policy |
-| `eli/tools` | 7,605 | 29 | Image engine, news, capability registry, document tools |
-| `eli/plugins` | 5,947 | 34 | Plugin manager, marketplace client, bundled plugins |
-| `eli/planning` | 4,944 | 22 | Proactive daemon, habit scheduler, job, proposal and attention queues |
-| `eli/learning` | 4,251 | 14 | LoRA self-training pipeline |
-| `eli/integrations` | 3,662 | 18 | Ollama client, MCP client and server, cross-platform media, MPRIS |
-| `eli/coding` | 2,689 | 15 | `CodeAgent`: plan → search → verify → repair |
-| `eli/world` | 2,019 | 26 | World event bus, local world bridge, avatar and ontology |
-| `eli/utils` | 1,979 | 5 | Logging, platform compatibility |
-| `eli/setup` | 1,932 | 9 | Installer, hardware policy, first-run wizard |
-| `eli/licensing` | 2,170 | 12 | Licence activation, machine id, trial and tier gating. An activated key is also kept in the shared ELI key folder (`~/.config/eli-keys/<product>.key`, `ELI_KEYS_DIR`), which ELI VR reads too, and a key found there is taken up; a key is entered from the bundle chooser or the Bundles menu ("Enter a licence key…") |
-| `eli/system` | 1,400 | 3 | Portable app control, process guard |
-| `eli/contracts` | 788 | 3 | Typed runtime-status contracts |
-| `eli/onboarding` | 709 | 2 | Onboarding interview |
-| `eli/bundles` | 645 | 3 | Bundles: separate ELI applications (ELI Legal, ELI VR) found and opened on ELI v3's core, with its local server for the ones that need it (moved to the next free port when another program holds ELI's; the port it serves on is written to `server.json` in ELI v3's data folder for ELI VR) |
-| `eli/editions` | 380 | 33 | Edition packs (base, coding, content, enterprise, healthcare, legal, research, vr) |
-| `eli/cli`, `eli/scripts`, top level | 431 | 6 | Headless REPL, package entry |
-| **total** | **223,220** | **626** | |
+| `eli/runtime` | 41,701 | 104 | Grounding spine, evidence, response and introspection surfaces, daemons, self-improvement |
+| `eli/execution` | 31,311 | 76 | Router and executor: intent → action → side effects. `effectors/` holds the handlers the executor dispatches registered actions to (199 of the 224 supported); `routing/` the intent stages `route()` delegates to |
+| `eli/gui` | 28,226 | 59 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
+| `eli/cognition` | 27,289 | 57 | Agent bus, 12-stage orchestrator, inference, persona, reasoning modes, tone and emotion |
+| `eli/kernel` | 19,604 | 23 | `CognitiveEngine` composed from `kernel/stages/` mixins, pipeline tracing, scheduler, self-upgrade, world model |
+| `eli/core` | 13,261 | 36 | netguard, paths, settings, hardware profile, load plan, model download, full control |
+| `eli/perception` | 12,246 | 27 | Vision, STT, TTS, wake word, voice tone, OS control, gaze |
+| `eli/memory` | 11,583 | 13 | SQLite, FTS5, FAISS, knowledge graph, claims, document index, storage policy |
+| `eli/world` | 8,502 | 38 | ELI's world: rooms, objects, journal, policy and ledger; building, games and urges; the world feed a body reads (`spatial_feed.py`) |
+| `eli/plugins` | 6,637 | 33 | Plugin manager, marketplace client, bundled plugins |
+| `eli/tools` | 6,083 | 25 | Image engine, news, capability registry, document tools |
+| `eli/planning` | 5,151 | 22 | Proactive daemon, habit scheduler, job, proposal and attention queues |
+| `eli/learning` | 4,207 | 14 | LoRA self-training pipeline |
+| `eli/integrations` | 4,155 | 15 | Ollama client, MCP client and server, cross-platform media, MPRIS |
+| `eli/coding` | 2,872 | 15 | `CodeAgent`: plan → search → verify → repair |
+| `eli/licensing` | 2,239 | 12 | Licence activation, machine id, trial and tier gating. An activated key is also kept in the shared ELI key folder (`~/.config/eli-keys/<product>.key`, `ELI_KEYS_DIR`), which ELI VR reads too, and a key found there is taken up; a key is entered from the bundle chooser or the Bundles menu ("Enter a licence key…") |
+| `eli/utils` | 2,126 | 5 | Logging, platform compatibility |
+| `eli/setup` | 1,919 | 9 | Installer, hardware policy, first-run wizard |
+| `eli/system` | 1,815 | 3 | Portable app control, process guard |
+| `eli/bundles` | 766 | 3 | Bundles: separate ELI applications (ELI Legal, ELI VR) found and opened on ELI v3's core, with its local server for the ones that need it (moved to the next free port when another program holds ELI's; the port it serves on is written to `server.json` in ELI v3's data folder for ELI VR) |
+| `eli/onboarding` | 765 | 2 | Onboarding interview |
+| `eli/contracts` | 580 | 3 | Typed runtime-status contracts |
+| `eli/editions` | 131 | 9 | Edition packs (base, coding, content, enterprise, healthcare, legal, research, vr): a manifest each, discovered by `eli/editions/__init__.py` |
+| `eli/cli`, `eli/brain`, top level | 352 | 5 | Headless REPL, package entry |
+| **total** | **233,521** | **608** | |
 
-The largest files: `eli/execution/executor_enhanced.py` (9,697 lines, down from 16,324 now that
-registered actions run in their effector modules), `eli/kernel/engine.py` (8,448, plus 9,093
-lines in the `kernel/stages/` mixins it is composed from), `eli/execution/router_enhanced.py`
-(6,919), `eli/memory/memory.py` (6,091), `api/server.py` (5,286), `eli/cognition/agent_bus.py`
-(3,607), `eli/runtime/deterministic_grounding_gate.py` (3,383), `eli/cognition/gguf_inference.py`
-(3,377) and `eli/gui/labs/report_tab.py` (3,321).
+The largest files: `eli/kernel/engine.py` (8,521 lines, plus 9,245 lines in the
+`kernel/stages/` mixins it is composed from), `eli/execution/executor_enhanced.py` (7,588:
+registered actions run in their effector modules), `eli/execution/router_enhanced.py` (7,196),
+`api/server.py` (5,647), `eli/memory/memory.py` (5,524), `eli/cognition/agent_bus.py` (3,729),
+`eli/core/hardware_profile.py` (3,431), `eli/gui/labs/report_tab.py` (3,212),
+`eli/gui/main_window/_mixins/settings_model.py` (3,131) and `eli/cognition/gguf_inference.py`
+(3,010).
 
 ---
 
@@ -79,6 +80,8 @@ lines in the `kernel/stages/` mixins it is composed from), `eli/execution/router
 | `eli`, `eli-v3`, `eli-cli` | `eli.gui.app:main` | GUI (default) |
 | `eli-mcp` | `eli.integrations.mcp.server:main` | ELI as an MCP server |
 | `eli-jobs` | `eli.planning.jobqueue_cli:main` | durable job queue CLI |
+| `eli-license` | `eli.licensing.cli:main` | licence key commands |
+| `eli-gui` | `eli.gui.app:main` | GUI script entry |
 | `python -m eli` | `eli/__main__.py` | GUI, or headless with flags |
 | `python -m eli --headless` | `eli.cli.headless` | terminal REPL, no Qt |
 | `./eli.sh` | `python -m eli` | venv launcher |
@@ -89,11 +92,18 @@ Boot path (GUI): `eli/gui/app.py` → first-boot wizard when no model is configu
 constructs the `CognitiveEngine` singleton → loads the GGUF named in `config/settings.json`
 → starts the daemons.
 
+A packaged build starts at `packaging/pyinstaller/eli_entry.py`. One window at a time is kept
+by an OS lock on a file in the data folder (`_gui_singleton_or_exit`: `msvcrt` on Windows,
+`fcntl` elsewhere), held for the life of the process and released by the system however the
+process ends; `ELI_ALLOW_MULTI_INSTANCE=1` lifts it.
+
 ---
 
 ## 3. The request lifecycle
 
-Every request goes through `CognitiveEngine.process()` (`eli/kernel/engine.py`).
+Every request goes through `CognitiveEngine.process()` (`eli/kernel/engine.py`). The
+reasoning mode a caller names is turned into its one key first (`reasoning_modes.canonical_mode`),
+so a public name ("normal") and its internal key (`chain_of_thought`) run the same stages.
 
 ```
 user input
@@ -187,12 +197,19 @@ playing. Three pieces of form now decide, none of them a list of phrases:
   ELI to do, or nothing: a sentence that starts with who or what it is about ("you did not open
   spotify", "it stopped again") or with a question word is about something; one framed as a
   request ("could you ...", "i'd like you to ...") or starting with what to do is an
-  instruction. A sentence that turns into one ("this is great, play it again"; in speech, with
+  instruction. Beside other sentences, a sentence is an instruction only by its form
+  (`tells_by_form`): it asks ELI ("could you ..."), starts with what to do ("open ...", "go
+  search the web"), or is made of command words only ("volume down"). A statement in the
+  material of a question ("Note: the blue crate holds bolts.") writes no note, and a puzzle
+  about switches and a lamp is not sent to the smart home. A sentence that turns into one ("this is great, play it again"; in speech, with
   no punctuation, "that was great can you play some jazz") is read as its two parts. It also
   holds the one list of verbs a command starts with (`COMMAND_VERBS`).
 - `route_contracts.changes_something(action)` says, from the action's name, whether carrying it
   out changes anything. `route_contracts.fits(text, intent)` is asked of those that do: the
-  sentence has to be an instruction, and beyond the command's own words it has to say little.
+  sentence has to be an instruction, and beyond the command's own words it has to say little
+  (a rule that passes the whole message along as its argument is held to the first test only;
+  the repeat and transcribe rules match at the start of a sentence, so "repeat exactly" in a
+  request for text and a sentence about a transcript start nothing).
   The router asks it of the word-matching stages; the engine asks it of whatever the intent
   model resolves. A candidate that does not fit is passed over and recorded
   (`router.not_an_instruction`), and that turn is not sent to the intent model.
@@ -293,7 +310,7 @@ wider `mode_chat_agent_profile()` fan-out. Quick still runs the orchestrator.
   grammar built from the live action catalogue, so the model can only name a real
   capability and emit well-formed JSON. Backends without grammar support fall back to
   free text.
-- Budgeting lives in `engine.py::_build_enhanced_system` and `core/startup_hardware_optimizer.py`.
+- Budgeting lives in `kernel/stages/prompt_assembly.py::_build_enhanced_system` and `core/startup_hardware_optimizer.py`.
 
 ---
 
@@ -314,8 +331,9 @@ wider `mode_chat_agent_profile()` fan-out. Quick still runs the orchestrator.
   own "Playing: ..." line, never a placeholder like "something else"), "the new one" of it is looked
   up, and a search asked for with no subject of its own ("do a web search, you should be smart
   enough") searches what the talk is about, never the remark. Env: `ELI_GROUNDING_ESCALATION`.
-- **`evidence_ledger.py`, `evidence_arbitration.py`**: what counts as evidence, where it is
-  recorded (the ledger also records every executed action), and conflict resolution.
+- **`evidence_ledger.py`, `evidence_arbitration.py`**: what counts as evidence and where it is
+  recorded (the ledger also records every executed action); `evidence_arbitration.py` scores a
+  tool result as an evidence item.
 - **`persistence_gate.py`**: keeps internal report dumps out of memory.
 - **`response_contracts.py`, `final_response_provider.py`,
   `user_visible_response_surface.py`**: shape and clean the user-visible answer.
@@ -332,10 +350,15 @@ The known weak seam is internal state leaking into spoken output on the plain CH
 
 ## 10. Execution layer (`eli/execution/executor_enhanced.py`)
 
-- `execute(action, args) -> dict`. The executor's supported list holds **216 actions**; the
-  manifest declares **239 capabilities**, of which **194 are routable** and 216 are in the
+- `execute(action, args) -> dict`. The executor's supported list holds **224 actions**; the
+  manifest declares **242 capabilities**, of which **200 are routable** and 224 are in the
   supported list.
-- **Fast path** (`engine.py`): deterministic OS, media, status and job actions (`VOLUME`,
+- **Effectors** (`eli/execution/effectors/`): 199 of the supported actions are registered by an
+  effector module and run there; the executor looks an action up in the registry
+  (`effectors/registry.py`) before anything of its own. `effectors.load_all()` imports each
+  module on its own: one that fails to import is logged and listed by `effectors.failed()`
+  while the rest still load, and a packaged build's self-test fails when that list is not empty.
+- **Fast path** (`kernel/stages/fast_actions.py`): deterministic OS, media, status and job actions (`VOLUME`,
   `MEDIA_CONTROL`, `NEXT_MEDIA`, `OPEN_APP`, `DATE`, `SHELL_EXEC`, `ANALYZE_IMAGE`,
   `CHECK_JOB`, `BACKGROUND_JOBS`, ...) return the executor result verbatim.
 - **Calendar and reminders** (`runtime/agenda.py`): ELI's own, stored locally. `ADD_EVENT`
@@ -350,8 +373,11 @@ The known weak seam is internal state leaking into spoken output on the plain CH
   scheduling.
 - **Background jobs** (`runtime/background_tasks.py`): `submit/get/list`. Heavy PDF-folder
   analysis backgrounds itself; `CHECK_JOB` returns the real result.
-- **YouTube playback** lives in `eli/integrations/media/youtube_playback.py`; the executor
-  delegates to it.
+- **YouTube playback** lives in `eli/integrations/media/youtube_playback.py`; the media
+  effector delegates to it. `yt-dlp` and `mpv` fetch the stream themselves, past ELI's own
+  socket guard, so with the Net toggle off they are not started and the play is reported as
+  not played (`reason: offline`). `yt-dlp` comes with the `media` extra in `pyproject.toml`,
+  which release builds install.
 
 ### Plugins (`eli/plugins`)
 
@@ -380,15 +406,15 @@ Custom agents and plugins are trust-gated (§ plugin table below).
 **Four SQLite files** under `artifacts/db/` *(runtime)*: `user.sqlite3` (memory, conversation,
 knowledge graph, learning tables), `agent.sqlite3` (self-improvement records and agent
 metrics), `system_index.sqlite3` (OS index) and `coding_memory.sqlite3` (coding bug fixes).
-The blank `user.sqlite3` template holds 27 tables plus three FTS5 indexes: `memories`,
-`memories_archive`, `memory_meta`, `semantic`, `conversation_turns`, `conversations`,
-`session_summaries`, `kg_entities`, `kg_relations`, `recall_log`, `runtime_events`,
-`learning_replay`, `observations`, `habits`, `habit_events`, `habit_rules`, `user_patterns`,
-`user_model`, `eli_stances`, `belief_revisions`, `corrections`, `failures`,
-`error_tracking`, `improvements`, `capability_proposals`, `news_articles`,
-`news_reflections`. Self-improvement records (`improvements`, `failures`, `corrections`,
-`capability_proposals`, `error_tracking`) are written to `agent.sqlite3`; the copies in the
-user database are empty. Recall is hybrid: keyword, FTS5, FAISS, knowledge graph and
+The blank `user.sqlite3` template (`config/templates/db/`) holds 28 tables plus four FTS5
+indexes: `memories`, `memories_archive`, `memory_meta`, `memory_links`, `memory_lineage`,
+`semantic`, `conversation_turns`, `conversations`, `session_summaries`, `kg_entities`,
+`kg_relations`, `recall_log`, `runtime_events`, `learning_replay`, `observations`, `habits`,
+`habit_events`, `habit_rules`, `user_patterns`, `user_model`, `eli_stances`,
+`belief_revisions`, `corrections`, `failures`, `improvements`, `capability_proposals`,
+`news_articles`, `news_reflections`. Self-improvement records (`improvements`, `failures`,
+`corrections`, `capability_proposals`) are written to `agent.sqlite3`; the
+copies in the user database are empty. Recall is hybrid: keyword, FTS5, FAISS, knowledge graph and
 recent conversation, merged and reranked (§7).
 
 ---
@@ -417,7 +443,7 @@ recent conversation, merged and reranked (§7).
 - `tone_analyzer.py` and `tone_adaptor.py` read the user's tone; `emotion_timeline.py` keeps
   a history that lets ELI notice a sustained mood.
 - Generation injects a budget-trimmed persona and situation brief
-  (`engine.py::_build_enhanced_system`); a live-runtime fact is injected for model and
+  (`kernel/stages/prompt_assembly.py::_build_enhanced_system`); a live-runtime fact is injected for model and
   identity questions so ELI reports the loaded model.
 
 ---
@@ -429,11 +455,6 @@ recent conversation, merged and reranked (§7).
 - **Self-improvement loop** (`runtime/self_improvement.py`): started at boot, analyses
   failures immediately and then every 24 hours. Repair by the coding agent is opt-in and
   bounded. A failure is stored with a capsule (input, versions, model, error class), and a
-  candidate patch is tried on a hard-linked copy of the tree and compared with the same tests on
-  the untouched tree: only a candidate that fixes something and breaks nothing is applied, every
-  candidate stays in the archive (`code_patches`) with its verdict and cost, and the tests, the
-  evaluator and the safety gates cannot be patched by a candidate. `ELI_SELFPATCH_UNPROVEN=1`
-  restores applying without proof. A failure is stored with a capsule (input, versions, model, error class), and a
   candidate patch is tried on a hard-linked copy of the tree and compared with the same tests on
   the untouched tree: only a candidate that fixes something and breaks nothing is applied, every
   candidate stays in the archive (`code_patches`) with its verdict and cost, and the tests, the
@@ -461,7 +482,16 @@ targets, any model family) and `review_queue.py` (the human review gate).
 
 An internal world the agent inhabits. `world_event_bus.py` receives runtime events;
 `local_world_bridge.py` bridges to the model; snapshots, ledger and journal are under
-`artifacts/world/`. Experimental.
+`artifacts/world/`. Everything that changes the world goes through `building.py`, and so through
+the world's policy and its ledger.
+
+`spatial_feed.py` is the world as a body needs it (ELI VR now), served on the local API server
+under `/v1/world/*`; `docs/EMBODIMENT.md` is the contract. The feed only reads. The owner's
+message carries ELI's records (`shown.py`: memories, goals, beliefs, results, the agenda, the
+evidence, the books, what happened lately). A caller who is not the owner (a member under the
+server's roles) gets the house, the models and their own thoughts; the owner's pictures and
+books are not found for them. A client that says it keeps the records it was sent
+(`kept-records`) is sent each record whole once and by its id after that (`spatial_feed.lighten`).
 
 ---
 
@@ -489,7 +519,7 @@ An internal world the agent inhabits. `world_event_bus.py` receives runtime even
 PySide6 (LGPL). `main_window/` (`window.py` builds `EliMainWindow` from the mixins in `_mixins/`; `models.py`, `adapters.py`, `widgets.py`), `app.py` (boot), `labs/` (the Labs sub-tabs), `panels/` (`startup.py`: StartupModelSelectionDialog,
 FirstBootWizard and the hardware tuning dock; `settings.py`, `agent_wizard.py`,
 `permission_dialog.py`), `tabs/` (`eli_world_tab.py`, `experimental_tab.py`,
-`marketplace_tab.py`, `tasks_tab.py`, `training_tab.py`, `extensions_tab.py`), `docks/` (operator console,
+`tasks_tab.py`, `training_tab.py`, `extensions_tab.py`), `docks/` (operator console,
 proactive dock), `widgets/` (animated face, voice downloader, Ollama selector). `qt_compat.py`
 allows a PyQt fallback from source.
 
@@ -580,7 +610,7 @@ spec's own criteria. Spec agents execute no arbitrary code and bypass the trust 
 
 ### GUI surfaces
 
-`tabs/training_tab.py` (Labs ▸ Training), `tabs/marketplace_tab.py` (Settings ▸ Marketplace),
+`tabs/training_tab.py` (Labs ▸ Training), `tabs/extensions_tab.py` (the Extensions tab; Settings ▸ Marketplace shows the same tab opened at Browse),
 `panels/permission_dialog.py` (consent dialog and worker-to-GUI-thread bridge).
 
 ### Paths

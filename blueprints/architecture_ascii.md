@@ -1,6 +1,6 @@
 # Blueprint — ELI Full Architecture (ASCII)
 
-> **Updated for 3.0.128.** All CHAT modes → gradient orchestrator; bus composed at S06.
+> **Updated for 3.0.167.** All CHAT modes → gradient orchestrator; bus composed at S06.
 
 The entire system in one drawing, plus the module tree and data layout. Grounded
 in the real source (see `architecture.md` for prose, `diagrams.md` for the
@@ -14,7 +14,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║                                ELI — FULL ARCHITECTURE                             ║
 ║                100% local  ·  offline-by-default  ·  model-agnostic                ║
-║               223,219 LOC · 626 files · desktop GUI + web app server               ║
+║               233,521 LOC · 608 files · desktop GUI + web app server               ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
 ┌─ PRESENTATION ────────────────────────────────────────────────────────────────────┐
@@ -27,12 +27,12 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
                                           ▼
 ┌─ ROUTING ─────────────────────────────────────────────────────────────────────────┐
 │  execution/router_enhanced.py :: route()      regex-first PRIORITY PIPELINE         │
-│  + cognition/llm_intent.py (fallback)   route_authority · route_contracts ·         │
+│  + cognition/llm_intent.py (fallback)   route_contracts · command_parser ·          │
 │    execution_planner · portable_intent_contract                                     │
 └────────────────────────────────────────┬───────────────────────────────────────────┘
                                           ▼  {action, args, confidence, matched_by}
 ┌─ KERNEL ──────────────────────────────────────────────────────────────────────────┐
-│  kernel/engine.py :: CognitiveEngine.process()   ← the orchestrating core (~8k LOC, plus 8.5k in kernel/stages) │
+│  kernel/engine.py :: CognitiveEngine.process()   ← the orchestrating core (8.5k LOC, plus 9.2k in kernel/stages) │
 │  scheduler · pipeline · state · world_model · self_upgrade                          │
 └──────┬──────────────────────────────┬───────────────────────────────┬───────────────┘
        ▼                              ▼
@@ -52,18 +52,18 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
         │              └────────────────────────────┬─────────────────────────────────────┘
         │                                           ▼
         │              ┌─ GROUNDING SPINE (runtime/) ── the anti-confabulation core ──────┐
-        │              │  netguard ░ persistence_gate ░ deterministic_grounding_gate(3.4k) │
+        │              │  netguard ░ persistence_gate ░ deterministic_grounding_gate(2.6k) │
         │              │  ░ grounding_escalation (low-conf → deeper agent tiers + retry)    │
         │              │  ░ evidence_planner (plan→gather→consume: code/web/memory/runtime) │
         │              │  ░ report_pipeline (multi-stage docs: outline→sections→review)     │
-        │              │  ░ evidence_ledger/store/arbitration                               │
-        │              │  ░ response_contracts/packets/policy ░ final_response_assembly     │
+        │              │  ░ evidence_ledger · evidence_arbitration                          │
+        │              │  ░ response_contracts ░ final_response_provider                    │
         │              │  ░ user_visible_response_surface ░ truth_report ░ output_governor  │
         │              └────────────────────────────┬─────────────────────────────────────┘
         ▼                                           ▼
 ┌─ EXECUTION ───────────────────────────────────────────────────────────────────────┐
-│  execution/executor_enhanced.py  216 supported actions · 239 capabilities (194 routable)  │
-│  media_runtime · operator_actions · background_tasks                                │
+│  execution/executor_enhanced.py  224 supported actions · 242 capabilities (200 routable)  │
+│  effectors/ (199 registered actions) · media_runtime · operator_actions             │
 │  PLUGINS(10): calendar document_reader media notes pomodoro weather                 │
 │              system_stats tts web web_automation        eli/coding :: CodeAgent     │
 └──────┬───────────────────┬─────────────────────┬───────────────────┬────────────────┘
@@ -79,9 +79,9 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
                                                                     └──────────────────┘
 
 ┌─ CORE INFRA (cross-cutting — used by every layer) ────────────────────────────────┐
-│  netguard (process-wide offline failsafe)   paths/portable_paths/legacy_paths/db_  │
+│  netguard (process-wide offline failsafe)   paths/portable_paths/legacy_paths      │
 │  runtime_settings · config   hardware_profile · startup_hardware_optimizer ·       │
-│  load_plan                model_download (curated GGUF)   first_run/_wizard         │
+│  load_plan                model_download (curated GGUF)   setup/wizard              │
 └────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─ BACKGROUND DAEMONS (continuous, started at boot) ────────────────────────────────┐
@@ -133,80 +133,85 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ## C. Module tree (LOC · key files · role)
 
 ```
-eli/  (223,219 LOC, 626 files)  ·  api/server.py  (FastAPI web app + dashboard)
+eli/  (233,521 LOC, 608 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │
 ├── __main__.py ················ entry dispatch (GUI | --headless)
 │
-├── kernel/            17.5k ─── the core
-│   ├── engine.py      8.0k      CognitiveEngine.process() — the spine (+ stages/ 8.5k)
+├── kernel/            19.6k ─── the core
+│   ├── engine.py      8.5k      CognitiveEngine.process() — the spine (+ stages/ 9.2k)
 │   ├── scheduler.py             timed jobs
 │   ├── pipeline.py · state.py · world_model.py · self_upgrade.py
 │
-├── execution/         26.3k ─── route → act
-│   ├── executor_enhanced.py   15.9k   216 supported / 239 manifest
-│   ├── router_enhanced.py      8.3k   priority pipeline
-│   ├── execution_planner.py · route_authority.py · route_contracts.py
+├── execution/         31.3k ─── route → act
+│   ├── executor_enhanced.py    7.6k   224 supported / 242 manifest
+│   ├── router_enhanced.py      7.2k   priority pipeline
+│   ├── effectors/ (one module per action family + registry.py: 199 registered actions)
+│   ├── routing/ (command_parser.py · intents/)
+│   ├── execution_planner.py · route_contracts.py · shell_gate.py
 │   ├── operator_actions.py · operator_policy.py
 │   ├── media_runtime.py
 │   └── portable_intent_contract.py
 │
-├── cognition/         20.8k ─── think
-│   ├── agent_bus.py    3.5k   15 agents + dispatch
+├── cognition/         27.3k ─── think
+│   ├── agent_bus.py    3.7k   15 agents + dispatch
 │   ├── orchestrator.py        12-stage deep retrieval
-│   ├── gguf_inference.py 3.2k · inference_broker.py   model-agnostic inference
+│   ├── gguf_inference.py 3.0k · inference_broker.py   model-agnostic inference
 │   ├── reasoning_modes.py · hyde.py · reranker.py · llm_intent.py
 │   ├── persona.py/_updater/_values/_status/_hygiene  (+ persona.txt, persona.auto.txt)
 │   ├── context_synthesiser.py · working_memory.py
-│   ├── output_governor.py · response_governance.py · response_sanitizer.py
+│   ├── output_governor.py · self_claims.py · memory_diag.py
 │   └── grounded_status.py · introspection_agent.py · tone_analyzer.py
 │
-├── runtime/           35.4k ─── grounding spine + daemons (95 files)
-│   ├── deterministic_grounding_gate.py 3.4k · grounding_escalation.py
-│   ├── evidence_ledger/arbitration.py
+├── runtime/           41.7k ─── grounding spine + daemons (104 files)
+│   ├── deterministic_grounding_gate.py 2.6k · grounding_escalation.py
+│   ├── evidence_ledger.py · evidence_arbitration.py · command_splitter.py
 │   ├── persistence_gate.py · truth_report.py · control_contracts.py
-│   ├── response_contracts/packets/policy.py · final_response_assembly/provider.py
+│   ├── response_contracts.py · final_response_provider.py
 │   ├── user_visible_response_surface.py · personal_memory_*.py · reflection.py
 │   ├── background_tasks.py · self_improvement.py · code_monitor.py
 │   ├── capability_sync.py · pending_proposal.py · runtime_policy.py
 │   └── agenda.py (calendar + reminders)
 │
-├── memory/             8.8k ─── remember (11 files)
-│   ├── memory.py       5.7k   Memory · SQLite + FTS5 · storage policy in policy.py
+├── memory/            11.6k ─── remember (13 files)
+│   ├── memory.py       5.5k   Memory · SQLite + FTS5 · storage policy in policy.py
+│   ├── claims.py · knowledge_graph.py · document_index.py · retrieval.py
 │   └── vector_store.py        FAISS index
 │
-├── perception/        10.2k ─── sense (23 files)
-│   ├── vision.py · analyze_image/csv/pdfs/mesh.py · ambient_vision.py
+├── perception/        12.2k ─── sense (27 files)
+│   ├── vision.py · analyze_image.py · analyze_csv.py · analyze_pdfs.py · ambient_vision.py
 │   ├── audio_stt.py · local_whisper_stt.py · voice_worker_streaming.py
 │   ├── tts_router.py · os_controller.py · screen_locator.py · gaze_engine.py
 │
-├── planning/           4.0k ─── proactivity (19 files)
+├── planning/           5.2k ─── proactivity (22 files)
 │   ├── proactive_daemon.py · habits_scheduler.py · habits.py · jobqueue_cli.py
 │
-├── coding/             2.1k ─── CodeAgent (plan→search→verify→repair, 12 files)
+├── coding/             2.9k ─── CodeAgent (plan→search→verify→repair, 15 files)
 │
-├── learning/           4.3k ─── LoRA self-training (14 files)
-│   ├── lora_trainer/eval/guard.py · dataset_builder/filters.py
+├── learning/           4.2k ─── LoRA self-training (14 files)
+│   ├── lora_trainer.py · lora_eval.py · lora_trainer_guard.py · dataset_builder.py · dataset_filters.py
 │   ├── bootstrap_phi3_base.py · base_model_resolver.py · training_preflight.py
 │
-├── plugins/            5.9k ─── manager + bundled plugins (34 files)
+├── plugins/            6.6k ─── manager + bundled plugins (33 files)
 │   └── calendar · document_reader · media · notes · pomodoro · weather ·
 │       system_stats · tts · web · web_automation
 │
-├── world/              1.8k ─── EliWorld (world_event_bus, local_world_bridge)
+├── world/              8.5k ─── EliWorld (world_event_bus, local_world_bridge, building,
+│                                games, urges; spatial_feed + shown: the feed a body reads)
 │
-├── core/              11.2k ─── infra
+├── core/              13.3k ─── infra
 │   ├── netguard.py            offline failsafe + allow_network()
-│   ├── paths.py · portable_paths.py · legacy_paths.py · db_paths.py
+│   ├── paths.py · portable_paths.py · legacy_paths.py · model_folders.py
 │   ├── runtime_settings.py · config.py · grounding.py
 │   ├── hardware_profile.py · startup_hardware_optimizer.py · load_plan.py
 │   ├── model_download.py
 │
-├── gui/               27.4k ─── PySide6 desktop
+├── gui/               28.2k ─── PySide6 desktop
 │   ├── main_window/ (the window) · labs/ · app.py
 │   └── panels/  (startup.py: model picker + FirstBootWizard, HardwareTuningDock)
 │
-├── tools/              7.6k ─── image_engine · news · document tools
-├── contracts/ 0.8k · cli/ 0.1k · system/ 1.2k · utils/ 1.8k · setup/ 1.9k · onboarding/ 0.7k
+├── tools/              6.1k ─── image_engine · news · document tools
+├── integrations/ 4.2k · licensing/ 2.2k · bundles/ 0.8k · editions/ 0.1k
+├── contracts/ 0.6k · cli/ 0.1k · system/ 1.8k · utils/ 2.1k · setup/ 1.9k · onboarding/ 0.8k
 ```
 
 ---
@@ -218,12 +223,13 @@ artifacts/
 ├── db/
 │   ├── user.sqlite3      memories · memories_archive · memory_meta · semantic ·
 │   │                     conversation_turns · conversations · session_summaries ·
+│   │                     memory_links · memory_lineage ·
 │   │                     kg_entities · kg_relations · recall_log · runtime_events ·
 │   │                     learning_replay · observations · habits/habit_events/habit_rules ·
 │   │                     user_patterns · user_model · eli_stances · belief_revisions ·
 │   │                     news_articles · news_reflections   (+ FTS5 indexes)
 │   ├── agent.sqlite3     agent_dispatches · agent_metrics · improvements · failures ·
-│   │                     corrections · capability_proposals · error_tracking
+│   │                     corrections · capability_proposals
 │   ├── system_index.sqlite3   OS index
 │   └── coding_memory.sqlite3  coding_bug_fixes
 ├── vectors/index.faiss   semantic index   (embedder: nomic-embed-…Q4_K_M.gguf)
