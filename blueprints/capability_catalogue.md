@@ -270,7 +270,7 @@ layer that wraps the probabilistic model. Grouped by function:
 | `code_examiner.py` | 948 | Tiered file error scan (syntax/import → lint → gated LLM) → offer → verified fix. |
 | `code_monitor.py` | 268 | Detects source changes via git diff, classifies by subsystem, summarises for memory/context (ELI is aware of its own code changes). |
 | `capability_sync.py` | 520 | **AST-discovers** the live capability surface, diffs, writes `capability_manifest.json` — this is why the count is *measured*, not asserted. |
-| `generated_script_guard.py` | 214 | Validates LLM-generated scripts, **quarantines invalid ones**, and ships vetted canned scripts for known patterns (GPU-watch, redshift, etc.). |
+| `generated_script_guard.py` | 214 | Checks a generated script or document after it is written and **quarantines invalid scripts**; writes none itself (the one generator is `execution/effectors/coding.py`). |
 
 ## Self-healing remediation
 | Module | LOC | Role |

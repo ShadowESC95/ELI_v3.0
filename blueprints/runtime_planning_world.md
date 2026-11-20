@@ -1,6 +1,6 @@
 # ELI Runtime Surfaces, Planning, World, Tools & Plugins
 
-> **Updated 2026-09-30.** Stage 12 learning via `learning_coordinator.py`; goal
+> **Updated for 3.0.167.** Stage 12 learning via `learning_coordinator.py`; goal
 > autogenesis feeds the proactive stack. Task records gained an explicit resume path
 > and a World bridge (ported from v2); habit learning is now gated against ELI's own
 > automated actions.
@@ -21,7 +21,7 @@ the live system:
   (`classify_diagnostic_action` → `gather_evidence` → `format_evidence_block` →
   `maybe_handle` — deterministic diagnostic answers).
 - **Response assembly**: `final_response_provider.py`,
-  `response_contracts.py`, `response_policy.py`,
+  `response_contracts.py`,
   `user_visible_response_surface.py`.
 - **Personal memory surfaces**: `personal_memory_surface.py`,
   `personal_memory_clean_response.py`, `personal_memory_deep_response.py`,
@@ -34,16 +34,16 @@ the live system:
 > **Over-fragmentation flag (the headline weakness for this group):** there are
 > ~15 closely-related modules here doing "render a grounded user-visible
 > answer / introspect runtime" with overlapping responsibilities (three
-> `personal_memory_*` renderers alongside the response-contract, response-policy and
+> `personal_memory_*` renderers alongside the response-contract and
 > user-visible-surface modules).
 > This is the clearest "added beside, not folded in" cluster in the codebase and
 > the prime consolidation target — it should collapse to a handful of well-named
 > modules with clear ownership of "who produces the final string."
 
-## Planning / proactive (`eli/planning/`, 4.0k LOC)
+## Planning / proactive (`eli/planning/`, 5.2k LOC)
 
 Background cognition + goal/queue machinery:
-- `proactive_daemon.py` (1.0k) — the **self-improvement / proactive** loop. Uses
+- `proactive_daemon.py` (1.6k) — the **self-improvement / proactive** loop. Uses
   a two-DB split: reads user-facing memory/conversation from the **user DB**,
   writes proactive observations/improvements/errors to the **agent DB** (keeps
   ELI's own machinations out of user recall). Background thread.
@@ -88,7 +88,7 @@ Background cognition + goal/queue machinery:
   clear phrasings from the user's messages ("we decided to", "we still need to", "let's work on"),
   and `task_brief` puts unfinished work into the next session's awareness block — but only within
   a 14-day idle window. `find_task(query, include_idle=True)` (2026-09-30, ported from v2) bypasses
-  that window on an explicit ask ("continue the RAIMS project" routes to `RESUME_TASK`, a real
+  that window on an explicit ask ("continue the greenhouse project" routes to `RESUME_TASK`, a real
   router/executor action — not a chat-routed guess), and states real staleness ("last touched N
   days ago") rather than silently implying continuity. `close_task(goal_id)` is the explicit,
   non-inferred completion path. Opening/closing a task also notifies the World system (below).
@@ -115,10 +115,18 @@ Background cognition + goal/queue machinery:
   scope. Its agenda now spans failure-repair, world-driven, AND self-improvement —
   i.e. it sets its own intentions, governed.
 
-## World / autonomy model (`eli/world/`, 1.8k LOC)
+## World / autonomy model (`eli/world/`, 8.5k LOC)
 
 The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
 "anomaly room" — intended behaviour, see memory `eli-emergent-voice`):
+- **Who the feed is for** (`spatial_feed.py`): the message the local server gives a body is made
+  for its caller. The owner's carries ELI's records (`shown.items`, the thoughts on its mind, what
+  is coming up, the evidence, the books, what happened lately and the log). A caller who is not
+  the owner (a member under the server's roles) gets the house, the models and their own
+  thoughts; `/v1/world/picture/N` and `/v1/world/book/ID` are not found for them. A client that
+  says it keeps the records it was sent (capability `kept-records`) gets each record whole once
+  and as `{"id", "kept": true}` while it is unchanged on that link (`spatial_feed.lighten`);
+  `tests/fixtures/world_feed_v2_contract.json` holds the message's shape.
 - **Thoughts in the feed** (2026-11-04): the world feed carries ELI's thoughts lately
   (`eli/cognition/thoughts.py`: what it recalled, believed, read a sentence as, made, tried and
   proposed, each with why, how sure, what it decided and what became of it), under `thoughts` with
@@ -203,7 +211,7 @@ The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
     append of each process plus every 250 thereafter — the per-process counter
     alone meant a short session never trimmed at all.
 
-## Tools (`eli/tools/`, 7.6k LOC)
+## Tools (`eli/tools/`, 6.1k LOC)
 
 - `image_engine/` (the package under `eli/tools/image_engine/image_engine/`: `service.py`,
   `visual_core.py`, `plotting.py`, `prompt_compiler.py`, `quality.py`, `project_analyzer.py`,

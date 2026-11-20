@@ -1,6 +1,7 @@
 # ELI MK-XI — Full Project Audit (Engineering Reference)
 
 > **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+> **Gone since (noted at 3.0.167, 2026-11-20).** `gui/gui_eli_original.py` and `gui/labs_tab.py`: the window is `eli/gui/main_window/`, the Labs tabs `eli/gui/labs/`. `core/db_paths.py`: the user database path is `core/paths.py` (`user_db_path`). `core/dynamic_runtime_budget.py` and the load probe: sizing a load is `core/load_plan.py`. The inference broker is `cognition/inference_broker.py`. `runtime/generated_script_guard.py` no longer writes scripts; the one generator is `execution/effectors/coding.py`.
 
 **Purpose:** A durable, accurate map of the codebase to be used when **refactoring,
 upgrading, and fixing**. It records what each subsystem is, where it lives, its entry

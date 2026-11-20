@@ -36,11 +36,21 @@ A client that never says hello is a version 1 client and gets exactly what versi
 | Version | Carries |
 |---|---|
 | 1 | Room, avatar, awareness, objects; the client's room events |
-| 2 | All of 1, and how each object looks and where it stands, ELI's own room and every room of the house ELI has relit, what ELI last did and why; the scene; sentences; building; undo; the real things the body draws and ELI's own models; games |
+| 2 | All of 1, and how each object looks and where it stands, ELI's own room and every room of the house ELI has relit, what ELI last did and why; the scene; sentences; building; undo; the real things the body draws and ELI's own models; games; ELI's thoughts, books and evidence; pictures; kept records |
+
+Version 2's capabilities, as `GET /v1/world/protocol` lists them: `world-state`, `room-events`,
+`scene`, `say`, `building`, `undo`, `own-room`, `mind`, `props`, `pictures`, `models`, `games`,
+`thoughts`, `books`, `evidence`, `kept-records`.
 
 ## Routes
 
 All on the local server, behind its own token and role checks. Loopback callers are the owner.
+
+**What a caller who is not the owner gets.** The message is made for its caller. The owner's
+carries everything made of the owner's records: memories, claims, goals, results, the agenda, the
+evidence, the books, what happened lately and the log. A member (the server's roles,
+`docs/SERVER_AND_WEB_APP.md`) gets the house, the models and their own thoughts; those lists are
+empty in a member's message, and the owner's pictures and books are not found for them.
 
 | Route | What | Version |
 |---|---|---|
@@ -56,6 +66,20 @@ All on the local server, behind its own token and role checks. Loopback callers 
 | `GET /v1/world/mind` | Which model is loaded, which would be used, which ones ELI has | 2 |
 | `POST /v1/world/mind` | Choose ELI's model (admin) | 2 |
 | `POST /v1/world/played` | The body saying how a game ELI set went (capability `games`) | 2 |
+| `POST /v1/world/body` | The real things the body can draw, for ELI to place (capability `props`) | 2 |
+| `GET /v1/world/picture/N` | A picture ELI took or looked at for the user, by its ledger row (capability `pictures`); owner only | 2 |
+| `GET /v1/world/model/ID/F` | A file of a model ELI brought in, as the message's `models` lists it (capability `models`) | 2 |
+| `GET /v1/world/thoughts?room=&kinds=` | ELI's thoughts lately, the caller's own (capability `thoughts`) | 2 |
+| `GET /v1/world/book/ID` | One of ELI's books whole, with its sections (capability `books`); owner only | 2 |
+
+**Kept records.** A client that asks for the capability `kept-records` in its hello keeps the
+records it is sent. From then on a record (`objects`) that is the same as when it was last sent
+over that link goes as `{"id": ..., "kept": true}` and the client shows the one it holds; a new or
+changed record goes whole (`spatial_feed.lighten`). The first message after the hello carries
+every record whole. A client that does not ask gets every record whole every time. A hello may
+also say the most one message may take (`max_message`, bytes); ELI's books fill what the rest of
+the message leaves of it. `tests/fixtures/world_feed_v2_contract.json` holds the shape of the
+version 2 message a client can rely on.
 
 A failure on the version 2 routes carries a kind a client can act on:
 `{"detail": {"kind": "model_unavailable", "detail": "..."}}`. Kinds: `bad_request` (400),

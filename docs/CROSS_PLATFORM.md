@@ -10,7 +10,7 @@ The matrix below is **code coverage** — how each capability is *implemented* p
 separate and more honest: what I've genuinely **run**.
 
 - **Run-verified, end to end:** **Linux (x86_64) + NVIDIA.** Install, first-run, the full test
-  suite (**12,015 collected / 12,000+ passing**), voice (cross-platform mic auto-resolve),
+  suite, voice (cross-platform mic auto-resolve),
   vision, the server — all of it. This is the tested path.
 - **AppImage engine run-verified across the mainstream distros (2026-07-18, v2.1.18):** the shipped
   `.AppImage` was extracted and driven through a **real chat turn** (full router → agent bus →
@@ -128,7 +128,7 @@ input) — not on a headless server or Android · ➖ N/A on that platform
 | GUI (PySide6 desktop app) | ✅ | ✅ | ✅ | ➖ | ➖ |
 | Web app / REST API (FastAPI server) | ✅ | ✅ | ✅ | ✅ (client) | ✅ |
 | Scheduling, habits, proactive, reflection, self-improve | ✅ | ✅ | ✅ | ✅ | ✅ |
-| LoRA fine-tuning (`training/`) | ✅ | ⚠️ (CPU/MPS) | ✅ | ➖ | ✅ |
+| LoRA fine-tuning (`eli/learning/`) | ✅ | ⚠️ (CPU/MPS) | ✅ | ➖ | ✅ |
 
 ## Notes on the ⚠️ rows (honest limitations)
 - **Startup capability report** — at boot, ELI logs what works on *this* machine (GPU,
@@ -141,6 +141,13 @@ input) — not on a headless server or Android · ➖ N/A on that platform
   browser YouTube. Deep playlist control is best on Linux; other platforms open the
   correct Spotify context and nudge play via native hooks. (Media *playback* via
   `play_sound` is fully cross-platform.)
+- **YouTube background** plays a video's sound through `mpv` with `yt-dlp`. Release builds carry
+  `yt-dlp` (the `media` extra); `mpv` is a system program. Both fetch the stream themselves,
+  past ELI's own network guard, so with the Net toggle off they are not started and ELI says the
+  play did not happen because it is offline.
+- **One window at a time** in the packaged app is kept by an OS lock on a file (`msvcrt` on
+  Windows, `fcntl` elsewhere), released by the system when the process ends, a crash included.
+  `ELI_ALLOW_MULTI_INSTANCE=1` lifts it.
 - **Window management** (`wmctrl`/`xdotool`) is X11/Linux-centric; on macOS/Windows these actions
   degrade gracefully (return "not available") — they don't crash.
 - **Gaze/AR** needs a camera + display and `opencv`; desktop-only, Linux-tested.

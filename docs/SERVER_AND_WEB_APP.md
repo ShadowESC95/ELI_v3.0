@@ -97,6 +97,7 @@ in a window so the phone URL + token are visible).
 | GET/POST | `/v1/devices/*` | **token** | ELI's MQTT device server: `status`, `config`, `discover` (mDNS), `register`, `control`, `rooms`, `room/control` (no Home Assistant) |
 | GET/POST | `/v1/home/*` | **token** | Home AI: `state`, `suggestions` (+`accept`), `automations/*` (+`create`), `scenes/*` (+`activate`), `location`, `sun` |
 | GET/POST | `/v1/research/*` | **token** | Shared, collaborative corpora: `corpora`, `ingest`, `note`, `documents`, `activity`, `remove`, `query` (grounded, cited, attributed) |
+| GET/POST/WS | `/v1/world/*` | **token** | The world protocol for a body such as ELI VR ([EMBODIMENT.md](EMBODIMENT.md)). The owner's message carries ELI's records; a member's carries the house, the models and their own thoughts, and the owner's pictures and books are not found for them. |
 | GET  | `/v1/voice/voices` | **token** | List local Piper voices + the active one |
 | POST | `/v1/voice/stt` | **token** | Transcribe an audio clip (raw body) with the local whisper model |
 | POST | `/v1/voice/tts` | **token** | Render text to WAV with the local Piper voice (returned, not played on host) |
@@ -118,7 +119,7 @@ The launchers set these for you; you can also set them directly before `python -
 | `ELI_API_PORT` | `8081` | Listen port. |
 | `ELI_API_TOKEN` | _(unset)_ | When set, required as `Authorization: Bearer <token>` on the action endpoints. The launcher sets this in `--lan` mode. |
 | `ELI_API_ALLOW_TOKENLESS` | _(unset)_ | Permits tokenless serving. **The gate fails closed without it** — `main()` sets it to `1` only on a loopback bind, so an ASGI-direct launch (uvicorn/Docker) that skips `main()` stays locked down. Set `0` to require a token even on loopback. |
-| `ELI_API_USERS_FILE` | `config/api_users.json` | RBAC user store (admin/member). Manage with `python -m eli.runtime.api_users add\|remove\|list` or the Admin tab. With no users defined, the API stays single-operator. |
+| `ELI_API_USERS_FILE` | `config/api_users.json` | RBAC user store (admin/member/viewer). Manage with `python -m eli.runtime.api_users add\|remove\|list` or the Admin tab. With no users defined, the API stays single-operator. |
 | `ELI_RESEARCH_ROOT` | `artifacts/research/_sources/` | The only directory `/v1/research/ingest` may read documents from. Paths outside it are rejected. |
 | `ELI_RESEARCH_MAX_FILES` / `ELI_RESEARCH_MAX_BYTES` | `2000` / `512 MB` | Caps on a single research ingest (directory-walk DoS guard). |
 | `ELI_API_RELOAD` | `0` | `1` enables uvicorn auto-reload (dev only). |

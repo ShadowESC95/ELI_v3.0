@@ -30,7 +30,7 @@ weights remain first-run downloads into the per-user `ELI_v3` root.
 | File | Role |
 |---|---|
 | `ELI.spec` | PyInstaller spec — one-dir build, all platforms. Data files come from `git ls-files` only (personal files/models can never leak). Version read from `pyproject.toml`. |
-| `packaging/pyinstaller/eli_entry.py` | Frozen entry script → `eli.gui.app:main`. Also dispatches `ELI-Server`/`--server` → `api.server:main`, and `--selftest` (real import-stack boot check CI runs on every built bundle). |
+| `packaging/pyinstaller/eli_entry.py` | Frozen entry script → `eli.gui.app:main`. Also dispatches `ELI-Server`/`--server` → `api.server:main`, and `--selftest` (real import-stack boot check CI runs on every built bundle; it fails when an action module under `eli/execution/effectors/` did not import, `effectors.failed()`). Keeps one window at a time with an OS file lock (`_gui_singleton_or_exit`), released by the system however the process ends. |
 | `packaging/pyinstaller/rthook_eli_frozen_paths.py` | Runtime hook: pins `ELI_PROJECT_ROOT`/data/config/models to the per-user root — `%LOCALAPPDATA%\ELI_v3`, `~/Library/Application Support/ELI_v3`, `~/.local/share/ELI_v3` — the same place previous ELI releases used, so models/settings carry over on upgrade. `ELI_PROJECT_ROOT` env overrides. |
 | `packaging/pyinstaller/gen_version_info.py` + `packaging/windows/version.rc.in` | Generates `build/version.rc` (Windows version resource) from `pyproject.toml`. |
 | `packaging/windows/installer.iss` | Inno Setup installer for the frozen bundle (the older `ELI_Setup.iss` still serves the source-portable flow). |
@@ -73,6 +73,8 @@ system.
 * **Piper voices** — flagged `license_review_required` in
   `packaging/runtime_asset_manifest.json`; downloaded at runtime.
 * **PyQt** — GPL; the frozen bundle is PySide6-only (excluded in `ELI.spec`).
+* **yt-dlp is bundled.** It comes with the `media` extra in `pyproject.toml`, one of the
+  `REQUIRED_EXTRAS` in `release.yml`; without it playback of a video's sound is browser-only.
 * **Optional extras without wheels for a platform** — each `OPTIONAL_EXTRAS`
   group in `release.yml` installs independently; a group with no wheels for
   that OS is skipped with a workflow warning and ELI degrades cleanly
@@ -83,7 +85,7 @@ system.
 ```
 python3.12 -m venv .venv-build && source .venv-build/bin/activate   # the release builds on 3.12 (release.yml PYTHON_VERSION)
 pip install -r requirements-build.txt
-pip install ".[gui,llm,server,docs,analysis,extras]"            # + optional extras you want bundled
+pip install ".[gui,llm,server,docs,analysis,extras,media]"      # + optional extras you want bundled
 pyinstaller --noconfirm --clean ELI.spec
 
 # then, per platform:
@@ -130,6 +132,13 @@ holds ELI and what it cannot run without (`scripts/eli_env.py verify --strict`: 
 left behind that was built for another version of one installed), starts the window toolkit and
 starts the server. Not covered there: a GPU build, a model load, and the packaged apps, which
 `release.yml` builds and starts.
+
+## The whole suite on a runner
+
+`cross-platform-smoke.yml` runs a chosen set of test files on three systems. `full-suite.yml`
+runs every test on one clean Linux runner (`ubuntu-24.04`, Python 3.12, no display, CPU only) on
+each push to `main` that touches more than documents, and on demand. It does not gate a release
+yet: it has to be seen passing on a runner first.
 
 On Linux the release removes GTK and GLib's I/O library from the bundle before it is started
 and packed (`packaging/linux/trim_bundle.py`), and fails if either plug-in that brings them in
