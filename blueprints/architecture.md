@@ -1,4 +1,4 @@
-> **Updated for 3.0.167 (November 2026).** Every CHAT turn runs the gradient
+> **Updated for 3.0.168 (November 2026).** Every CHAT turn runs the gradient
 > orchestrator at a depth scaled to the reasoning mode, with the specialist bus composed
 > inside it after shared retrieval (`eli/memory/retrieval.py`). Canonical S01–S12 tracing is in
 > `eli/kernel/pipeline_trace.py`; stage 12 learning runs through `learning_coordinator.py`.
@@ -6,7 +6,7 @@
 # Blueprint — ELI Architecture
 
 The structural map of ELI v3. File paths, counts and names below were checked against the
-source tree at 3.0.167; where something is only true at runtime it is marked *(runtime)*.
+source tree at 3.0.168; where something is only true at runtime it is marked *(runtime)*.
 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in

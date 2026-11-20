@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.167 (November 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.168 (November 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -493,10 +493,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.12**, so Arc
 Python is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.167
-wget "$U/ELI_v3-3.0.167-x86_64.AppImage"
-chmod +x ELI_v3-3.0.167-x86_64.AppImage
-./ELI_v3-3.0.167-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.168
+wget "$U/ELI_v3-3.0.168-x86_64.AppImage"
+chmod +x ELI_v3-3.0.168-x86_64.AppImage
+./ELI_v3-3.0.168-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -1006,7 +1006,7 @@ passing a public name got the generic profile.
 **Cause:** one window at a time was kept by a file holding the process number. On Windows the
 check for a live process sent Ctrl+C to it, and after a crash the file stayed behind.
 
-**Fix (after v3.0.167):** the lock is one the system holds on a file (`msvcrt` on Windows,
+**Fix (v3.0.168):** the lock is one the system holds on a file (`msvcrt` on Windows,
 `fcntl` elsewhere) and lets go of when the process ends, however it ends.
 `ELI_ALLOW_MULTI_INSTANCE=1` allows more than one.
 
@@ -1017,7 +1017,7 @@ check for a live process sent Ctrl+C to it, and after a crash the file stayed be
 **Cause:** with no model loaded the window refused every message, though the engine runs
 pause, next and volume without one.
 
-**Fix (after v3.0.167):** a command that needs no model is run at once, with no model loaded as
+**Fix (v3.0.168):** a command that needs no model is run at once, with no model loaded as
 well as while one is loading or a reply is coming.
 
 ---
@@ -1027,7 +1027,7 @@ well as while one is loading or a reply is coming.
 **Cause:** `yt-dlp` and `mpv` are other programs and fetch the stream themselves, past ELI's
 socket guard.
 
-**Fix (after v3.0.167):** offline, they are not started, and ELI says the play did not happen
+**Fix (v3.0.168):** offline, they are not started, and ELI says the play did not happen
 because it is offline. A play that failed is listed in "what did we play" as asked for and not
 played, not as a search that opened.
 
