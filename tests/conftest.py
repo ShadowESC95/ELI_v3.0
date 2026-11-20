@@ -154,6 +154,21 @@ def _tests_never_launch_apps(monkeypatch, request):
     monkeypatch.setattr("eli.system.portable_app_control._popen", lambda args: False)
 
 
+@pytest.fixture(autouse=True)
+def _no_repair_offer_from_an_earlier_test():
+    """Each test starts with no install offer waiting and no failure on record. The launcher stub
+    above makes OPEN_APP fail, and where the app is not installed (a CI runner) that failure left an
+    offer waiting for five minutes: a later test's "yes", "no" or "get the news at 7am" was read as
+    the answer to it, so those tests passed on a machine that has the apps and failed on the runner."""
+    gr = sys.modules.get("eli.runtime.grounded_remediation")
+    if gr is not None:
+        gr.clear_pending()
+        gr._LAST_FAILURE = None
+        # Clearing it resolved the data folder before the test chose its own; forget that.
+        from tests._state_env import _forget_resolved_paths
+        _forget_resolved_paths()
+
+
 @pytest.fixture
 def workspace():
     """A throwaway folder inside the checkout (under artifacts/), for tests of code that only writes

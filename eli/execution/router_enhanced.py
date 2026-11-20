@@ -6659,7 +6659,7 @@ try:
             def _stage_pending_remediation_confirm(text, *_a, **_k):
                 """
                 Pre-pass: if a remediation offer is pending (e.g. 'install netflix?'),
-                intercept YES/NO and direct install/download commands before anything
+                intercept YES/NO and an install/download of the thing offered before anything
                 else can swallow them as CHAT or block them as fragments.
                 """
                 try:
@@ -6682,10 +6682,9 @@ try:
                             "confidence": 0.99,
                             "meta": {"matched_by": "pending_remediation.no_intercept"},
                         }
-                    # "install X" / "download X" — route to confirmation handler
-                    # which will either advance the pending plan or diagnose fresh.
-                    _im = _re.match(r"^(install|download|get)\s+(\S+)", low)
-                    if _im:
+                    # "install X" / "download X" answers the offer only when X is what was
+                    # offered; "get the news at 7am" or "install plugin notes" routes as itself.
+                    if _gr.names_the_offer(low):
                         return {
                             "action": "CONFIRM_PENDING_REMEDIATION",
                             "args": {"message": low},

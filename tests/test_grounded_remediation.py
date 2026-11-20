@@ -113,6 +113,88 @@ def test_a_plain_yes_runs_the_offered_repair(reply, monkeypatch):
         gr.clear_pending()
 
 
+def _pending_app_install():
+    gr.set_pending_for_test(
+        {"domain": "application", "subject": "an-editor", "title": "Install an-editor",
+         "commands": ["flatpak install -y an.editor"], "steps": [], "verification_steps": []},
+        {"ok": False, "domain": "application", "subject": "an-editor"}, stage="offered")
+
+
+@pytest.mark.parametrize("said, takes_it_up", [
+    ("install an-editor", True), ("get an-editor.", True), ("download the an-editor app", False),
+    ("install an-editor app", True), ("get the news at 7am", False), ("install plugin notes", False),
+    ("an-editor", False)])
+def test_only_naming_what_was_offered_answers_the_offer(said, takes_it_up):
+    assert gr.names_the_offer(said) is False, "nothing is offered yet"
+    _pending_app_install()
+    assert gr.names_the_offer(said) is takes_it_up
+
+
+@pytest.mark.parametrize("said, action", [
+    ("get the news at 7am", "SCHEDULE_TASK"),
+    ("get a morning report ready for tomorrow", "SCHEDULE_TASK"),
+    ("install plugin pomodoro", "PLUGIN_INSTALL"),
+    ("get news about Hubble for me", "NEWS_FETCH"),
+    ("install an-editor", "CONFIRM_PENDING_REMEDIATION"),
+])
+def test_a_waiting_offer_takes_only_its_own_install(said, action):
+    """With an install offer waiting, every "install/download/get ..." was read as the answer to
+    it: "get the news at 7am" went to the remediation handler, which looked for an application
+    called "the news at 7am". Only the thing offered answers it; the rest route as themselves."""
+    from eli.execution.router_enhanced import route
+    _pending_app_install()
+    assert str((route(said) or {}).get("action") or "").upper() == action
+
+
+def _machine_has(monkeypatch, installed=(), packaged=()):
+    """This machine has `installed` and a package source has `packaged`; nothing else exists."""
+    looked = []
+
+    def diagnose(name):
+        app = gr.extract_app_name(name)
+        looked.append(app)
+        if app in installed:
+            return gr._mk_result(True, "application", app, "status", "INSTALLED", evidence=[], repairable=False)
+        options = [{"source": "apt", "command": f"sudo apt-get install -y {app}", "label": f"Install {app}"}] \
+            if app in packaged else []
+        return gr._mk_result(False, "application", app, "open", "NOT_INSTALLED", evidence=[],
+                             repairable=True, repair_options=options)
+    monkeypatch.setattr(gr, "diagnose_app", diagnose)
+    return looked
+
+
+@pytest.mark.parametrize("said", [
+    "start with the basics of how rivers form", "get me a sense of how tides work",
+    "set up a plan for learning chess", "get started on the essay outline",
+    "download speeds are slow today, why is that", "open with a short story about a lighthouse",
+    "launch into the history of the printing press", "is the report available?", "fix it"])
+def test_a_sentence_left_to_the_conversation_is_not_read_as_an_application(said, monkeypatch):
+    """The orchestrator gave every chat message to this reader first, and it named the rest of the
+    sentence as an application: "get me a sense of how tides work" was answered "Could not open me a
+    sense of how tides work ... is not installed on this machine"."""
+    _machine_has(monkeypatch, packaged=("an-editor",))
+    assert gr.try_handle_query(said, chat=True) is None
+    assert not gr.get_pending()
+
+
+def test_what_is_plainly_about_an_application_is_still_answered_in_conversation(monkeypatch):
+    _machine_has(monkeypatch, installed=("a-player",), packaged=("an-editor",))
+    assert gr.try_handle_query("install an-editor", chat=True).rstrip().endswith(
+        "Would you like me to download/install it?")
+    gr.clear_pending()
+    assert "already installed" in gr.try_handle_query("install a-player", chat=True)
+    assert gr.try_handle_query("is an-editor installed?", chat=True)
+    assert gr.try_handle_query("install a-made-up-tool", chat=True) is None, \
+        "nothing here or in a package source has that name"
+    # Asked for as an application (the router chose the action), a name nothing has is said so.
+    assert "No package source here has" in gr.try_handle_query("install a-made-up-tool")
+
+
+def test_words_with_spaces_between_them_name_no_package(monkeypatch):
+    monkeypatch.setattr(gr, "_run", lambda *a, **k: pytest.fail("no package source is asked about a sentence"))
+    assert gr.build_install_candidates("me a sense of how tides work") == []
+
+
 # ---------------------------------------------------------------------------
 # a confirmed repair's commands are held to the one shell gate
 # ---------------------------------------------------------------------------

@@ -729,8 +729,9 @@ class AgentOrchestrator:
             user_input = str(user_input or "")
 
         # Grounded remediation pre-intercept: YES/NO confirmations consume pending repair state
-        # before the router or LLM see them; try_handle_query() handles open/launch/check phrasing
-        # without full pipeline planning.
+        # before the model sees them; try_handle_query() answers what is plainly about an
+        # application ("install X", "is X installed") without full pipeline planning. The router
+        # left this message to the conversation, so it is read as such (chat=True).
         if user_input:
             try:
                 from eli.runtime import grounded_remediation as _gr
@@ -738,7 +739,7 @@ class AgentOrchestrator:
                 if _conf is not None:
                     log.debug(f"[GROUNDED_REMEDIATION] confirmation intercept consumed: {user_input!r}")
                     return _conf
-                _handled = _gr.try_handle_query(user_input)
+                _handled = _gr.try_handle_query(user_input, chat=True)
                 if _handled:
                     return _handled
             except Exception as _gr_e:

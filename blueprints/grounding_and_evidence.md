@@ -134,7 +134,16 @@ yes/no) → `execute_pending_plan`. Stateful pending-repair tracking +
 recoverable instead of dead ends. An install is offered only when a package source on the
 machine has the thing (`build_install_candidates` asks each one). When none has it the reply
 says so and, for a short name, asks whether to open its website instead: "open nasa" used to
-end "Would you like me to download/install it?", and a yes ran the same lookups again.
+end "Would you like me to download/install it?", and a yes ran the same lookups again. Words
+with spaces between them name no package, so no package source is asked about them.
+
+While an offer waits, "install X" / "download X" / "get X" answers it only when X is what was
+offered (`names_the_offer`, which the router's pre-pass and `try_handle_query` share); "get the
+news at 7am" or "install plugin notes" routes as itself. The orchestrator hands every chat
+message to `try_handle_query(..., chat=True)` first: there, past the waiting offer, only what
+names an application this machine has or a package source offers is answered, and never "get
+..." or "open/run/launch/start ...", which the router reads itself ("get me a sense of how tides
+work" was answered "Could not open me a sense of how tides work").
 
 ## How it fits the pipeline
 

@@ -28,6 +28,8 @@ _LAST_FAILURE = None
 
 YES_RE = re.compile(r"^\s*(yes|y|yeah|yep|confirm|go ahead|do it|proceed|install it|download it)\s*$", re.I)
 NO_RE = re.compile(r"^\s*(no|n|cancel|stop|abort|never mind|dont|don't)\s*$", re.I)
+# "install X" / "download X" / "get X" / "set up X": the thing named is group 2.
+_INSTALL_ASK = re.compile(r"^\s*(install|download|get|setup|set up)\s+(.+?)[\s.!?]*$", re.I)
 
 # Fuzzy word-in-input matchers: tolerate trailing words ("yes please"), leading politeness
 # ("ok sure, go ahead") and STT noise ("confirmed yes"). The anchored YES_RE/NO_RE above stay
@@ -138,6 +140,16 @@ def get_pending():
                 except Exception:
                     pass
         return _PENDING
+
+def names_the_offer(text: str) -> bool:
+    """Whether "install X" / "download X" / "get X" names what the waiting offer is for: then it
+    takes the offer up ("install vlc" after "install vlc?"). Anything else named is a request of
+    its own ("get the news at 7am", "install plugin notes") and is not an answer to the offer."""
+    m = _INSTALL_ASK.match(str(text or ""))
+    pending = get_pending() if m else None
+    offered = str(((pending or {}).get("plan") or {}).get("subject") or "").strip().lower()
+    return bool(offered) and extract_app_name(m.group(2)).lower() == offered
+
 
 def clear_pending() -> None:
     global _PENDING
@@ -722,6 +734,11 @@ def build_install_candidates(name: str) -> list[dict]:
         "tesseract-ocr": "tesseract",
     }.get(norm, norm)
     name = norm
+    # No package manager's names hold a space (apt, dnf, zypper, pacman, snap, Homebrew, flatpak,
+    # winget and Chocolatey ids), so words with spaces between them name no package. winget and
+    # Chocolatey are not asked first (_winget_candidate), and a sentence was offered as one.
+    if not name or any(ch.isspace() for ch in name):
+        return candidates
 
     if norm == "yt-dlp":
         try:
@@ -1453,8 +1470,15 @@ def explain_last_failure(subject: str | None = None) -> str:
         msg += "\n\nWould you like me to download/install it?"
     return msg
 
-def status_message_for_app(app: str) -> str:
+def _names_an_application(result: dict) -> bool:
+    """Whether a diagnosis found the name as an application: on this machine or in a package source."""
+    return bool(result.get("ok") or result.get("repair_options"))
+
+
+def status_message_for_app(app: str, *, chat: bool = False) -> str | None:
     result = diagnose_app(app)
+    if chat and not _names_an_application(result):
+        return None
     if result["ok"]:
         return render_failure_message(result)
     return offer_for_result(result)
@@ -1546,7 +1570,15 @@ def as_executor_result(message: str, ok: bool = False) -> dict:
         "response": message,
     }
 
-def try_handle_query(text: str) -> str | None:
+def try_handle_query(text: str, *, chat: bool = False) -> str | None:
+    """A message about an application: an answer to the waiting offer (yes, no, or naming what was
+    offered), "install X", "open X", "is X installed", "fix it".
+
+    `chat` is True for a message the router left to the conversation (the orchestrator's). Nothing
+    there says it is about an application, so past the waiting offer it is answered here only when
+    what it names is an application this machine has or a package source offers, and never for
+    "get ..." or "open/run/launch/start ...", which the router reads for itself. "Get me a sense of
+    how tides work" was answered "Could not open me a sense of how tides work"."""
     if not _remediation_supported():
         return None
     raw = (text or "").strip()
@@ -1586,30 +1618,36 @@ def try_handle_query(text: str) -> str | None:
     # "install X" / "download X" explicit commands: (a) the user confirming a pending offer by
     # naming the app ("install netflix" after ELI asked about it), and (b) a fresh direct install
     # request with no pending state.
-    _idm = re.match(r"^\s*(install|download|get|setup|set up)\s+(.+?)\s*$", raw, re.I)
+    _idm = _INSTALL_ASK.match(raw)
     if _idm:
         subject = extract_app_name(_idm.group(2).strip())
-        _pending = get_pending()
-        if _pending:
+        if names_the_offer(raw):
+            # The app named is the one offered: advance the plan
+            _pending = get_pending() or {}
             _plan = _pending.get("plan") or {}
             _stage = str(_pending.get("stage") or "").strip().lower()
-            if str(_plan.get("subject", "")).lower() == subject.lower():
-                # App matches the pending offer — advance the plan
-                if _stage in {"offered", "pending", "proposed"}:
+            if _stage in {"offered", "pending", "proposed"}:
+                with _LOCK:
                     _pending["stage"] = "previewed"
                     globals()["_PENDING"] = _pending
                     _save_pending_state(_pending)
-                    return render_repair_preview(_plan)
-                if _stage == "previewed":
-                    return execute_pending_plan()
+                return render_repair_preview(_plan)
+            if _stage == "previewed":
+                return execute_pending_plan()
+        if chat and _idm.group(1).lower() == "get":
+            return None
         # No matching pending state — diagnose and offer
         diag = diagnose_app(subject)
+        if chat and not _names_an_application(diag):
+            return None
         if not diag.get("ok"):
             return offer_for_result(diag)
         return f"{subject} appears to be already installed on this machine."
 
     m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
     if m:
+        if chat:
+            return None
         raw_subject = m.group(2).strip()
         subject = extract_app_name(raw_subject)
 
@@ -1628,23 +1666,17 @@ def try_handle_query(text: str) -> str | None:
 
     m = re.match(r"^\s*(?:can you\s+)?(?:check|confirm)(?:\s+if)?\s+(.+?)\s+(?:is\s+)?(?:actually\s+)?(?:installed|on this machine|available|present)(?:\s+or\s+not)?\s*\??\s*$", raw, re.I)
     if m:
-        return status_message_for_app(m.group(1))
+        return status_message_for_app(m.group(1), chat=chat)
 
     m = re.match(r"^\s*is\s+(.+?)\s+(?:installed|available|present)\s*\??\s*$", raw, re.I)
     if m:
-        return status_message_for_app(m.group(1))
-
-    m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
-    if m:
-        subject = extract_app_name(m.group(2))
-        diag = diagnose_app(subject)
-        if not diag.get("ok"):
-            return offer_for_result(diag)
-        return None
+        return status_message_for_app(m.group(1), chat=chat)
 
     if re.match(r"^\s*(fix|repair|resolve)(?:\s+this|\s+that|\s+it)?\s*$", raw, re.I):
         last = get_last_failure()
         if not last:
+            if chat:
+                return None      # "fix it" about something else in the conversation
             return "I cannot verify what to repair because there is no grounded failure record yet."
         plan = build_repair_plan(last)
         if not plan:
