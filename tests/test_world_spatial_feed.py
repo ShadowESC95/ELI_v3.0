@@ -901,6 +901,53 @@ def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
     assert ended and ended[-1]["end"] == "its world link closed"
 
 
+def test_the_session_ends_when_the_link_handler_is_cancelled_before_a_thread_is_free(monkeypatch):
+    """The end was handed to the thread pool by an await in the handler's `finally`. A handler
+    cancelled as the link closed (the test client cancels it straight after closing; a server
+    stopping does the same) had that await cancelled again, and a job no thread had started yet was
+    dropped with it: on a busy macOS runner the session above was never ended. Here the pool's one
+    thread is busy when the link closes."""
+    import asyncio
+    import functools
+    import threading
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+    client, _ = _client(monkeypatch)
+    from eli.world import embodiment
+    monkeypatch.setattr(embodiment, "_remember", lambda title, text: True)
+    monkeypatch.setattr(embodiment, "_measure_headset", lambda: None)
+    embodiment.forget()
+    pool = ThreadPoolExecutor(max_workers=1)
+
+    async def one_thread(func, *a, **k):
+        return await asyncio.get_running_loop().run_in_executor(pool, functools.partial(func, *a, **k))
+    monkeypatch.setattr(asyncio, "to_thread", one_thread)
+    reading, hold = threading.Event(), threading.Event()
+    real = spatial_feed.spatial_state
+
+    def held(*a, **k):                  # the one thread is reading the state when the link closes
+        if hold.is_set():
+            reading.set()
+            _time.sleep(0.5)
+        return real(*a, **k)
+    monkeypatch.setattr(spatial_feed, "spatial_state", held)
+    try:
+        with client.websocket_connect("/v1/world/ws") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "hello", "surface": "eli_vr", "session": "eli-vr-busy", "protocol_versions": [1, 2]})
+            assert ws.receive_json()["type"] == "welcome"
+            assert client.post("/v1/world/scene", json={"scene": {"surface": "eli_vr", "session": "eli-vr-busy",
+                                                                  "room": "workshop"}}).status_code == 200
+            hold.set()
+            assert reading.wait(10.0)
+        until = _time.monotonic() + 10.0
+        while embodiment.present() and _time.monotonic() < until:
+            _time.sleep(0.02)
+        assert embodiment.present() == []
+    finally:
+        pool.shutdown(wait=True)          # the held read finishes inside the test, not after it
+
+
 # ── what ELI VR's knowledge rooms are sent: books, beliefs with their sources, the Evidence Wall ─────
 
 def _contract_errors(value, kind, shapes, where="message"):

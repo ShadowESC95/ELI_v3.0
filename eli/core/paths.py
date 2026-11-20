@@ -847,10 +847,9 @@ def get_paths() -> EliPaths:
     """Return the global PATHS singleton."""
     return PATHS
 
-# Module-level constants for direct import
+# The code's own folder, which does not move once ELI runs. Where data is kept is asked of
+# data_dir() / user_db_path() when it is used: a constant fixed it at import.
 PROJECT_ROOT = project_root()
-ARTIFACTS_DIR = data_dir()
-DB_PATH = user_db_path()
 
 def resolve_db_paths():
     """Backward compat — returns object with .user_db, .agent_db, .memory_db as Paths."""

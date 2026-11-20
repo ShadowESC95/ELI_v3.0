@@ -44,6 +44,7 @@ through the world's policy and its ledger.
 import asyncio
 import hashlib
 import json
+import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from eli.utils.log import get_logger
@@ -705,9 +706,13 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
             pass
         finally:
             # The link is the body's: once it closes, the session it named is over (ELI VR closed by
-            # its window, stopped by its launcher or crashed sends nothing else).
+            # its window, stopped by its launcher or crashed sends nothing else). Ended on a thread of
+            # its own, not awaited: a handler cancelled as the link closes (a server stopping, a test
+            # client leaving) had the await cancelled too, and the pool dropped the job before any
+            # thread took it, so the session never ended.
             if who:
                 from eli.world import embodiment
-                await asyncio.to_thread(embodiment.end, who["surface"], who["session"], "its world link closed")
+                threading.Thread(target=embodiment.end, args=(who["surface"], who["session"], "its world link closed"),
+                                 name="world-link-ended").start()
 
     return router

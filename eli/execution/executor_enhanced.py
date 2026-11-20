@@ -2394,7 +2394,11 @@ SUPPORTED_ACTIONS = _SupportedActions([
 ])
 
 
-STATE_PATH = Path(os.environ.get("ELI_STATE_FILE", str(get_paths().artifacts_dir / "state.json"))).expanduser().resolve()
+def _state_file() -> Path:
+    """The executor's state file (the persona lock), where the data folder is when it is used: fixed
+    at import it stayed in whatever folder was current then, and a test lane that set its own aside
+    afterwards read this checkout's own file."""
+    return Path(os.environ.get("ELI_STATE_FILE") or str(get_paths().artifacts_dir / "state.json")).expanduser().resolve()
 
 # Short-term conversation continuity
 
@@ -2406,8 +2410,9 @@ LOCK_ENFORCED = os.environ.get("ELI_LOCK_ENFORCED", "1").strip() not in ("0", "f
 
 def _load_state() -> Dict[str, Any]:
     try:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        path = _state_file()
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     return {}
@@ -2415,8 +2420,9 @@ def _load_state() -> Dict[str, Any]:
 
 def _save_state(st: Dict[str, Any]) -> None:
     try:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(st, indent=2), encoding="utf-8")
+        path = _state_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(st, indent=2), encoding="utf-8")
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 

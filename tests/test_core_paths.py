@@ -34,8 +34,6 @@ from eli.core.paths import (
     EliPaths,
     PATHS,
     PROJECT_ROOT,
-    ARTIFACTS_DIR,
-    DB_PATH,
     is_frozen,
     _is_dev_mode,
     _find_project_root,
@@ -55,8 +53,75 @@ def test_project_root_has_eli_dir():
 def test_project_root_constant_matches_function():
     assert PROJECT_ROOT == project_root()
 
-def test_artifacts_dir_constant_matches_function():
-    assert ARTIFACTS_DIR == data_dir()
+# ── where data is kept is asked when it is used, not fixed at import ──────────────────────────────
+
+# Store paths still fixed when their module is imported. Each kept the folder that was current then,
+# so a folder set afterwards (a test lane setting its stores aside) was not followed: the executor's
+# state file did so and a test read this checkout's own file. To be moved to a lookup at use and
+# taken off this list; nothing is added to it.
+_FIXED_AT_IMPORT = {
+    "eli/core/runtime_settings.py", "eli/gui/main_window/_common.py", "eli/learning/dataset_builder.py",
+    "eli/learning/lora_trainer_guard.py", "eli/memory/system_index.py", "eli/planning/jobqueue.py",
+    "eli/runtime/personal_memory_clean_response.py", "eli/runtime/test_generator.py",
+}
+_STORE_RESOLVERS = frozenset((
+    "data_dir", "artifacts_dir", "config_dir", "cache_dir", "logs_dir", "log_dir", "db_dir", "learning_dir",
+    "user_db_path", "memory_db_path", "agent_db_path", "conversations_dir", "proactive_dir", "documents_dir",
+    "scripts_dir", "notes_dir"))
+_STORE_ATTRS = _STORE_RESOLVERS | {"memory_db", "user_db", "agent_db"}
+
+
+def _resolves_a_store(node, own=frozenset()):
+    import ast
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            f = n.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+            if name.lstrip("_") in _STORE_RESOLVERS or (isinstance(f, ast.Name) and name in own):
+                return True
+        elif isinstance(n, ast.Attribute) and n.attr in _STORE_ATTRS and isinstance(n.ctx, ast.Load):
+            return True
+    return False
+
+
+def _run_at_import(tree):
+    """What a module runs when imported: its body and the bodies of module-level if/try/with (not
+    `if __name__ == "__main__"`), and the default values of its functions and methods."""
+    import ast
+    todo = list(tree.body)
+    while todo:
+        s = todo.pop(0)
+        if isinstance(s, ast.If) and "__main__" in ast.dump(s.test):
+            continue
+        if isinstance(s, (ast.If, ast.Try, ast.With)):
+            todo.extend(list(getattr(s, "body", [])) + list(getattr(s, "orelse", []))
+                        + list(getattr(s, "finalbody", [])) + [b for h in getattr(s, "handlers", []) for b in h.body])
+        elif isinstance(s, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr)):
+            yield s
+        elif isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for d in ([s] if not isinstance(s, ast.ClassDef) else
+                      [b for b in s.body if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))]):
+                yield from (v for v in d.args.defaults + d.args.kw_defaults if v is not None)
+            if isinstance(s, ast.ClassDef):
+                yield from (b for b in s.body if isinstance(b, (ast.Assign, ast.AnnAssign)))
+
+
+def test_no_store_path_is_fixed_when_its_module_is_imported():
+    import ast
+    root = project_root()
+    found = set()
+    for top in ("eli", "api"):
+        for py in sorted((root / top).rglob("*.py")):
+            try:
+                tree = ast.parse(py.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            own = frozenset(d.name for d in tree.body
+                            if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)) and _resolves_a_store(d))
+            if any(_resolves_a_store(s, own) for s in _run_at_import(tree)):
+                found.add(py.relative_to(root).as_posix())
+    assert found <= _FIXED_AT_IMPORT, f"a store path fixed at import: {sorted(found - _FIXED_AT_IMPORT)}"
+    assert _FIXED_AT_IMPORT <= found, f"no longer fixed at import, take off the list: {sorted(_FIXED_AT_IMPORT - found)}"
 
 
 # ── Dev mode detection ────────────────────────────────────────────────────
