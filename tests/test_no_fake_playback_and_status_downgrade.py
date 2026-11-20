@@ -126,6 +126,9 @@ def _yt_env(monkeypatch):
     monkeypatch.setattr(yp, "yt_resolve_watch_url", lambda q: "https://youtu.be/stub")
     monkeypatch.setattr(yp, "yt_mix_url", lambda u: u)
     monkeypatch.setenv("ELI_YT_VERIFY_SECONDS", "0.3")   # keep the test fast
+    # the Net toggle is on here: with it off mpv is not started at all (test_youtube_mpv_visible)
+    from eli.core import netguard
+    monkeypatch.setattr(netguard, "should_block_network", lambda: False)
     return opened
 
 
