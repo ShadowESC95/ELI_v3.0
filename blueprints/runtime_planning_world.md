@@ -1,6 +1,6 @@
 # ELI Runtime Surfaces, Planning, World, Tools & Plugins
 
-> **Updated for 3.0.168.** Stage 12 learning via `learning_coordinator.py`; goal
+> **Updated for 3.0.169.** Stage 12 learning via `learning_coordinator.py`; goal
 > autogenesis feeds the proactive stack. Task records gained an explicit resume path
 > and a World bridge (ported from v2); habit learning is now gated against ELI's own
 > automated actions.

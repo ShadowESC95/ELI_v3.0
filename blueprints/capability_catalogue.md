@@ -1,4 +1,4 @@
-> **Updated for 3.0.168 (November 2026).** Gradient orchestrator for all CHAT modes; shared
+> **Updated for 3.0.169 (November 2026).** Gradient orchestrator for all CHAT modes; shared
 > `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`. RESUME_TASK
 > and MULTI_COMMAND's dependency/crash-survival layer ported from v2; agent-bus
 > confidence and habit learning gained relevance/source integrity checks.
@@ -531,7 +531,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `cognition/affect_state.py` | 316 | The user's affect as a latent state: a Kalman filter over the turns' emotion reads (valence from the label at the reader's sureness, arousal from the voice), its time constant and wander identified from this user's own reads, a change caught by the innovation test; what the emotion timeline, the affect policy and the world read instead of raw per-turn reads (see `epistemic_dynamics.md` §7). |
 | `core/model_folders.py` | 244 | Where ELI looks for models, in one list every scanner reads: its own folders, the folders of the models the settings name, the loaded model's, and the folders the user names; add, remove, remember the folder of a model chosen by file; `chat_models()` across all of them (see `architecture.md` §4). |
 | `command_splitter.py` | 438 | Split one utterance that chains several commands into its parts; read a message as sentences and tell an instruction from a statement or a question. Holds the one list of verbs a command starts with. |
-| `execution/routing/command_parser.py` | 696 | The command language: a sentence read by its form (verb, object, modifiers, a pronoun for what the last command was about) and carried to the action its frame names, with the catalogue's activation phrases as the vocabulary; a strict pass ahead of the rules for atoms, a lenient pass after them for what no rule took (see `architecture.md` §4). |
+| `execution/routing/command_parser.py` | 743 | The command language: a sentence read by its form (verb, object, modifiers, a pronoun for what the last command was about) and carried to the action its frame names, with the catalogue's activation phrases as the vocabulary; a strict pass ahead of the rules for atoms, a lenient pass after them for what no rule took (see `architecture.md` §4). |
 | `conversation_thread.py` | 330 | Conversation thread awareness — topic carryover, proactive grounding, web queries. |
 | `desktop_launchers.py` | 776 | Redistribution-safe desktop / Start Menu launchers. |
 | `device_drivers.py` | 1091 | Pluggable LOCAL-control drivers for ELI's device server — control devices that don't |

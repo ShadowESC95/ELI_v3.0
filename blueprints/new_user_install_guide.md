@@ -1,10 +1,10 @@
 # ELI v3.0 — New User Installation Guide
 
-> **Updated for 3.0.168.** One hardware-aware GUI wizard.  
-> Releases: https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.168  
+> **Updated for 3.0.169.** One hardware-aware GUI wizard.  
+> Releases: https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.169  
 > Full guide: **`first time Installation/INSTALLATION_GUIDE.md`**
 
-**Version:** 3.0.168
+**Version:** 3.0.169
 
 ## What the wizard installs (core)
 

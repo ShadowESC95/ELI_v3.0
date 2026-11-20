@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.168 (November 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.169 (November 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -493,10 +493,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.12**, so Arc
 Python is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.168
-wget "$U/ELI_v3-3.0.168-x86_64.AppImage"
-chmod +x ELI_v3-3.0.168-x86_64.AppImage
-./ELI_v3-3.0.168-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.169
+wget "$U/ELI_v3-3.0.169-x86_64.AppImage"
+chmod +x ELI_v3-3.0.169-x86_64.AppImage
+./ELI_v3-3.0.169-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -1030,4 +1030,29 @@ socket guard.
 **Fix (v3.0.168):** offline, they are not started, and ELI says the play did not happen
 because it is offline. A play that failed is listed in "what did we play" as asked for and not
 played, not as a search that opened.
+
+---
+
+## "Could not open me a sense of how tides work … not installed on this machine"
+
+**Cause:** every chat message went to the install-offer reader first, and it took the rest of a
+sentence starting with get, start, open, set up or download as an app's name. While an install
+offer was open, any "install/download/get …" was read as the answer to it, so "get the news at
+7am" went to the offer.
+
+**Fix (v3.0.169):** an open offer is answered only by naming what was offered; in conversation
+only an app this machine has or a package source offers is answered as one, never "get …" or
+"open …"; words with spaces between them are looked up as no package, and "it" or "that" as no
+app ("install it" said "it appears to be already installed").
+
+---
+
+## "open with a short story…" opened an app; "run me through…" ran a shell command
+
+**Cause:** three rules turned a free name into an app, each with its own test of a name, and
+the "run" rule ran anything after "run" as a command.
+
+**Fix (v3.0.169):** they ask the command language's reading (`command_parser.app_to_open`,
+`names_an_app`); "run …" runs a command only when it is said to be one or names a program on
+the machine.
 

@@ -1,4 +1,4 @@
-> **Updated for 3.0.168 (November 2026).** Every CHAT turn runs the gradient
+> **Updated for 3.0.169 (November 2026).** Every CHAT turn runs the gradient
 > orchestrator at a depth scaled to the reasoning mode, with the specialist bus composed
 > inside it after shared retrieval (`eli/memory/retrieval.py`). Canonical S01–S12 tracing is in
 > `eli/kernel/pipeline_trace.py`; stage 12 learning runs through `learning_coordinator.py`.
@@ -6,7 +6,7 @@
 # Blueprint — ELI Architecture
 
 The structural map of ELI v3. File paths, counts and names below were checked against the
-source tree at 3.0.168; where something is only true at runtime it is marked *(runtime)*.
+source tree at 3.0.169; where something is only true at runtime it is marked *(runtime)*.
 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
@@ -179,7 +179,11 @@ RESPONSE_DELIVERY, S12 LEARNING_STATE_UPDATE. Enable tracing with `ELI_PIPELINE_
   already route (the catalogue's own phrases and the eval corpus are the yardstick, in
   `tests/test_command_parser.py`); the lenient pass, after them, takes what no rule did, and for
   an app or a track puts the command to the rules in the catalogue's words first ("fire up
-  spotify" as "open spotify"), so the rules keep their knowledge of objects. What is not read:
+  spotify" as "open spotify"), so the rules keep their knowledge of objects. Whether a phrase can
+  be an app's name is the parser's one test (`names_an_app`), and the rules that open an app by
+  any name ask its reading (`app_to_open`) instead of keeping their own: "open with a short
+  story..." opens nothing, "open up spotify" opens spotify, "open steam and chill" opens steam
+  (what follows is not an instruction by its form). What is not read:
   a chain is divided first by `command_splitter`; a question or a statement is not a command;
   shell commands, deletions and changes to who the user is are explicit-only.
 - **`execution_planner.py`**: typed `ExecutionPlan` and `RouteDecision` artifacts.
