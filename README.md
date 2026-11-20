@@ -497,20 +497,23 @@ data whenever you want.
 - `eli/memory` — episodic, semantic, FAISS vector index, knowledge graph
 - `eli/planning` — goals, jobs, autonomy, proactive daemon, scheduling
 - `eli/execution` — router + executor + **`effectors/`**: a dispatch **registry** where each action
-  family is its own module. **189 actions across 37 effector modules** (of 217 `SUPPORTED_ACTIONS`);
-  adding a capability is a drop-in module + one `register()` call, never a god-file edit
+  family is its own module. **199 actions across 42 effector modules** (of 224 `SUPPORTED_ACTIONS`);
+  adding a capability is a drop-in module + one `register()` call, never a god-file edit. Each
+  module loads on its own, and a packaged build that is missing one fails its self-test
 - `eli/perception` — audio, screenshots, OS controller, TTS/STT
 - `eli/runtime` — arbitration, verification, security policy
 - `eli/plugins` — tool plugins (install/enable/disable at runtime)
 - `eli/gui` — PySide6 desktop app, decomposed into `main_window/` (mixin-composed `EliMainWindow`)
   and `labs/` (one file per Labs tab)
-- `eli/editions` · `eli/licensing` — shared-core + edition packs and the commercial tier gate
-  (trial/personal/pro/enterprise); editions overlay the core, never fork it
+- `eli/editions` · `eli/bundles` · `eli/licensing` — edition packs (a manifest each), bundles
+  (separate ELI applications opened on this core) and the licence gate; a licence names products,
+  and editions overlay the core, never fork it
 - `eli/cli` — headless REPL (`eli --headless`)
 - `config` — portable default settings · `models` — local GGUF payloads (gitignored)
-- `tests` — a large pytest suite (**10,078+ tests**, including a `claims/` layer that
-  checks the project against its own documentation); the full suite runs locally, while CI gates a
-  cross-platform portable subset (no GGUF/display/GPU) on Linux, macOS, and Windows
+- `tests` — a large pytest suite (including a `claims/` layer that checks the project against
+  its own documentation); CI gates a cross-platform portable subset (no GGUF/display/GPU) on
+  Linux, macOS, and Windows, and runs the whole suite on a Linux runner on every push to `main`
+  (that run does not hold a release back yet)
 
 **Scaling:** the loader reads each model's real `n_ctx_train` from GGUF metadata and fits
 layers/batch/ctx to the hardware present; VRAM is summed across all GPUs. One path runs a 3B on a

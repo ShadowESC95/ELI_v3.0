@@ -1,5 +1,7 @@
 # Training your own ELI model (LoRA / QLoRA) — A to Z
 
+> **Where the scripts are.** The `training/` folder this guide runs from (`extract_eli_dataset.py`, `train_lora.py`, `merge_and_convert.py`) is not tracked in this repository (`.gitignore`); a clone does not have it. What ships is the pipeline under `eli/learning/`, driven from Labs ▸ Training or the `LORA_TRAIN` action (`blueprints/learning.md`).
+
 This guide fine-tunes a base model into an **ELI-native substrate** — teaching ELI's *voice and
 behavioural contracts*, then producing a GGUF you drop into `models/`. It's the meticulous,
 reason-from-it version; the quick command card is in `training/README.md`.

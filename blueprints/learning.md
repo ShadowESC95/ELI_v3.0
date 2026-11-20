@@ -3,7 +3,7 @@
 > **Updated for 3.0.128.** Stage 12 learning hooks for chat turns are centralized in
 > `eli/cognition/learning_coordinator.py` (`finalize_turn()`).
 
-`eli/learning/` — 4.3k LOC, 14 files. ELI's self-improvement-via-fine-tuning
+`eli/learning/` — 4.2k LOC, 14 files. ELI's self-improvement-via-fine-tuning
 path. **Important framing:** this is a *curated, human-gated, operator-invoked*
 training pipeline — **not** an autonomous self-modifying loop, and it targets a
 **separate trainable Hugging Face base**, not the inference GGUF.
@@ -145,8 +145,7 @@ first time.
   tab, the chat actions, or a scheduled overnight job. (b) connected to the live
   inference model by itself — it trains an adapter on a Hugging Face base, while
   inference runs a GGUF. A trained improvement reaches the running assistant only
-  once the adapter is merged into the base and converted to GGUF
-  (`training/merge_and_convert.py`); the Training tab says so explicitly when a run
+  once the adapter is merged into the base and converted to GGUF; the Training tab says so explicitly when a run
   finishes rather than implying the model has changed.
 
 ## Honest assessment
@@ -173,7 +172,7 @@ first time.
      local HF base can be declared as a target from the Training tab, and the
      prompt format follows the base model's own chat template rather than Phi-3's
      literal turn markers.
-  5. **Merge-to-GGUF is still manual.** `training/merge_and_convert.py` closes the
-     loop but depends on `unsloth`, which is in no requirements file. Producing a
+  5. **Merge-to-GGUF is still manual.** The step that closes the loop is the merge-and-convert script (kept in the local `training/` folder, which is not tracked in this repository);
+     it depends on `unsloth`, which is in no requirements file. Producing a
      usable model after a successful run is therefore still a documented manual
      step, not a button.

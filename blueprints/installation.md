@@ -1,6 +1,6 @@
 # Installation — one-click setup, cross-platform (2026-09-11)
 
-> **Updated for 3.0.128 (September 2026).** One hardware-aware GUI wizard for every supported OS.
+> **Updated for 3.0.167 (November 2026).** One hardware-aware GUI wizard for every supported OS.
 > Primary install: GitHub Releases (`ELI-Setup-*.exe`, Linux AppImage, macOS dmg, portable → `./ELI_Setup.sh`).
 > Core wizard stages hard-fail until nomic + voice + chat model are present. Windows desktop = ELI only
 > (GUI singleton). **Home** tab ≠ Home Assistant. See `first time Installation/INSTALLATION_GUIDE.md`.
@@ -53,7 +53,7 @@ Every release ships the platform assets below plus `SHA256SUMS.txt`.
 - **Linux: the AppImage needs glibc 2.39 or newer** (`ldd --version`). That is Ubuntu 24.04+, Debian 13+, Fedora 40+, Linux Mint 22+, Pop!_OS 24.04+, RHEL / AlmaLinux / Rocky 10+, openSUSE Leap 16+ and Tumbleweed, Arch. On Ubuntu 22.04, Debian 12, Mint 21 or RHEL 9 it does not start and says so; use **linux-portable.tar.gz** there, which installs from source against the system's own libraries.
 - Frozen builds bundle **nomic** + **Piper voice weights**; Windows TTS still needs a Piper **CLI** on PATH or under `tts_piper/` (weights alone are not enough).
 - **No download bundles a chat model.** First launch / wizard fetches one.
-- Windows: desktop shortcut is **ELI only** (Server is Start Menu). If two windows open, close one — v3.0.128+ refuses a second GUI instance.
+- Windows: desktop shortcut is **ELI only** (Server is Start Menu). A second start exits: the packaged app keeps one window at a time with a lock the system holds, released when the app ends, a crash included.
 
 > **Model size vs. your GPU matters more than which download you pick.** Choose a model that
 > fits your VRAM — e.g. **Qwen3-8B / Qwen2.5-7B** on an 8 GB GPU. Very large models (30B+) run
@@ -68,10 +68,10 @@ whichever Python the distro ships is irrelevant) and, since
 packages. Download and run it **directly**:
 
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.127
-wget "$U/ELI_v3-3.0.127-x86_64.AppImage"
-chmod +x ELI_v3-3.0.127-x86_64.AppImage
-./ELI_v3-3.0.127-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.167
+wget "$U/ELI_v3-3.0.167-x86_64.AppImage"
+chmod +x ELI_v3-3.0.167-x86_64.AppImage
+./ELI_v3-3.0.167-x86_64.AppImage
 ```
 
 Two fixes worth knowing, both resolved in current builds and verified on a clean Arch VM:
@@ -104,8 +104,8 @@ This works when you run the **`.AppImage` directly** *or* via `--appimage-extrac
 set the `APPIMAGE` path the launcher needs. Force it any time with:
 
 ```bash
-./ELI_v3-3.0.127-x86_64.AppImage --integrate      # add/refresh menu entries
-./ELI_v3-3.0.127-x86_64.AppImage --uninstall       # remove them
+./ELI_v3-3.0.167-x86_64.AppImage --integrate      # add/refresh menu entries
+./ELI_v3-3.0.167-x86_64.AppImage --uninstall       # remove them
 ```
 
 Running the **manually extracted `./squashfs-root/AppRun`** does *not* create menu icons — there's

@@ -1,5 +1,7 @@
 # ELI Fine-Tuning Guide — Train a Model the Correct Way (End-to-End)
 
+> **Where the scripts are.** The `training/` folder this guide runs from (`extract_eli_dataset.py`, `train_lora.py`, `merge_and_convert.py`) is not tracked in this repository (`.gitignore`); a clone does not have it. What ships is the pipeline under `eli/learning/`, driven from Labs ▸ Training or the `LORA_TRAIN` action (`blueprints/learning.md`).
+
 A meticulous, do-this-exactly walkthrough for turning **a base model you choose** into an
 **ELI-native GGUF**, then loading it back into ELI. Covers the *why* as well as the *how*, so
 it's a guide you can reason from, not cargo-cult.

@@ -6,9 +6,9 @@ from deep reads of the core + a full structural/code-health sweep — covering e
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Updated for 3.0.128.** Cognition unified with the v2 line (gradient orchestrator, shared
-> retrieval, S01–S12 tracing, memory storage policy). **231,687 lines across 612 `.py` files**,
-> **237** capabilities (**192** routable, **215** in `SUPPORTED_ACTIONS`, **221** in either). See
+> **Updated for 3.0.167.** Cognition unified with the v2 line (gradient orchestrator, shared
+> retrieval, S01–S12 tracing, memory storage policy). **233,521 lines across 608 `.py` files** in `eli/`,
+> **242** capabilities (**200** routable, **224** in `SUPPORTED_ACTIONS`, **230** in either). See
 > **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 >
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
@@ -46,9 +46,9 @@ inspected.
   verified subsystem facts, the fixes shipped this session, and the honest limits.
   Unbiased, just facts.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
-  catalogue of all actions (232) + every package's modules (5 parts).
+  catalogue of all actions (242) + every package's modules.
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~223k LOC / 626 files + web app), architecture by layer, the
+  view. What ELI is, scale (~234k LOC / 608 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.
@@ -85,9 +85,9 @@ inspected.
 - **[background_tasks.md](background_tasks.md)** — unified code generation (GENERATE_SCRIPT
   + self-upgrade route through the coding agent) and the in-process background task
   manager (heavy work runs on threads; `CHECK_JOB`/`BACKGROUND_JOBS`).
-- **[state_snapshot.md](state_snapshot.md)** — **authoritative current-state snapshot**
-  (measured): scale, capabilities (232), tests, GPU, and every recent change. Start here
-  for "what is true right now".
+- **[state_snapshot.md](state_snapshot.md)** — the full measured sweep of 2026-07-01:
+  scale, capabilities, tests, GPU, and the changes up to then. For current figures see
+  `architecture.md` and `docs/ARCHITECTURE_MAP.md`.
 - **[dag_orchestrator.md](dag_orchestrator.md)** — the DAG elevated to a full execution
   orchestrator (parallel/retries/fallback/cache/telemetry), wired through agents +
   evidence gather; Test & Review; SELF_IMPROVE/GENERATE_PROJECT on the coding/planner DAG;
@@ -149,22 +149,21 @@ inspected.
    evidence layer, fully-local model-agnostic inference, fail-closed security,
    integrated multimodality.
 2. **The dominant weakness is engineering discipline, not vision:**
-   - **God-files (largely dismantled in v3)** — the two GUI monoliths are gutted
-     to shims, `engine.py` is decomposed to 7,980 LOC (six stage mixins on
-     `CognitiveEngine`), `router_enhanced.py` to 5,315 (intent families lifted),
-     `executor_enhanced.py` to 6,442 (56% strangled). Baselines were 14.6k / 13.5k /
-     11.6k / 7.3k. See `MONOLITH_DECOMPOSITION_MAP.md`.
+   - **God-files (largely dismantled in v3)** — the two GUI monoliths are gone
+     (`gui/main_window/`, `gui/labs/`), `engine.py` is 8,521 LOC with 9,245 more in the
+     `kernel/stages/` mixins, `router_enhanced.py` 7,196 (intent families in
+     `routing/intents/`), `executor_enhanced.py` 7,588 (registered actions run in
+     `effectors/`). See `MONOLITH_DECOMPOSITION_MAP.md` for how they were taken apart.
    - **Over-fragmentation / "added beside, not folded in"** — ~15 overlapping
      `runtime/` response surfaces, two image engines, seven stacked
      `render_action` overrides in the grounding gate, multiple plan/queue
      representations; and the routing+verbatim logic decided across
      router/engine/GUI (the source of by-path inconsistencies).
-   - **~2,755 `except Exception:`** (~798 of them *silent* `pass`) swallowing
-     failures into silent fallbacks — the reason bugs only surface via runtime logs.
+   - **~4,560 `except Exception`** handlers (192 of them a silent `pass`, held under a
+     ceiling by `tests/claims/test_no_silent_swallow.py`) — failures turned into
+     fallbacks, the reason some bugs only surface via runtime logs.
    - **Repo hygiene** — root junk, committed binaries/diag outputs.
 3. **The gap to "ground-breaking" is subtraction + observability**, in order:
    tame error-swallowing → split god-files → delete duplication/clutter →
-   consolidate the `runtime/` surfaces. *(Full suite — 7,348 passed, 45 skipped,
-   2 xfailed as of 2026-07-03; the 5 former reds (deprecated `smart_home` plugin,
-   silent-swallow ratchet, stale blueprint ref) were all cleared 2026-07-03; see
-   `state_snapshot.md`.)*
+   consolidate the `runtime/` surfaces. *(The last full measured sweep written up is
+   `state_snapshot.md`, 2026-07-01.)*

@@ -38,7 +38,7 @@ phi-hardcoded**:
     "fine-tune yourself" / "run lora training" → LORA_TRAIN.
   - Scheduled `lora` kind (`_worker_lora`): "train a lora overnight [N steps]" →
     `SCHEDULE_TASK` runs `run_pipeline(execute=True)` unattended.
-  - Manifest: 239 capabilities (includes LORA_STATUS + LORA_TRAIN).
+  - Manifest: 242 capabilities at 3.0.167 (includes LORA_STATUS + LORA_TRAIN).
 - Tests: `tests/test_lora_pipeline.py` (target-module resolver, DAG order + dry-run
   no-train, both actions, routing, scheduled kind).
 
@@ -94,7 +94,7 @@ user data dir on a packaged install) instead of writing into a read-only mount.
 
 ### Still manual
 
-Merge → GGUF. `training/merge_and_convert.py` closes the loop but depends on
+Merge → GGUF. The step that closes the loop is the merge-and-convert script (kept in the local `training/` folder, which is not tracked in this repository); it depends on
 `unsloth`, which is in no requirements file, so producing a usable model after a
 successful run remains a documented manual step. The Training tab says so plainly
 when a run finishes rather than implying the live model has changed.

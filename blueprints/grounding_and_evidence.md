@@ -37,7 +37,7 @@ source.
 
 ## Components
 
-### `runtime/deterministic_grounding_gate.py` (3.4k lines)
+### `runtime/deterministic_grounding_gate.py` (2.6k lines)
 The deterministic renderer. `render_action(action, args, user_input, mode_label)`
 produces a grounded answer for control/status actions directly from runtime data
 (settings, runtime snapshot, DB counts, GPU line) — bypassing the model.
@@ -58,7 +58,7 @@ assembles the live config block (model_path, n_ctx, gpu_layers, …).
 > already used correctly for "what was your last message," and says plainly
 > when no trace is available rather than fabricating an answer.
 
-### `runtime/control_contracts.py` (1,232 lines)
+### `runtime/control_contracts.py` (1,426 lines)
 The deterministic control path:
 - `is_control_action` / `route_control_text` — recognise control/status intents.
 - `build_control_evidence(engine, action, args, …)` — gather the evidence packet
@@ -83,7 +83,7 @@ The deterministic control path:
 non-Quick compact synthesis path uses it and falls back to the deterministic evidence text.
 `contracts/grounded_control.py` owns which actions never fall back to a clarifying question.
 
-### `runtime/evidence_ledger.py` (711 lines)
+### `runtime/evidence_ledger.py` (914 lines)
 A persistent SQLite ledger of evidence events: `record_event`, `recent_events`,
 `actions_between` (what ELI executed in a period, per user, for the period log),
 `repeated_event_signals` (detect recurring issues over N days), `status_evidence`,
@@ -100,10 +100,9 @@ calibration error and reliability by band have one owner here; the ledger's tool
 uses them. The world's evidence confidence and uncertainty are the running means of the sitting's
 chances. See `blueprints/epistemic_dynamics.md`.
 
-### `runtime/evidence_arbitration.py` (193 lines)
-`EvidenceItem` + `arbitrate_evidence(limit)` + `build_evidence_context_text` —
-scores and merges competing evidence into a single context block. Pairs with the
-agent-bus confidence aggregation (`_score_tool_result`), which scores a tool
+### `runtime/evidence_arbitration.py` (74 lines)
+`EvidenceItem` + `_score_tool_result`, used by the agent-bus confidence
+aggregation: it scores a tool
 result with no recorded `"ok"` field as unverified (same low score as a
 confirmed failure) rather than defaulting a missing outcome to success.
 
@@ -113,7 +112,7 @@ recalled line carries its event date and status (`memory_provenance.format_groun
 and the orchestrator adds a retrieval diagnostics block (what was searched, how many items,
 which time window) so ELI can say truthfully what its search did.
 
-### `cognition/output_governor.py` (1,681 lines)
+### `cognition/output_governor.py` (1,563 lines)
 Post-generation governor: `govern_output(text, is_grounded)`,
 `normalize_assistant_text`, `validate_against_evidence`, plus a family of
 drift-repair functions — `strip_generic_ai_identity_drift` (kills "As an AI
@@ -121,7 +120,7 @@ language model…"), `repair_local_persona_drift`, `repair_self_user_confusion`
 (fixes the model conflating itself with the user), `clean_response_style`. The
 last line of defence before text reaches the user.
 
-### `cognition/grounded_status.py` (648 lines)
+### `cognition/grounded_status.py` (565 lines)
 `direct_grounded_answer(user_text)` — fully deterministic answers for identity /
 memory-inventory / status questions, assembled from the DBs
 (`format_user_identity`, `format_memory_inventory`, table distributions). No LLM.
@@ -169,7 +168,7 @@ end "Would you like me to download/install it?", and a yes ran the same lookups 
 
 ---
 
-## ELI's account of its own behaviour (`cognition/self_claims.py`, 1040 lines)
+## ELI's account of its own behaviour (`cognition/self_claims.py`, 1,804 lines)
 
 Routing, retrieval and escalation run before the model is called and never reach it, so asked
 "why did you search the web?" a model can only invent. Live, a 35B model blamed "vector search

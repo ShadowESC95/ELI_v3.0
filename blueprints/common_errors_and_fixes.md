@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.128 (September 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.167 (November 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -493,10 +493,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.12**, so Arc
 Python is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.127
-wget "$U/ELI_v3-3.0.127-x86_64.AppImage"
-chmod +x ELI_v3-3.0.127-x86_64.AppImage
-./ELI_v3-3.0.127-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.167
+wget "$U/ELI_v3-3.0.167-x86_64.AppImage"
+chmod +x ELI_v3-3.0.167-x86_64.AppImage
+./ELI_v3-3.0.167-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -973,3 +973,61 @@ v2 speaking muted v3's microphone.
 
 **Fix (v3.0.138):** everything of v3's is under `ELI_v3`, temp files are named `ELI_v3-...`, and the
 terminal command is `eli-v3`. Older generic folders are left as they are.
+
+---
+
+## A statement beside a question was carried out as a command
+
+**Symptom:** a message that gives some material and then asks about it ("Note: the blue crate
+holds bolts. Which crate holds the bolts?") writes a note; a puzzle about switches and a lamp
+goes to the smart home; "repeat exactly" in a request for text sets the player to repeat; a
+sentence about a transcript starts a transcription.
+
+**Cause:** beside other sentences, any sentence that was not about "you" or "it" was taken for
+an instruction, and the repeat and transcribe rules matched their word anywhere.
+
+**Fix (v3.0.167):** a sentence among others is an instruction only by its form: it asks ELI
+("could you ..."), starts with what to do ("open ...", "go search the web"), or is made of
+command words only ("volume down"). `command_splitter.tells_by_form`, `route_contracts.fits`.
+
+---
+
+## "normal" from an API caller ran with no reasoning stage
+
+**Cause:** `engine.process` compared the mode it was given with the internal keys, so a caller
+passing a public name got the generic profile.
+
+**Fix (v3.0.167):** the mode is turned into its one key first (`reasoning_modes.canonical_mode`).
+
+---
+
+## A second ELI window opens, or ELI will not start after a crash (packaged app)
+
+**Cause:** one window at a time was kept by a file holding the process number. On Windows the
+check for a live process sent Ctrl+C to it, and after a crash the file stayed behind.
+
+**Fix (after v3.0.167):** the lock is one the system holds on a file (`msvcrt` on Windows,
+`fcntl` elsewhere) and lets go of when the process ends, however it ends.
+`ELI_ALLOW_MULTI_INSTANCE=1` allows more than one.
+
+---
+
+## "pause" answered "No model is loaded yet"
+
+**Cause:** with no model loaded the window refused every message, though the engine runs
+pause, next and volume without one.
+
+**Fix (after v3.0.167):** a command that needs no model is run at once, with no model loaded as
+well as while one is loading or a reply is coming.
+
+---
+
+## A YouTube play reached the network with the Net toggle off
+
+**Cause:** `yt-dlp` and `mpv` are other programs and fetch the stream themselves, past ELI's
+socket guard.
+
+**Fix (after v3.0.167):** offline, they are not started, and ELI says the play did not happen
+because it is offline. A play that failed is listed in "what did we play" as asked for and not
+played, not as a search that opened.
+

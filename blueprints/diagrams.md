@@ -95,8 +95,8 @@ the memory subsystem, and the gating stack. All grounded in the real modules
  │                   user_model, eli_stances, belief_revisions,              │
  │                   news_articles(+_fts), news_reflections                  │
  │ db/agent.sqlite3  agent_dispatches, agent_metrics, improvements,          │
- │                   failures, corrections, capability_proposals,            │
- │                   error_tracking (self-improvement lives here only)       │
+ │                   failures, corrections, capability_proposals             │
+ │                   (self-improvement lives here only)                      │
  │ db/system_index.sqlite3 · db/coding_memory.sqlite3                        │
  │ vectors/index.faiss   semantic index                                      │
  └──────────────────────────────────────────────────────────────────────────┘
