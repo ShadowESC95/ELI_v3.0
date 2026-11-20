@@ -1,4 +1,4 @@
-> **Updated for 3.0.170 (November 2026).** Gradient orchestrator for all CHAT modes; shared
+> **Updated for 3.0.171 (November 2026).** Gradient orchestrator for all CHAT modes; shared
 > `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`. RESUME_TASK
 > and MULTI_COMMAND's dependency/crash-survival layer ported from v2; agent-bus
 > confidence and habit learning gained relevance/source integrity checks.
@@ -397,9 +397,9 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `core/` (paths, settings, hardware, safety) — 13.3k lines
 | Module | LOC | Role |
 |---|---|---|
-| `runtime_settings.py` | 1292 | Canonical settings.json load/save, legacy-key migration, portable-path healing/sanitising. |
+| `runtime_settings.py` | 1290 | Canonical settings.json load/save, legacy-key migration, portable-path healing/sanitising. |
 | `hardware_profile.py` | 3431 | Auto-detect GPU/VRAM/RAM → fit ctx/gpu_layers/batch (KV-cache + compute-buffer reserve); model discovery; hardware authority enforcement. |
-| `paths.py` | 906 | Single-source-of-truth path resolution (data/config/cache/db/models/voices…). |
+| `paths.py` | 905 | Single-source-of-truth path resolution (data/config/cache/db/models/voices…). |
 | `startup_hardware_optimizer.py` | 251 | Boot-time hardware optimiser (GPU select, layer/ctx allocation, mode presets). |
 | `config.py` | 240 | Thin config shim over runtime_settings (canonical key mapping). |
 | `model_download.py` | 638 | Curated GGUF catalogue + VRAM-based recommend + download. |
@@ -462,10 +462,10 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `learning/` (real LoRA self-training) — 4.2k lines
 | Module | LOC | Role |
 |---|---|---|
-| `lora_trainer.py` | 834 | Real torch/PEFT/transformers `Trainer` LoRA run. |
+| `lora_trainer.py` | 835 | Real torch/PEFT/transformers `Trainer` LoRA run. |
 | `lora_trainer_guard.py` | 567 | `TrainerTarget` plans + safety validation. |
-| `dataset_builder.py` | 553 | Build supervised dataset from logged turns/corrections (PII-redacted, deduped). |
-| `lora_eval.py` | 506 | Adapter eval suite. |
+| `dataset_builder.py` | 549 | Build supervised dataset from logged turns/corrections (PII-redacted, deduped). |
+| `lora_eval.py` | 507 | Adapter eval suite. |
 | `bootstrap_phi3_base.py`, `base_model_resolver.py`, `dataset_filters.py`, `export_trainable_dataset.py`, `merge_reviewed_datasets.py`, `training_preflight.py` | ~1.4k | Trainable base download/resolve, quality gates, export/merge, preflight. |
 
 ## `contracts/`, `integrations/`, `system/`, `utils/`, `cli/`
@@ -567,7 +567,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `shell_followup.py` | 100 | Resolve deictic shell follow-ups ("run that command") from prior assistant output. |
 | `site_address.py` | 119 | The address behind a site's name or a reference to one ("nasa website", "that website"): from the conversation, then a web search. Never built from the words. |
 | `state_providers.py` | 80 | State providers — the hook that lets components expose save/restore state to a |
-| `test_generator.py` | 291 | ELI-assisted behavioural test generation (Phase 4). |
+| `test_generator.py` | 298 | ELI-assisted behavioural test generation (Phase 4). |
 | `test_review.py` | 249 | Full test/project run → review workflow. |
 | `user_model.py` | 409 | Continuous User Model — ELI's living, semantic, auto-updating model of the user. |
 | `voice_assets.py` | 572 | Ensure the local voice models (STT + TTS weights) are present. |
@@ -741,7 +741,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 |---|---:|---|
 | `goal_autogenesis.py` | 269 | eli.planning.goal_autogenesis |
 | `insight_synthesis.py` | 143 | Cached, background-synthesised reflection insight. |
-| `jobqueue.py` | 185 | Durable SQLite-backed job queue for external subprocess jobs; files under `<data>/jobs`. |
+| `jobqueue.py` | 186 | Durable SQLite-backed job queue for external subprocess jobs; files under `<data>/jobs`. |
 | `jobqueue_cli.py` | 59 | Durable background jobs that run as separate processes and survive a restart. |
 | `proposal_adapters.py` | 127 | Adapters that make proposal execution results look like `subprocess.CompletedProcess`. |
 | `proposal_memory_bridge.py` | 64 | Bridge that records proposal outcomes into memory through safe calls. |
@@ -850,18 +850,18 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `labs/test_review_tab.py` | 259 | Test & Review tab. |
 | `labs/workspaces_tab.py` | 440 | Workspaces tab. |
 | `license_dialog.py` | 253 | Licence activation and purchase dialogs. |
-| `main_window/_common.py` | 555 | Shared imports, constants and helpers of the main window. |
+| `main_window/_common.py` | 569 | Shared imports, constants and helpers of the main window. |
 | `main_window/_mixins/chrome_io.py` | 2095 | `ChromeIoMixin`: window chrome, input and output. |
 | `main_window/_mixins/conversation.py` | 1268 | `ConversationMixin`: sending a message, the reply, and the media controls that run without a model. |
 | `main_window/_mixins/features.py` | 910 | `FeaturesMixin`: feature toggles and their handlers. |
 | `main_window/_mixins/image.py` | 495 | `ImageMixin`: image generation and attachments. |
-| `main_window/_mixins/quick_actions.py` | 178 | `QuickActionsMixin`: the quick-action buttons. |
+| `main_window/_mixins/quick_actions.py` | 179 | `QuickActionsMixin`: the quick-action buttons. |
 | `main_window/_mixins/screen_capture.py` | 197 | `ScreenCaptureMixin`: screenshots and screen reading. |
 | `main_window/_mixins/self_improve.py` | 182 | `SelfImproveMixin`: the self-improvement controls. |
 | `main_window/_mixins/settings_model.py` | 3131 | `SettingsModelMixin`: settings and model loading. |
 | `main_window/_mixins/tabs.py` | 1675 | `TabsMixin`: building the tabs. |
 | `main_window/widgets.py` | 450 | Widgets of the main window. |
-| `main_window/window.py` | 1178 | `EliMainWindow`, the main application window. |
+| `main_window/window.py` | 1177 | `EliMainWindow`, the main application window. |
 | `off_thread.py` | 41 | Blocking work off the Qt window's thread, with the window kept alive meanwhile. |
 | `tabs/extensions_tab.py` | 2024 | Extensions: plugins, MCP servers and the marketplace (browse, scan, install, revoke). Settings ▸ Marketplace shows this tab opened at Browse. |
 

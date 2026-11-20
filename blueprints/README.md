@@ -6,7 +6,7 @@ from deep reads of the core + a full structural/code-health sweep — covering e
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Updated for 3.0.170.** Cognition unified with the v2 line (gradient orchestrator, shared
+> **Updated for 3.0.171.** Cognition unified with the v2 line (gradient orchestrator, shared
 > retrieval, S01–S12 tracing, memory storage policy). **233,521 lines across 608 `.py` files** in `eli/`,
 > **242** capabilities (**200** routable, **224** in `SUPPORTED_ACTIONS`, **230** in either). See
 > **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
