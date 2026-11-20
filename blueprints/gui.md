@@ -1,6 +1,6 @@
 # ELI GUI
 
-> **Updated for 3.0.169.** Ollama model selector fixed on packaged builds
+> **Updated for 3.0.170.** Ollama model selector fixed on packaged builds
 > (`QDialogButtonBox` exported via `eli/gui/qt_compat.py`).
 
 `eli/gui/` — 28.2k LOC across 59 modules (top-level launcher, `main_window/` package, `labs/` package, panels, tabs, docks, widgets). A full native PySide6/PyQt desktop app (with a

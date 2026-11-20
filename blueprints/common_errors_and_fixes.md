@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.169 (November 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.170 (November 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -493,10 +493,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.12**, so Arc
 Python is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.169
-wget "$U/ELI_v3-3.0.169-x86_64.AppImage"
-chmod +x ELI_v3-3.0.169-x86_64.AppImage
-./ELI_v3-3.0.169-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.170
+wget "$U/ELI_v3-3.0.170-x86_64.AppImage"
+chmod +x ELI_v3-3.0.170-x86_64.AppImage
+./ELI_v3-3.0.170-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -1055,4 +1055,25 @@ the "run" rule ran anything after "run" as a command.
 **Fix (v3.0.169):** they ask the command language's reading (`command_parser.app_to_open`,
 `names_an_app`); "run …" runs a command only when it is said to be one or names a program on
 the machine.
+
+---
+
+## ELI VR closed, but ELI still says it is in its world
+
+**Cause:** the session was ended by an await in the world link's handler. A handler cancelled as
+the link closed (a server stopping) had that await cancelled too, and the job was dropped before
+a thread took it.
+
+**Fix (v3.0.170):** the session is ended on a thread of its own when the link closes, whatever
+happens to the handler.
+
+---
+
+## A test lane read the checkout's own `artifacts/state.json`
+
+**Cause:** the executor fixed its state file's path when it was imported, so a data folder set
+afterwards was not followed.
+
+**Fix (v3.0.170):** the path is asked for when the file is used. `tests/test_core_paths.py` lists
+the modules that still fix a store path at import, and fails on a new one.
 

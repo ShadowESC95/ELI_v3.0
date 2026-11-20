@@ -1,9 +1,9 @@
 # ELI v3 — architecture map
 
 **Read this before adding anything.** Measured from the **v3** tree at
-3.0.169 — not v2 monolith numbers.
+3.0.170 — not v2 monolith numbers.
 
-> **Updated for v3.0.169.** Cognition policy matches v2.3.44+ (gradient
+> **Updated for v3.0.170.** Cognition policy matches v2.3.44+ (gradient
 > orchestrator, shared retrieval, S01–S12). Layout differs: decomposed
 > `kernel/stages/`, `gui/main_window/`, `execution/effectors/`.
 
