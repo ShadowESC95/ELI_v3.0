@@ -194,7 +194,19 @@ def test_voice_models_have_json_config():
 def test_default_voice_constant():
     assert _DEFAULT_VOICE == "en_US-amy-medium"
 
-def test_get_active_voice_resolves_to_usable_voice():
+def _voices_here(monkeypatch, tmp_path, *names):
+    """Piper voices installed in a folder of this test's own (a model and its config each)."""
+    import eli.perception.tts_router as tr
+    for name in names:
+        (tmp_path / f"{name}.onnx").write_bytes(b"onnx")
+        (tmp_path / f"{name}.onnx.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(tr, "_voice_search_dirs", lambda: [tmp_path])
+
+
+def test_get_active_voice_resolves_to_usable_voice(monkeypatch, tmp_path):
+    """On a machine with voices installed (here, a folder of the test's own: a CI runner has none
+    downloaded), the active voice is one that can be used."""
+    _voices_here(monkeypatch, tmp_path, "en_US-amy-medium", "en_GB-alan-medium")
     result = get_active_voice()
     assert isinstance(result, str) and len(result) > 0
     if _is_system_voice(result):

@@ -41,7 +41,11 @@ def test_low_quality_detection():
     assert not tr._is_low_quality_piper("en_US-amy-medium")
 
 
-def test_default_list_hides_robotic_and_low_quality():
+def test_default_list_hides_robotic_and_low_quality(monkeypatch, tmp_path):
+    for name in ("en_US-amy-medium", "en_GB-alan-high", "en_US-ryan-low", "en_US-kim-x_low"):
+        (tmp_path / f"{name}.onnx").write_bytes(b"onnx")             # installed here, as on a machine
+        (tmp_path / f"{name}.onnx.json").write_text("{}", encoding="utf-8")   # that has voices
+    monkeypatch.setattr(tr, "_voice_search_dirs", lambda: [tmp_path])
     voices = tr.list_voices()
     assert not any(v.startswith("sys:") for v in voices), "espeak voices must be hidden"
     assert not any(tr._is_low_quality_piper(v) for v in voices), "low-qual voices must be hidden"
@@ -114,7 +118,10 @@ def test_set_voice_accepts_natural_without_it_being_installed():
 
 
 def test_natural_voice_synth_falls_back_to_piper_end_to_end():
-    """With XTTS absent, a natural: voice must still produce audio (via Piper)."""
+    """With XTTS absent, a natural: voice must still produce audio (via Piper). Real speech needs a
+    downloaded Piper voice: a machine with none (a CI runner) cannot make any, so it is not asked there."""
+    if not [v for v in tr.list_voices() if ":" not in v]:
+        pytest.skip("no Piper voice is downloaded on this machine")
     wav = tr.synthesize_wav("This is a test.", "natural:sophia")
     assert wav and len(wav) > 1000
 

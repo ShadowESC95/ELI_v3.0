@@ -878,6 +878,15 @@ def test_a_sentence_the_world_answered_is_kept_with_its_vr_session(monkeypatch):
     assert row["outcome"] == "ok" and "remove Throne (not done: there is no 'Throne' here)" in row["content"]
 
 
+def _ending_finished(timeout: float = 30.0) -> None:
+    """Wait for the thread that ends a session to finish: the session leaves the record before the
+    departure is remembered, and a thread still running after its test remembered it for real."""
+    import threading
+    for thread in threading.enumerate():
+        if thread.name == "world-link-ended":
+            thread.join(timeout)
+
+
 def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
     """The world WebSocket's disconnect was ignored: no VR session since one day had an end."""
     import time as _time
@@ -896,6 +905,7 @@ def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
     until = _time.monotonic() + 30.0           # the server side finishes the closed socket on its own thread,
     while embodiment.present() and _time.monotonic() < until:      # when the runner gets to it
         _time.sleep(0.02)
+    _ending_finished()
     assert embodiment.present() == []
     ended = [s for s in embodiment.sessions_between(0, _time.time() + 1) if s["session"] == "eli-vr-link"]
     assert ended and ended[-1]["end"] == "its world link closed"
@@ -943,6 +953,7 @@ def test_the_session_ends_when_the_link_handler_is_cancelled_before_a_thread_is_
         until = _time.monotonic() + 10.0
         while embodiment.present() and _time.monotonic() < until:
             _time.sleep(0.02)
+        _ending_finished()
         assert embodiment.present() == []
     finally:
         pool.shutdown(wait=True)          # the held read finishes inside the test, not after it

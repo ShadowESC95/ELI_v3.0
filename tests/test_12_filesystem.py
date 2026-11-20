@@ -6,6 +6,8 @@ directories present, key JSON artefacts valid, no stale .pyc-only modules.
 """
 import os
 import json
+from pathlib import Path
+
 import pytest
 
 
@@ -66,8 +68,12 @@ def test_capability_inventory_valid_json():
 
 
 def test_persona_txt_and_auto_txt_present():
+    """persona.txt ships with the code. The overlay (persona.auto.txt) is ELI's own state, written at
+    run time where paths.persona_auto_path() says (the data folder; this run's sandbox): it is
+    ignored by git and never in a fresh copy, so its being in eli/cognition is not asked."""
     cognition = os.path.join(ELI_ROOT, "cognition")
     assert os.path.isfile(os.path.join(cognition, "persona.txt")), \
         "cognition/persona.txt missing"
-    assert os.path.isfile(os.path.join(cognition, "persona.auto.txt")), \
-        "cognition/persona.auto.txt missing"
+    from eli.cognition import persona
+    from eli.core.paths import persona_auto_path
+    assert Path(persona.auto_path()) == Path(persona_auto_path()), "the persona module writes the overlay elsewhere"

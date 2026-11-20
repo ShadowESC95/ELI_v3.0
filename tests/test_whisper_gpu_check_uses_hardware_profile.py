@@ -138,8 +138,14 @@ def _reset_model_state(monkeypatch):
 
 def test_an_offline_install_without_the_model_fails_each_time_at_once(tmp_path, monkeypatch):
     """The import and the offline-cache check sat before the try that resets the flags: after one
-    failure whisper read as "loading" for good and every later utterance waited five minutes."""
+    failure whisper read as "loading" for good and every later utterance waited five minutes. The
+    speech library is a stand-in here (its model is never made): a CI runner does not install it."""
+    import sys
+    import types
     import pytest
+    library = types.ModuleType("faster_whisper")
+    library.WhisperModel = lambda *a, **k: pytest.fail("no model is made without its weights")
+    monkeypatch.setitem(sys.modules, "faster_whisper", library)
     _reset_model_state(monkeypatch)
     monkeypatch.setattr(stt, "_model_settings", lambda: ("small.en", str(tmp_path), "cpu", "int8", True))
     monkeypatch.setattr(stt, "whisper_cache_ready", lambda *_a, **_k: False)

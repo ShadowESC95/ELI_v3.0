@@ -69,7 +69,16 @@ def test_the_speech_model_comes_from_the_settings_unless_the_environment_says(mo
 
 
 def test_the_speech_models_offered_are_the_library_s_with_what_is_on_disk_marked(monkeypatch, tmp_path):
+    """The names offered are the speech library's own list. A stand-in for the library gives that
+    list here, so the test does not depend on faster-whisper being installed (a CI runner has none)."""
+    import sys
+    import types
     from eli.perception import local_whisper_stt as stt
+    library, utils = types.ModuleType("faster_whisper"), types.ModuleType("faster_whisper.utils")
+    utils._MODELS = {"small.en": "Systran/faster-whisper-small.en", "medium.en": "Systran/faster-whisper-medium.en"}
+    library.utils = utils
+    monkeypatch.setitem(sys.modules, "faster_whisper", library)
+    monkeypatch.setitem(sys.modules, "faster_whisper.utils", utils)
     snap = tmp_path / "models--Systran--faster-whisper-small.en" / "snapshots" / "abc"
     snap.mkdir(parents=True)
     (snap / "model.bin").write_bytes(b"x" * 2048)
