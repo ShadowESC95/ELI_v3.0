@@ -27,12 +27,19 @@ jobs:
       ELI_TEST_STRICT_ISOLATION: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      # The versions a release ships (release.yml): the lock and the llama-cpp-python the GPU packs
+      # are built at. Without them the runner took the newest of everything, PySide6 6.12.0 among
+      # them, which aborted the run at exit after every test had passed.
+      PIP_CONSTRAINT: ${{github.workspace}}/packaging/llama_cpp_constraints.txt ${{github.workspace}}/.build-constraints/lock.txt
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Constraints from the lock (pip reads them through PIP_CONSTRAINT)
+        run: python packaging/lock_constraints.py .build-constraints/lock.txt
 
       - name: System libraries Qt needs with no display
         run: |
