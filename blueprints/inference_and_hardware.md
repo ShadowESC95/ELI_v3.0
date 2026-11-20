@@ -1,6 +1,6 @@
 # ELI Inference & Hardware Boot
 
-> **Updated for 3.0.128.** GGUF path is canonical (optional Ollama backend still
+> **Updated for 3.0.167.** GGUF path is canonical (optional Ollama backend still
 > exists as a secondary path). VRAM fit reads `{arch}.block_count` from the GGUF
 > header (model-agnostic) with a size heuristic fallback only when metadata is
 > unreadable. Token budgets scale by reasoning mode via `reasoning_modes.py`.
@@ -15,14 +15,15 @@ How ELI loads a model, talks to it, and adapts to whatever machine it's on. The
 inference path is model-agnostic (see memory `eli-model-agnostic`); the boot path
 is hardware-adaptive. Files in `eli/cognition/` and `eli/core/`.
 
-## Inference (`cognition/gguf_inference.py`, 3.2k LOC + `inference_broker.py`)
+## Inference (`cognition/gguf_inference.py`, 3.0k LOC + `inference_broker.py`)
 
 - **Model resolution (`get_model_path`)**: `ELI_GGUF_MODEL_PATH` env →
   `model_path`/`custom_model_path`/`bundled_model_path`/`gguf_model_path` settings
   keys. No baked model; empty default.
 - **`load_model(force_reload)`**: resolves `n_ctx` (env → settings →
-  `config.get_gguf_n_ctx()`), caps it to `vision_coresident_text_ctx` when a
-  co-resident vision model is loaded; resolves `n_gpu_layers` similarly.
+  `config.get_gguf_n_ctx()`) and `n_gpu_layers` similarly. With the `vision_coresident`
+  setting on, the small vision model is loaded first (`vision.load_resident_fast_model`) so
+  the load plan sees the memory it takes.
 - **Graceful GPU-layer fallback**: if context allocation fails at the requested
   layer count, it retries with fewer layers / without flash-attention rather than
   crashing — keeps the model + n_ctx and degrades GPU offload instead.
@@ -65,7 +66,7 @@ is hardware-adaptive. Files in `eli/cognition/` and `eli/core/`.
   wheels assume AVX-VNNI and SIGILL on older chips; the loader now reports that plainly instead of
   crashing. Only a definitive illegal-instruction blocks a load. `ELI_CPU_PREFLIGHT=0` disables it.
 
-## Hardware profiling (`core/hardware_profile.py`, ~1400 LOC)
+## Hardware profiling (`core/hardware_profile.py`, 3,431 LOC)
 
 Free-VRAM-aware sizing, genuinely cross-vendor: NVIDIA via `nvidia-smi`, then a
 kernel-driver fallback, then AMD via `rocm-smi`, then AMD via the stock `amdgpu`
@@ -76,16 +77,10 @@ whatever the card.
 
 - `HardwareProfile` dataclass tracks **free** vs total VRAM (free is what
   matters for whether a profile actually loads).
-- **`gpu_detection_uncertain`** — a real GPU PCI device can be present in
-  `/sys/class/drm` (kernel sees it) while every vendor-specific probe above
-  fails to characterize it (a timeout, a missing tool, a permission error, an
-  unrecognised card). That used to collapse into the identical `has_gpu=False`
-  as a genuinely GPU-less machine, so "no GPU" was reported with full
-  confidence even when the honest answer was "couldn't check."
-  `_linux_gpu_pci_device_present()` is the vendor-agnostic last-resort check
-  that sets this flag; `has_gpu` itself stays `False` either way (still the
-  safe default for offload decisions) — this field is for anything that
-  *reports* the result.
+- **`gpu_detection_uncertain`** — set when a card is seen but a reader gave no free-memory
+  figure for it (Windows before 10, Arc on Linux): the total stands in for the free figure
+  until llama.cpp reads the card, and anything that *reports* the result can say the figure
+  was not measured.
 - `_kv_cache_mb(n_ctx, n_layers)` — KV-cache cost, for the cache type the load will use.
 - **KV cache type** — the settings `cache_type_k` / `cache_type_v` are empty (fp16, the default)
   or `q8_0`. Any other quantized type stored there reads, sizes and loads as `q8_0`
@@ -129,8 +124,7 @@ every AMD/Intel/Apple machine, or on any NVIDIA machine with a driver
 hiccup: `GPU_STATUS` (`executor_enhanced.py`), `self_status.py`,
 `truth_report.py`, `deterministic_grounding_gate.py` (×2),
 `user_visible_response_surface.py`, `contracts/runtime_status.py`, and
-`gguf_inference.py`'s adaptive cold-load probe. `local_whisper_stt.py`'s
-`_gpu_total_mb()` was routed through `detect_hardware()` directly instead
+`gguf_inference.py`. `local_whisper_stt.py` reads its card the same way
 (ctranslate2/faster-whisper has no ROCm backend, so AMD/Intel correctly
 stay on CPU there — that was correct-by-design, not a bug).
 
@@ -192,36 +186,12 @@ bundled copy via `sys.path`.
   the next start: the two share library names, and two builds in one process freed each other's
   memory.
 
-## Load-probe cache (`core/load_probe.py`)
+## What a load reports
 
-`_gpu_identity()` memoizes a `name|total_mb` string per process so every cache
-lookup and record doesn't shell out to `nvidia-smi`. A detection **exception**
-(not a clean "no GPU found") no longer gets memoized as `"cpu"` — that used to
-permanently mislabel the process's load-probe cache identity for the rest of
-the session after one transient early-boot failure, even after the GPU became
-detectable. `"cpu"` is still returned for that one call (a safe, conservative
-answer right now); the next call gets a real chance to detect the GPU.
-
-The probe used to test the raw requested layer count regardless of MoE. For a mixture-of-experts
-model too big to fit as requested, the loader always offloads with experts in RAM and every layer
-on the GPU instead — a completely different, much lighter VRAM footprint — so the probe was
-proving a configuration that is never actually attempted, thrashing the full timeout budget (180s
-on an 8 GB card) every launch instead of the few seconds a real MoE load takes. It now checks
-`moe_offload.plan_for_load()` first and, when a plan applies, probes that configuration (the child
-subprocess wraps its `Llama(...)` call in `moe_offload.expert_offload_params()` the same way the
-real loaders do) — proven in 31s against a live model instead of an "unproven" 180s timeout.
-
-That fixed WHAT is tested but not the timeout BUDGET, which still charged the full file size at
-the VRAM-upload rate (`_TIMEOUT_PER_GB_S`, calibrated for synchronous per-layer VRAM upload) —
-for a 24GB mixture-of-experts model that estimate came to ~294s, so the probe was still capped
-by the same 180s ceiling as everything else and looked "unproven" every launch regardless of the
-fix above. `_probe_budget_sizes_gb()` now separates the VRAM-bound share (the small resident
-portion under MoE, `moe_offload.plan_for_load().resident_gb`) from the rest of the file, which
-only pays a cheap disk-page-in rate (`_TIMEOUT_PER_GB_DISK_S`); a MoE model gets its own, higher
-ceiling (`_TIMEOUT_MOE_CEILING_S`, 240s) since the estimate is now trustworthy rather than a
-known-wrong number capped at the same limit as everything else. A genuinely dense model of the
-same size is unaffected — the two size shares collapse to the same value with no MoE plan, and
-the calculation reduces exactly to the original single-term formula.
+A load is no longer proved by a separate probe process: `core/load_plan.py` simulates each
+configuration with llama.cpp's own load (above), and `core/moe_offload.py` (`plan`,
+`expert_offload_params`) keeps a mixture-of-experts model's expert tensors in RAM with every
+layer on the GPU when the model does not fit as asked.
 
 `runtime_load_gap()` (`cognition/context_synthesiser.py`) only ever checked for `effective <
 requested` ("reduced," the classic VRAM-shortfall case) — a mixture-of-experts load *raises*
@@ -235,7 +205,7 @@ under MoE: nothing was left off the GPU) and not silence. `live_runtime_brief()`
 for a MoE load specifically is why a phatic reply once stated a stale, invented layer count: the
 grounding it would have drawn from was empty.
 
-## Settings (`core/runtime_settings.py`, ~1150 LOC)
+## Settings (`core/runtime_settings.py`, 1,292 LOC)
 
 - `DEFAULTS` (the full settings schema) + `ENV_TO_KEY` (env-var overrides).
 - `load_settings` / `save_settings` / `update_settings`.
@@ -251,7 +221,7 @@ grounding it would have drawn from was empty.
   rendering settings to the user should check this rather than presenting
   defaults as if they were read from disk.
 
-## Paths (`core/paths.py`, 866 LOC)
+## Paths (`core/paths.py`, 906 LOC)
 
 Dev-vs-packaged path resolution: `is_frozen` / `_is_dev_mode`,
 `_find_project_root`, then `data_dir`/`config_dir`/`cache_dir`/`models_dir`/
@@ -279,10 +249,11 @@ v2's file names and pointed the generic `~/.local/bin/eli` at itself.
 
 ## STT VRAM awareness
 
-`local_whisper_stt` is VRAM-aware (GPU only on ≥12 GB cards, else CPU) so
-faster-whisper preloading on CUDA doesn't starve the main GGUF model's layer
-budget. `ELI_WHISPER_DEVICE` overrides; `ELI_WHISPER_GPU_MIN_MB` tunes the
-threshold. See `perception.md`.
+`local_whisper_stt` is VRAM-aware (`_gpu_room_for_whisper`): whisper goes on the GPU only
+when its card still holds this whisper model after the language model has taken every layer
+its load plan gives it. What whisper needs is its measured footprint on that card, or its
+weights until measured; unknown either way, it runs on the CPU. `ELI_WHISPER_DEVICE`
+overrides. See `perception.md`.
 
 ## Piper and LoRA device selection
 

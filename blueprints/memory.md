@@ -1,12 +1,12 @@
 # ELI Memory Subsystem
 
-> **Updated for 3.0.128.** Memory is governed by a storage policy
+> **Updated for 3.0.167.** Memory is governed by a storage policy
 > (`eli/memory/policy.py`): every row has an origin, repeats are merged, weight follows a
 > forgetting curve reinforced by use, and faded derived rows are archived. Recall applies a
 > time window before ranking, and reports what it did. Turn retrieval is shared in
 > `eli/memory/retrieval.py`; FAISS deletes use tombstones.
 
-`eli/memory/` holds 8,770 lines in 11 files: relational, full-text, vector and graph
+`eli/memory/` holds 11,583 lines in 13 files: relational, full-text, vector and graph
 storage, all local SQLite and FAISS. Companion to `project_overview.md`.
 
 ## The two layers
@@ -29,19 +29,18 @@ internals), with live counts for each layer.
 
 | File | Lines | Role |
 |---|---:|---|
-| `memory.py` | 6,024 | the `Memory` class (69 public methods), schema, `DBPaths`, upkeep, module facade |
-| `policy.py` | 118 | pure storage-policy functions (origin, dedupe key, strength, archive, merge) |
-| `retrieval.py` | 310 | shared turn retrieval (`retrieve_for_turn`), turn cache, time window (turns and executed actions) |
-| `claims.py` | 367 | dated claims about the user: valid-from and valid-to, learned-at, supersession |
-| `unified_retrieval.py` | 359 | the orchestrator stages consume `retrieve_for_turn` through it; formats the verified-memory block and the period log |
-| `document_index.py` | 706 | every document ELI has read, stored whole and searched by passage |
-| `vector_store.py` | 665 | FAISS index, embedder, tombstones |
-| `knowledge_graph.py` | 694 | entity and relation graph |
-| `habits_memory_db.py` | 467 | habit and legacy memory helpers |
-| `system_index.py` | 278 | indexed apps, executables, files |
-| `memory_truth.py` | 188 | read-only inspection used by status surfaces |
-| `memory_adapter.py` | 131 | compatibility adapter |
-| `__init__.py` | 278 | facade (`get_memory`, `get_agent_memory`, path helpers) |
+| `memory.py` | 5,524 | the `Memory` class (95 public methods), schema, `DBPaths`, upkeep, module facade |
+| `policy.py` | 360 | pure storage-policy functions (origin, dedupe key, strength, archive, merge) |
+| `retrieval.py` | 420 | shared turn retrieval (`retrieve_for_turn`), turn cache, time window (turns and executed actions) |
+| `claims.py` | 1044 | dated claims about the user: valid-from and valid-to, learned-at, supersession |
+| `unified_retrieval.py` | 466 | the orchestrator stages consume `retrieve_for_turn` through it; formats the verified-memory block and the period log |
+| `document_index.py` | 911 | every document ELI has read, stored whole and searched by passage |
+| `vector_store.py` | 970 | FAISS index, embedder, tombstones |
+| `knowledge_graph.py` | 901 | entity and relation graph |
+| `interest.py`, `salience.py` | 158, 289 | the user's interest by topic; surprise raising a memory's importance |
+| `system_index.py` | 283 | indexed apps, executables, files |
+| `memory_truth.py` | 195 | read-only inspection used by status surfaces |
+| `__init__.py` | 62 | facade (`get_memory`, `get_agent_memory`, path helpers) |
 
 ## The storage policy (`policy.py`)
 
@@ -116,6 +115,16 @@ Beta posterior over its confirmations, each weighted as belief revision weighs p
 (`sureness`, `policy.claim_confidence`): one statement of the user's 0.67, two 0.75, five 0.86, never
 1; a contradiction pulls both sides back and the user's word stays ahead of an inference. `describe()`
 ends with the basis ("sure 0.75: you said so twice; contradicted"), which the Evidence Wall shows.
+
+Whether one statement is another said again is decided in one place: `claims.says(text)` gives the
+words that carry a statement, each in one form, and whether it denies; `claims.states(relation,
+value)` puts a claim in words; `claims.said_again(a, b)` is true when the same words carry both and
+neither denies what the other states. A statement that adds a word of its own says more and is
+its own fact ("the blue crate holds bolts" and "the blue crate holds brass bolts" are two). The
+profile uses the same test: `profile_extractor.fold_restated_patterns` runs when the profile
+tables are opened and folds rows of `user_patterns` that say one thing under several kinds or in
+several wordings into one row, which takes the heaviest provenance and the most days said; each
+row folded away is written to `belief_revisions` and its claim closed.
 
 What the user is doing now is a claim too: `watching`, `playing`, `reading` and `listening_to`, from
 "I'm watching X", "still watching X", "I've been playing X" or "X is on in the background". They are
@@ -230,12 +239,12 @@ A single class that owns most persistent concerns:
 
 ## Schema
 
-The blank `user.sqlite3` template holds 27 tables and three FTS5 indexes. `memories`
-(+ `memories_fts`), `memories_archive`, `memory_meta`, `semantic`, `conversation_turns`,
+The blank `user.sqlite3` template holds 28 tables and four FTS5 indexes. `memories`
+(+ `memories_fts`), `memories_archive`, `memory_meta`, `memory_links`, `memory_lineage`, `semantic`, `conversation_turns`,
 `conversations`, `session_summaries`, `kg_entities` (+ FTS), `kg_relations`, `recall_log`,
 `runtime_events`, `learning_replay`, `observations`, `habits`, `habit_events`, `habit_rules`,
 `user_patterns`, `user_model`, `eli_stances`, `belief_revisions`, `corrections`, `failures`,
-`error_tracking`, `improvements`, `capability_proposals`, `news_articles` (+ FTS),
+`improvements`, `capability_proposals`, `news_articles` (+ FTS),
 `news_reflections`. `agent.sqlite3` holds `agent_dispatches`, `agent_metrics` and the
 self-improvement tables.
 
@@ -268,12 +277,17 @@ budgets.
   `conversation_turns`, and what ELI did in the window is read from the evidence ledger
   (`evidence_ledger.actions_between`: every executed action with the executor's own result
   text, scoped to the asking user). The result carries `window_stats` (candidates, added by
-  date, in window, turns, actions) and the orchestrator logs and reports it (`memory_diag`).
+  date, in window, turns, actions) and the orchestrator logs and reports it (`memory_diag`). The
+  block the model is given names the scope that was searched and says a denial covers that
+  scope only: the model may say nothing was found there, never that nothing is stored at all.
 - **The period log.** `unified_retrieval.format_period_log` renders the window's turns and
   actions as one dated block ("What happened in that period"), in every mode including Quick.
   The actions the question is about (media, apps, web, timers, files) are listed first with a
   digest of distinct tracks; when the period is larger than the budget the selection is
-  balanced across its days and a per-day tally says what was left out. A follow-up with no
+  balanced across its days and a per-day tally says what was left out. A track whose play
+  was confirmed is listed plain; one whose search opened without confirmation says so
+  ("search opened, playback not confirmed"); one whose every attempt failed is listed as
+  "asked for; it did not play", since nothing opened. A follow-up with no
   period of its own ("check again in full") keeps the previous turn's period for 15 minutes.
 - **Vector hits are re-checked.** A FAISS hit is used only if its memory row still exists and
   passes the same origin and verification filters as the SQL channels; telemetry rows are not
@@ -307,7 +321,7 @@ The primitive `retrieve_for_turn()` builds on:
    `recall_log` with its `memory_id`; strength is reinforced only when the answer the row went into is
    not corrected (`record_recall_outcome`).
 
-Column detection (`_memory_table_columns`) guards against schema drift between versions.
+Column detection (`_table_columns`) guards against schema drift between versions.
 
 ## Document index (`document_index.py`)
 

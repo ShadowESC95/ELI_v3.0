@@ -157,7 +157,7 @@ end "Would you like me to download/install it?", and a yes ran the same lookups 
   conversational remediation loop. This is the subsystem that most justifies the
   "frontier" label.
 - **Weak:**
-  1. The gate file is still 3.4k lines with many version-named helpers (`_eli_v9_*`, `_eli_v14_*`);
+  1. The gate file is still 2.6k lines with many version-named helpers (`_eli_v9_*`, `_eli_v14_*`);
      the layers are ordered explicitly now, but the helpers wait to be folded into fewer, named modules.
   2. **Overlapping surfaces** — `grounded_status`, `control_contracts`,
      `deterministic_grounding_gate`, and the `runtime/*_response` / `*_surface`
@@ -331,14 +331,13 @@ exist, and said "the audit trail is now active" for logging that was always on.
 ## News topic deepen (grounded, not guessed)
 
 After a `NEWS_FETCH` briefing, a follow-up like **“go deeper into the transformer
-story”** must not route to open `CHAT` and let the model invent details. The engine
-(`_try_news_topic_deepen_reroute` in `engine.py`) detects `extract_deepen_topic()`
-within a short window of the last news command and **re-routes to `NEWS_FETCH` with
-that topic** — same live fetch path as the original briefing.
+story”** must not route to open `CHAT` and let the model invent details. The briefing
+is kept as a list ELI gave (`runtime/pending_proposal.py`); the follow-up is read for
+the item it names (`action_commitment.extract_deepen_topic()`, or a pick by number or
+title) and the list's own follow-up action is run on that item: the same live fetch
+path as the original briefing.
 
-If the user complains that ELI guessed (`is_news_fetch_complaint`), the kernel
-recovers the deepen topic from recent conversation (`recover_recent_deepen_topic`)
-and runs `NEWS_FETCH` again instead of falling through to web-escalation hedge.
+A complaint that ELI guessed is recognised by `correction_patterns.is_news_fetch_complaint`.
 
 ---
 

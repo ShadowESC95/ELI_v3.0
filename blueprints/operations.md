@@ -67,7 +67,7 @@ turns**. Correct pattern, and real.
 
 **(b) Context-window fill (`n_ctx`)** — a *different* mechanism, and the one that
 actually bites under pressure:
-- `engine.py::_build_enhanced_system` budget-trims the **persona**.
+- `kernel/stages/prompt_assembly.py::_build_enhanced_system` budget-trims the **persona**.
 - `_get_chat_response` **recency-truncates `memory_context`** (keeps the latest,
   cuts the head) to fit `n_ctx`.
 - The 20 small pins almost always fit, so **retrieved memory is what gets

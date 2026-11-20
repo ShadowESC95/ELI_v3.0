@@ -586,13 +586,13 @@ tts_piper/  Piper voice files shipped with the repo
 
 | Module | Lines | Role |
 |---|---:|---|
-| `manager.py` | 708 | discovery, enable and disable, install and uninstall |
-| `permissions.py` | 395 | capability vocabulary, consent decisions, grants, audit ledger |
-| `manifest.py` | 302 | manifest schema and static capability verification against source |
-| `integrity.py` | 291 | sha256 pinning, ed25519 signatures, operator-trusted publishers |
+| `manager.py` | 610 | discovery, enable and disable, install and uninstall |
+| `permissions.py` | 411 | capability vocabulary, consent decisions, grants, audit ledger |
+| `manifest.py` | 385 | manifest schema and static capability verification against source |
+| `integrity.py` | 464 | sha256 pinning, ed25519 signatures, operator-trusted publishers |
 | `security_scan.py` | 547 | multi-engine malware scanner |
-| `marketplace.py` | 793 | federated registries, preview and install, licence keys |
-| `mcp.py` | 502 | MCP server config, runtime preflight, handshake verification |
+| `marketplace.py` | 947 | federated registries, preview and install, licence keys |
+| `mcp.py` | 494 | MCP server config, runtime preflight, handshake verification |
 
 `_plugins_dir()` resolves through `paths.plugins_dir()`, and `_plugin_search_dirs()` scans
 bundled built-ins and user installs, so a downloaded plugin is never written into a
@@ -603,7 +603,7 @@ read-only installation.
 | Module | Lines | Role |
 |---|---:|---|
 | `agent_spec.py` | 436 | `AgentSpec`: objective, prompt, triggers, success criteria, examples |
-| `agent_trust.py` | 262 | path-keyed trust with provenance, scanning, revocation |
+| `agent_trust.py` | 261 | path-keyed trust with provenance, scanning, revocation |
 
 `agent_bus.SpecAgent` runs a spec against the local model and scores the output against the
 spec's own criteria. Spec agents execute no arbitrary code and bypass the trust chain.

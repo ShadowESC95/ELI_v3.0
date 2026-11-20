@@ -1,6 +1,6 @@
 # ELI Perception — Vision, Voice, Wake Word, Tone, OS Control
 
-`eli/perception/` (~20 files). ELI's senses and hands: local vision, speech-to-text,
+`eli/perception/` (27 files). ELI's senses and hands: local vision, speech-to-text,
 text-to-speech, a **self-trained wake-word detector**, a **voice-profile/tone**
 subsystem, and OS control. All local, no APIs, no third-party accounts.
 
@@ -8,25 +8,25 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 
 | File | LOC | Role |
 |---|---|---|
-| `mic_resolver.py` | ~580 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
+| `mic_resolver.py` | ~620 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
 | `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
-| `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
-| `voice_profile.py` | ~420 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 1312 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
+| `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
+| `tts_router.py` | 1357 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
-| `tts_xtts.py` | 389 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
-| `vision.py` | 698 |
-| `os_controller.py` | 572 |
+| `tts_xtts.py` | 396 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
+| `vision.py` | 726 |
+| `os_controller.py` | 1110 |
 | `screen_locator.py` | 497 | locate UI elements on screen (AT-SPI → local VL-ground → OCR) |
-| `screen_analysis.py` | ~180 | depth modes, prior-screen memory, research-context prompts |
+| `screen_analysis.py` | ~190 | depth modes, prior-screen memory, research-context prompts |
 | `ui_ground.py` | ~320 | local GGUF precision click + computer-use agent (no HTTP) |
-| `desktop_capabilities.py` | ~170 | cross-OS input/screenshot/locate probe; feeds the awareness briefing and SELF_TEST |
-| `media_deps.py` | ~140 | bundled-python + PATH discovery for yt-dlp/mpv/desktop CLIs |
-| `gaze_engine.py` | 358 |
+| `desktop_capabilities.py` | ~180 | cross-OS input/screenshot/locate probe; feeds the awareness briefing and SELF_TEST |
+| `media_deps.py` | ~200 | bundled-python + PATH discovery for yt-dlp/mpv/desktop CLIs |
+| `gaze_engine.py` | 351 |
 | `log_rotation.py` | 224 | log housekeeping |
-| `analyze_pdfs/image/mesh/csv.py` | ~600 | file-type analysers |
-| `ambient_vision.py` | 238 | periodic screen glances (off by default) |
-| `local_whisper_stt.py` | 389 |
+| `analyze_pdfs.py`, `analyze_image.py`, `analyze_csv.py` | 381 | file-type analysers |
+| `ambient_vision.py` | 239 | periodic screen glances (off by default) |
+| `local_whisper_stt.py` | 589 |
 | `voice_worker_streaming.py` | small | streaming voice worker |
 
 ## Vision (`vision.py` + `ambient_vision.py` + `analyze_image.py`)
@@ -38,8 +38,8 @@ The working local-vision stack (see memory `eli-image-analysis`):
   **segfaults** on compute-7.5 cards.
 - **Hot-swap**: unload text model → load VL → infer → restore in `finally`,
   holding `gguf_inference._LLM_CALL_LOCK`.
-- **Co-resident fast path**: a small model (Moondream2 Q4) loaded first, with the
-  text model's ctx capped (`vision_coresident_text_ctx`) so both fit 8GB;
+- **Co-resident fast path** (the `vision_coresident` setting): a small model (Moondream2 Q4)
+  loaded first, so the text model's load plan sees the memory it takes;
   `prefer_fast=True` uses it without a swap.
 - Images downscaled to `vision_max_image_px` (1280) to avoid context overflow;
   `repeat_penalty`/`top_k`/`top_p` set to kill a repetition loop.
@@ -110,8 +110,10 @@ A large, feature-dense STT module:
   speaking lock for the whole reply, holding its process id; the mic treats it as stale only when
   that process has ended (`speaking_lock_held`). Taken as stale after 30 seconds, a minute-long
   reply was heard and transcribed half-way through.
-- **Voice commands while a reply is coming**: a short one said after the wake word waits for the
-  reply to finish (`_send_waiting_voice`) instead of being dropped; a long one still interrupts.
+- **Voice commands while a reply is coming**: a message waits its turn and is sent when the reply
+  finishes (`ConversationMixin._drain_waiting`) instead of being dropped; a command that needs no
+  model (pause, next, volume) runs at once (`_run_now`), also while the model loads and when none
+  is loaded.
 - **Decoder hints and doubt** (`local_whisper_stt`): the wake words and the apps on the machine the
   person has named in conversation go to faster-whisper as `hotwords` ("open spotify" in a noisy
   room was heard as "old thing spot employee"). A command whose every segment is below the
@@ -182,7 +184,7 @@ tone/emotion and question-vs-statement:
 - **`TRAIN_VOICE`** runs one unified guided session (wake reps + the same line said in
   each emotion); modules stay separate, the user does one flow.
 - **Wired into cognition**: STT publishes the per-turn read on a fresh, timestamped
-  side-channel (`set_last_tone`); `engine._build_enhanced_system` reads `get_last_tone`
+  side-channel (`set_last_tone`); `_build_enhanced_system` (`kernel/stages/prompt_assembly.py`) reads `get_last_tone`
   and prepends a speaker-voice cue so ELI adapts its delivery (warmer if upset, brisk
   if energetic). `ELI_VOICE_TONE=0` disables. Complementary to the text-based
   `cognition/tone_analyzer` (persona preferences), not a duplicate.
@@ -350,12 +352,11 @@ analysed.
 ---
 
 ## Update — 2026-06-09 (VRAM-aware STT; drag-drop keeps the full path)
-- **STT is VRAM-aware** (`local_whisper_stt`). faster-whisper defaults to GPU only when the card
-  is big enough for whisper AND a typical main model (≥12 GB total VRAM), else CPU — so on an 8 GB
-  card whisper no longer preloads ~2 GB and starves the main model (observed: free_vram 4083 MB →
-  gpu_layers=11; after the fix free_vram 7092 MB → gpu_layers=99). `small.en` int8 on CPU is
-  ~1–2 s for a short command. Explicit `ELI_WHISPER_DEVICE` still wins; `ELI_WHISPER_GPU_MIN_MB`
-  tunes the threshold.
+- **STT is VRAM-aware** (`local_whisper_stt._gpu_room_for_whisper`). faster-whisper goes on the
+  GPU only when its card still holds this whisper model after the language model has taken every
+  layer its load plan gives it (whisper's measured footprint on that card, or its weights until
+  measured), else CPU — so on an 8 GB card whisper does not preload and starve the main model.
+  Explicit `ELI_WHISPER_DEVICE` still wins.
 - **Drag-and-drop keeps the FULL path.** A file dropped into the chat input now expands to
   `[File: <full path>]` followed by the inlined content (was content + basename only), so
   "fix/examine/edit this file" can resolve the file on disk while "summarise this" still has the

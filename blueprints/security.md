@@ -89,17 +89,15 @@ visible that they predate these checks.
 prompt, triggers, success criteria — so a spec-driven agent executes no arbitrary
 code and never touches the trust gate. See `orchestration_and_agents.md`.
 
-## 6. Code generation & self-modification — three paths
+## 6. Code generation & self-modification — two paths
 
-ELI has **three** distinct codegen paths, with escalating capability and
+ELI has **two** distinct codegen paths, with escalating capability and
 matching safeguards:
 
-1. **Pre-vetted canned library** (`runtime/generated_script_guard.py`, 1.1k LOC) —
-   ~5 hand-written, reviewed scripts (`_write_gpu_memory_watch_script`,
-   `_write_type_ia_redshift_script`, `_write_ton_618_mass_density_script`, …)
-   that ELI *writes to disk* on request. No LLM code is executed; safe but fixed
-   to the curated set (several physics-domain).
-2. **`GENERATE_SCRIPT`** (`execution/executor_enhanced.py`) — *real* LLM codegen.
+1. **`GENERATE_SCRIPT`** (`execution/effectors/coding.py`, the one generator) — *real* LLM codegen.
+   What it writes is checked afterwards by `runtime/generated_script_guard.py`: a script that
+   carries a known bad marker (a prompt echoed back, a TODO, a shell file holding Python) is
+   quarantined and the run reported as failed. The guard itself writes no script.
    Detects language/intent, prompts for frontier-quality code, then gates it:
    - `_verify_python_module_apis` — imports the referenced libraries and confirms
      `module.attr` references actually exist (catches hallucinated APIs).
@@ -113,7 +111,7 @@ matching safeguards:
      regenerate loop**; timeouts / signal kills / missing-optional-deps are
      tolerated (never reject legit heavy scientific scripts). Disable with
      `ELI_GENSCRIPT_VERIFY_RUN=0`.
-3. **Self-patching** (`runtime/self_improvement.py` `SelfImprovementEngine`) —
+2. **Self-patching** (`runtime/self_improvement.py` `SelfImprovementEngine`) —
    ELI modifies its *own* source for recurring failures. Gated behind
    `auto_patch_enabled` (**default off**), ≤2 patches/cycle. Safeguards:
    verbatim-`old`-match → `ast.parse` → timestamped backup (+ canonical
@@ -124,9 +122,6 @@ matching safeguards:
    reverts). Project-root-confined, `.py`-only, logged to the `code_patches`
    table.
 
-> **Code-health flag:** `generated_script_guard` uses the same stacked-override
-> pattern as the grounding gate — two `install()` definitions chained via
-> `_ELI_SQLITE_SCRIPT_PREVIOUS_INSTALL`. Works, but layered rather than edited.
 
 > **Possible next step (not done):** the self-patch loop verifies the module
 > still *imports*; it does not yet re-run the original failing input to confirm

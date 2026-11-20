@@ -493,7 +493,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `gui/` (PySide6 desktop) — 28.2k lines
 | Module | LOC | Role |
 |---|---|---|
-| `main_window/` | package | Main window (`window.py` plus the `_mixins/`): the top-level tabs + adapters (CentralMemory/LocalModel/Ollama/Executor bridges, the `_GUIEngineAdapter`), chat, drag-drop, reasoning-mode auto-select, all toggles. |
+| `main_window/` | package | Main window (`window.py` plus the `_mixins/`): the top-level tabs + adapters (CentralMemory/LocalModel/Ollama/Executor bridges), chat, drag-drop, reasoning-mode auto-select, all toggles. |
 | `labs/` | package | Labs workspace (`labs/container.py` hosts the sub-tabs): Notebook, Memory & Conversations, Jupyter, Calculator(+constants), Physics tables, File Chat, Workspaces, Sim/IDE, Orchestration, Test & Review, Training; `labs/report_tab.py` is the **Report Builder** (evidence-grounded docs). |
 | `app.py` | 369 | Launcher / first-boot auto-tune / `main()`. |
 | `panels/startup.py` | 2186 | StartupModelSelectionDialog, FirstBootWizard, HardwareTuningDock. |

@@ -12,13 +12,7 @@ additively, so every existing class/function and caller is unchanged.
   concurrently (threads); `max_workers=1` ⇒ deterministic sequential.
 - **Dependency result-passing** — each node fn gets a `NodeContext` with `results`
   (completed upstream outputs) + a shared mutable `shared` bag.
-- **Conditional nodes** — `when(ctx)->bool` skips a branch dynamically.
-- **Retries + backoff** — per-node `retries` with exponential `retry_backoff`.
-- **Fallback** — a `fallback` fn runs if all attempts fail.
 - **Per-node timeout** — total node budget (best-effort; enforced via a worker future).
-- **Memoisation** — pluggable `cache` keyed by `cache_key` (status `cached`).
-- **Priority scheduling** — higher-priority nodes first within a ready layer.
-- **Fail-fast + global time budget** — stop scheduling after a failure / budget.
 - **Auto-skip** — a node whose upstream didn't complete is skipped with a reason.
 - **`critical` semantics** — a non-critical node's failure doesn't fail the run.
 - **Deterministic `RunReport`** — per-node status/attempts/timing + order + layers +
@@ -66,7 +60,7 @@ generate/eval). Surfaced two ways:
   and click result-driven option buttons that hand off to ELI in chat.
 - **Chat:** the `TEST_REVIEW` action ("test review" / "run the tests and tell me what
   to fix") returns the grounded report (LLM-summarised) + the options menu.
-- **Option buttons stream into the main chat** (`MainWindow.send_to_chat`) — clicking
+- **Option buttons stream into the main chat** (`EliMainWindow.send_to_chat`) — clicking
   an option continues the conversation in the Chat tab, not the panel.
 
 ## Generative actions on the coding agent / planner DAG
