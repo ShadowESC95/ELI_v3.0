@@ -231,3 +231,22 @@ def test_the_intent_model_does_not_take_an_attached_image_marker_as_a_request():
     plain-statement test had a branch of its own for the marker."""
     from eli.cognition.llm_intent import is_plain_statement
     assert is_plain_statement("love this one [Attached image: shot.png — path: /home/u/Pictures/shot.png]")
+
+
+def test_a_pdf_named_alone_is_found_in_the_users_own_folders_and_nowhere_else(tmp_path, monkeypatch):
+    """The router named two folders of one machine's owner as places to look, and searched the whole home
+    folder and the working folder while routing a message. A bare PDF name is looked for in the working
+    folder, home, the user's Desktop, Documents and Downloads (with their subfolders) and ELI's documents
+    folder, and no deeper elsewhere; the words before it ("summarise ...") are not part of its name."""
+    from eli.execution.routing._helpers import _extract_pdf_paths
+    home = tmp_path / "home"
+    nested = home / "Desktop" / "Projects" / "Reading"
+    nested.mkdir(parents=True)
+    (nested / "orbit_paper.pdf").write_bytes(b"%PDF-1.4\n")
+    elsewhere = home / "work" / "archive"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "harbour_notes.pdf").write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _extract_pdf_paths("summarise orbit_paper.pdf") == [str((nested / "orbit_paper.pdf").resolve())]
+    assert _extract_pdf_paths("summarise harbour_notes.pdf") == []
