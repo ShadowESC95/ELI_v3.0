@@ -77,7 +77,7 @@ registered actions run in their effector modules), `eli/execution/router_enhance
 
 | Command | Target | Notes |
 |---|---|---|
-| `eli`, `eli-v3`, `eli-cli` | `eli.gui.app:main` | GUI (default) |
+| `eli`, `eli-v3`, `eli-cli` | `eli.__main__:console_main` | this install's root pinned, then every option `python -m eli` reads; GUI by default |
 | `eli-mcp` | `eli.integrations.mcp.server:main` | ELI as an MCP server |
 | `eli-jobs` | `eli.planning.jobqueue_cli:main` | durable job queue CLI |
 | `eli-license` | `eli.licensing.cli:main` | licence key commands |
@@ -95,7 +95,9 @@ constructs the `CognitiveEngine` singleton → loads the GGUF named in `config/s
 A packaged build starts at `packaging/pyinstaller/eli_entry.py`. One window at a time is kept
 by an OS lock on a file in the data folder (`_gui_singleton_or_exit`: `msvcrt` on Windows,
 `fcntl` elsewhere), held for the life of the process and released by the system however the
-process ends; `ELI_ALLOW_MULTI_INSTANCE=1` lifts it.
+process ends; `ELI_ALLOW_MULTI_INSTANCE=1` lifts it. Only the window takes that lock: ELI's own
+commands (`--bundle`, `--mcp-server`, `--headless`, ...) go to `eli/__main__.py` as in a source tree, and a
+python command line ELI hands its own executable (`-c`, `-m`, a `.py` script) runs as python.
 
 ---
 

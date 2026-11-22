@@ -179,9 +179,12 @@ Homepage = "https://github.com/ShadowESC95/ELI_v3.0"
 Repository = "https://github.com/ShadowESC95/ELI_v3.0"
 
 [project.scripts]
-eli = "eli.gui.app:main"
-"eli-v3" = "eli.gui.app:main"
-eli-cli = "eli.gui.app:main"
+# eli/__main__.py reads every option (the licence flags, --license, --mcp-server, --mcp-config,
+# --trust-agent, --bundles, --bundle, --headless) and otherwise starts the window; pointed at the window
+# itself, these commands ignored all but --setup, --choose and --no-bundles.
+eli = "eli.__main__:console_main"
+"eli-v3" = "eli.__main__:console_main"
+eli-cli = "eli.__main__:console_main"
 eli-mcp = "eli.integrations.mcp.server:main"
 eli-jobs = "eli.planning.jobqueue_cli:main"
 eli-license = "eli.licensing.cli:main"

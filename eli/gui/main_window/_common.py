@@ -66,7 +66,9 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 
-_BOOT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The folder that holds the eli package (eli/gui/main_window/_common.py: three up). Two up was eli/
+# itself, and on sys.path it made ELI's own subpackages top-level: `import tools` found eli/tools.
+_BOOT_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 if str(_BOOT_PROJECT_ROOT) not in sys.path:

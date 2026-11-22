@@ -185,7 +185,7 @@ from auto-restore: ryan, lessac, cori — see `models/MODEL_LICENSES.md`.
 - `requirements.lock.txt` — frozen exact versions, with markers for what only some
   Pythons or systems need (excludes torch and llama-cpp, which the installers fetch for
   the machine's GPU).
-- `pyproject.toml` — package metadata + `[project.scripts]` (`eli` → `eli.gui.app:main`).
+- `pyproject.toml` — package metadata + `[project.scripts]` (`eli` → `eli.__main__:console_main`, which reads every option `python -m eli` does).
 
 ## Launch
 `./eli.sh` or `source .venv/bin/activate && eli`. First run shows the **setup wizard**

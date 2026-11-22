@@ -144,18 +144,12 @@ def _save_config(changes: dict):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-def main():
-    # An extension that drops references to None cannot abort the window (eli/core/singleton_refs.py).
-    try:
-        from eli.core.singleton_refs import pin_singletons
-        pin_singletons()
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    # Pin THIS install's root for the `eli`/`eli-gui` console scripts. They enter here
-    # directly (not via RUN_ELI.sh, which already exports ELI_PROJECT_ROOT), so without
-    # this the runtime paths resolve via _find_project_root() and can leak into ANOTHER
-    # ELI checkout on the same machine. Derive the root from the venv running us
-    # (…/<root>/.venv/bin/python → <root>) and pin it.
+def pin_this_install() -> None:
+    """Pin THIS install's root for the console scripts (`eli`, `eli-v3`, `eli-cli` through
+    eli/__main__.console_main, `eli-gui` here). They are not started by a launcher that exports
+    ELI_PROJECT_ROOT, so without this the runtime paths resolve via _find_project_root() and can leak
+    into ANOTHER ELI checkout on the same machine. Derive the root from the venv running us
+    (…/<root>/.venv/bin/python → <root>) and pin it."""
     try:
         import os as _os, sys as _sys
         from pathlib import Path as _P
@@ -173,6 +167,16 @@ def main():
             _os.environ["ELI_MODELS_DIR"] = str(_root / "models")
     except Exception:
         log.debug("suppressed exception", exc_info=True)
+
+
+def main():
+    # An extension that drops references to None cannot abort the window (eli/core/singleton_refs.py).
+    try:
+        from eli.core.singleton_refs import pin_singletons
+        pin_singletons()
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    pin_this_install()
     # ── Commercial license gate (retail / ELI_REQUIRE_LICENSE builds) ────────
     try:
         from eli.licensing.launch_gate import ensure_license_or_exit

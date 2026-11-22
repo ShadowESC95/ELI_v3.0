@@ -152,6 +152,7 @@ def _sandbox(tmp_path, monkeypatch):
     (base / "db").mkdir(parents=True)
     config.mkdir()
     monkeypatch.setattr(mr, "bases", lambda: (base, config))
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(config / "settings.json"))   # the settings file in force
     monkeypatch.setattr(mr, "reset_persona_overlay", lambda template=None: True)
     return base, config
 

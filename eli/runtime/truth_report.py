@@ -262,10 +262,13 @@ def runtime_truth_report(engine: Any = None) -> Dict[str, Any]:
     # AppImage mount while settings and the snapshot live under the user's config/data dirs. Reading
     # them from the project root made this report describe a runtime that doesn't exist (the 2.1.82
     # self-report failure ce40453 fixed elsewhere).
+    # The settings are the file in force (runtime_settings: ELI_SETTINGS_FILE first), which need not
+    # be the config folder's.
     try:
         from eli.core.paths import get_paths as _gp
+        from eli.core.runtime_settings import _settings_file
         _p = _gp()
-        settings_path = Path(_p.config_dir) / "settings.json"
+        settings_path = _settings_file()
         snapshot_path = Path(_p.artifacts_dir) / "runtime_snapshot.json"
     except Exception:
         settings_path = root / "config" / "settings.json"

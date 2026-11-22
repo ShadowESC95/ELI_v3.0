@@ -128,7 +128,10 @@ def discover(base: Path, config: Path,
                 t["runtime_wipe"].append(p)
             else:
                 t["files"].append(p)
-    t["settings"] = [config / "settings.json"] if (config / "settings.json").exists() and not keep_profile else []
+    # the settings file in force (runtime_settings: ELI_SETTINGS_FILE first), not the config folder's by name
+    from eli.core.runtime_settings import _settings_file
+    settings = _settings_file()
+    t["settings"] = [settings] if settings.exists() and not keep_profile else []
     t["persona_overlay"] = _persona_overlay_paths(config)
     return t
 

@@ -656,7 +656,8 @@ class SelfImprovementEngine:
         except Exception:
             _ifc = lambda: False
         try:
-            _settings = json.loads((PROJECT_ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
+            from eli.core.runtime_settings import _settings_file    # the settings file in force
+            _settings = json.loads(_settings_file().read_text(encoding="utf-8"))
             if not _settings.get("auto_patch_enabled", False) and not _ifc():
                 log.debug("[SELF-IMPROVE] auto_patch_enabled is off — patch proposals logged but not applied")
                 _report()

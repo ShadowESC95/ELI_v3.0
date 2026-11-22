@@ -138,7 +138,11 @@ class ExecutorBridge:
             if key not in seen:
                 seen.add(key)
                 out.append(r)
-        return out
+        # Only a folder that holds this eli package: the others (eli/, eli/gui/, eli/gui/main_window/,
+        # another checkout as the working folder) made their subfolders top-level packages, and
+        # `import tools` found eli/tools instead of the project's tools/ for the rest of the process.
+        own = here.parents[2]
+        return [r for r in out if (r / "eli").resolve() == own]
     def _prepare_sys_path(self) -> None:
         import sys as _sys
         for root in self._candidate_roots():

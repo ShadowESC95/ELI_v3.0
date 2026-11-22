@@ -45,9 +45,9 @@ log = get_logger(__name__)
 
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
 
-# A frozen ELI is its own interpreter but only passes `-c`/`-m` through (packaging/pyinstaller/
-# eli_entry.py); a script path as the first argument would start the whole app. The runner runs
-# the script as __main__ with its directory first on sys.path, as `python script.py` does.
+# A frozen ELI is its own interpreter: packaging/pyinstaller/eli_entry.py runs a python command line
+# it is handed (-c, -m, a script) as python. Through -c, the runner runs the script as __main__ with
+# its directory first on sys.path, as `python script.py` does.
 _FROZEN_RUNNER = ("import os, runpy, sys\n"
                   "p = sys.argv[1]\n"
                   "sys.argv = sys.argv[1:]\n"

@@ -102,3 +102,23 @@ def test_no_module_reads_runtime_data_from_its_own_location():
         "these build a runtime data path from their own file location with no "
         f"canonical resolver — broken in every packaged build: {offenders}"
     )
+
+
+def test_the_grounding_gate_reports_the_databases_in_force(monkeypatch, tmp_path):
+    """The grounding gate's memory and runtime reports built <install>/artifacts/db/*.sqlite3 and
+    <install>/artifacts/vectors/ by hand, so with the stores elsewhere (ELI_USER_DB, ELI_AGENT_DB, the
+    data folder of an installed build) they counted rows in files nobody uses, and named meta.pkl, which
+    the vector store no longer writes."""
+    from eli.memory.vector_store import _get_index_paths
+    from eli.runtime import deterministic_grounding_gate as gate
+    monkeypatch.setenv("ELI_USER_DB", str(tmp_path / "stores" / "people.sqlite3"))
+    monkeypatch.setenv("ELI_AGENT_DB", str(tmp_path / "stores" / "agents.sqlite3"))
+    for name in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR"):
+        monkeypatch.setenv(name, str(tmp_path / "data"))
+    paths = gate._eli_db_paths_v2()
+    assert paths["user_db"] == (tmp_path / "stores" / "people.sqlite3").resolve()
+    assert paths["agent_db"] == (tmp_path / "stores" / "agents.sqlite3").resolve()
+    index, meta = _get_index_paths(create=False)
+    assert (str(paths["vector_index"]), str(paths["vector_meta"])) == (index, meta)
+    assert paths["vector_index"].parent == (tmp_path / "data" / "vectors").resolve()
+    assert not (tmp_path / "data").exists()                      # asking where they are makes nothing

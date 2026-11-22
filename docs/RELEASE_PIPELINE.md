@@ -18,6 +18,7 @@ produces on the Release page:
 | `ELI_v3-<v>-macos-arm64.dmg` | macOS Apple Silicon — drag ELI.app to Applications |
 | `ELI_v3-<v>-x86_64.AppImage` | Linux — `chmod +x` and run (needs glibc 2.39 or newer; needs libfuse2, or `--appimage-extract-and-run`) |
 | `ELI_v3.0-<v>-linux-portable.tar.gz` | classic source tarball incl. voices (previous-release format) |
+| `ELI_v3-<v>-gpl-sources.tar.gz` | the exact source of the GPL packages the builds carry (piper-tts with espeak-ng, PyAutoGUI's helpers), listed in its `SOURCES.md`, and `LGPL_SOURCES.md` beside it: each LGPL package the builds carry (Qt for Python and the Qt inside it, zeroconf, python-xlib, ...), its version and the address of that version's source (`packaging/gpl_sources.py`) |
 | `SHA256SUMS.txt` | checksums for all of the above |
 
 All frozen bundles include the full Piper voice set (pulled at build time from
@@ -30,13 +31,14 @@ weights remain first-run downloads into the per-user `ELI_v3` root.
 | File | Role |
 |---|---|
 | `ELI.spec` | PyInstaller spec — one-dir build, all platforms. Data files come from `git ls-files` only (personal files/models can never leak). Version read from `pyproject.toml`. |
-| `packaging/pyinstaller/eli_entry.py` | Frozen entry script → `eli.gui.app:main`. Also dispatches `ELI-Server`/`--server` → `api.server:main`, and `--selftest` (real import-stack boot check CI runs on every built bundle; it fails when an action module under `eli/execution/effectors/` did not import, `effectors.failed()`). Keeps one window at a time with an OS file lock (`_gui_singleton_or_exit`), released by the system however the process ends. |
+| `packaging/pyinstaller/eli_entry.py` | Frozen entry script → `eli.gui.app:main`. Also dispatches `ELI-Server`/`--server` → `api.server:main`; ELI's own commands (`--bundle`, `--bundles`, `--mcp-server`, `--mcp-config`, `--headless`, `--trust-agent`) → `eli/__main__.py`, as in a source tree; a python command line (`-c`, `-m`, a `.py` script) runs as python; and `--selftest` (real import-stack boot check CI runs on every built bundle; it fails when an action module under `eli/execution/effectors/` did not import, `effectors.failed()`). Keeps one window at a time with an OS file lock (`_gui_singleton_or_exit`), released by the system however the process ends. |
 | `packaging/pyinstaller/rthook_eli_frozen_paths.py` | Runtime hook: pins `ELI_PROJECT_ROOT`/data/config/models to the per-user root — `%LOCALAPPDATA%\ELI_v3`, `~/Library/Application Support/ELI_v3`, `~/.local/share/ELI_v3` — the same place previous ELI releases used, so models/settings carry over on upgrade. `ELI_PROJECT_ROOT` env overrides. |
 | `packaging/pyinstaller/gen_version_info.py` + `packaging/windows/version.rc.in` | Generates `build/version.rc` (Windows version resource) from `pyproject.toml`. |
 | `packaging/windows/installer.iss` | Inno Setup installer for the frozen bundle (the older `ELI_Setup.iss` still serves the source-portable flow). |
 | `packaging/macos/build-dmg.sh` | Ad-hoc signs `dist/ELI.app`, builds the `.dmg`. |
 | `packaging/linux/build-appimage-pyinstaller.sh` | Wraps `dist/ELI` into an AppImage (pinned appimagetool 13). Writes the glibc floor into it and the launcher that checks it. |
 | `packaging/linux/glibc_floor.py` | Reads the oldest glibc a built bundle starts on out of its binaries. |
+| `packaging/gpl_sources.py` | Run in the Linux build: fetches the exact source of every GPL package the build installed (and what their builds compile in) and lists where each LGPL package's source is, for the release's `gpl-sources` archive; a source it cannot get stops the release. |
 | `requirements-build.txt` | Pinned build tooling (PyInstaller etc.) for reproducible builds. |
 | `.github/workflows/release.yml` | The pipeline: version guard → 3 parallel builds → Release upload. |
 

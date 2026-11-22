@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 from eli.utils.jsonio import read_json_dict as _read_json
@@ -52,8 +51,8 @@ def _label(key: str) -> str:
     return str(mode_display(_norm(key) or "quick"))
 
 def _from_settings() -> str:
-    from eli.core.paths import project_root
-    data = _read_json(Path(project_root()) / "config" / "settings.json")
+    from eli.core.runtime_settings import _settings_file    # the settings file in force
+    data = _read_json(_settings_file())
     for key in _SETTING_KEYS:
         n = _norm(data.get(key))
         if n:

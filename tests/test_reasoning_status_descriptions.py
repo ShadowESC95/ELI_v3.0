@@ -54,6 +54,7 @@ def test_the_mode_is_never_read_out_of_an_old_trace_or_snapshot_file(tmp_path, m
     assert rs.current_reasoning_mode() == "quick"
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "settings.json").write_text(json.dumps({"reasoning_mode": "Self Consistency"}))
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_path / "config" / "settings.json"))   # the file in force
     assert rs.current_reasoning_mode() == "self_consistency"
     assert rs.current_reasoning_mode_label() == "Advanced"
     assert rs.current_reasoning_mode_label(override="tot") == "Research"

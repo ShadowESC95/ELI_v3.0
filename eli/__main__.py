@@ -1,4 +1,5 @@
-"""Console entry point. `python -m eli` and the `eli` script both call this.
+"""Console entry point: `python -m eli`, which eli.sh, eli.bat and scripts/eli_launch.sh run, and the
+`eli`, `eli-v3` and `eli-cli` commands (console_main).
 
 Flags:
   --headless, -H   Run as a terminal REPL without any GUI.  Useful for
@@ -25,9 +26,31 @@ Flags:
   --bundle <id>    Open that bundle in its own window instead of ELI v3's.
   --choose         Ask at start-up whether to open ELI v3 or a bundle, even if a
                    choice was remembered. --no-bundles skips the question.
+  --setup          Open the GUI with the model setup first.
+  --help, -h       Print this, then exit.
+
+Any other --option is refused and nothing starts: one this program does not read
+opened ELI v3's window as if nothing had been asked.
 """
 from __future__ import annotations
 import sys
+
+# Every --option `python -m eli` reads: here, in the window's start (--setup, eli/gui/app.py) and in
+# the bundle chooser (eli/bundles/chooser.py), with the licence flags (eli/licensing/flags.py). Qt
+# reads single-dash ones such as -platform itself.
+_OPTIONS = frozenset({"--license", "--licence", "--mcp-server", "--mcp-config", "--allow-control",
+                      "--trust-agent", "--force", "--bundles", "--bundle", "--headless", "--setup",
+                      "--choose", "--no-bundles", "--help"})
+
+
+def _own_args(args: list[str]) -> list[str]:
+    """This program's arguments: what follows --bundle <id> is the bundle's own (eli.bundles.launch)."""
+    return args[:args.index("--bundle") + 2] if "--bundle" in args else args
+
+
+def _unknown_options(args: list[str]) -> list[str]:
+    from eli.licensing.flags import LICENSE_FLAGS
+    return [a for a in _own_args(args) if a.startswith("--") and a not in _OPTIONS | set(LICENSE_FLAGS)]
 
 
 def _handle_license_flags(args: list[str]) -> int | None:
@@ -39,6 +62,15 @@ def _handle_license_flags(args: list[str]) -> int | None:
 
 def main() -> int:
     args = sys.argv[1:]
+
+    if "--help" in _own_args(args) or "-h" in _own_args(args):
+        print(__doc__)
+        return 0
+    unknown = _unknown_options(args)
+    if unknown:
+        print(f"ELI v3 does not take {', '.join(unknown)}; nothing was started. "
+              f"Its options are listed by --help.", file=sys.stderr)
+        return 2
 
     license_rc = _handle_license_flags(args)
     if license_rc is not None:
@@ -151,6 +183,16 @@ def main() -> int:
     # ── GUI (default) ────────────────────────────────────────────────────────
     from eli.gui.app import main as _gui_main
     return int(_gui_main() or 0)
+
+
+def console_main() -> int:
+    """The `eli`, `eli-v3` and `eli-cli` commands (pyproject [project.scripts]): this install's root
+    pinned first, as the window's own entry pins it (eli.gui.app.pin_this_install), then every option
+    read as `python -m eli` reads it. Pointed at the window, they ignored all but --setup, --choose and
+    --no-bundles."""
+    from eli.gui.app import pin_this_install
+    pin_this_install()
+    return main()
 
 
 if __name__ == "__main__":
