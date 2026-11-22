@@ -92,3 +92,90 @@ def test_an_unreadable_volume_is_said(monkeypatch):
     monkeypatch.setattr(pc, "get_volume", lambda: None)
     out = volume_fallback("get")
     assert out["ok"] is False and out["error"] == "volume_unreadable"
+
+
+# ── up is up, down is down, and the level said is the one in force ─────────────────────────────────
+def test_a_level_above_full_is_read_as_it_is(monkeypatch):
+    """wpctl gives a factor (1.0 is 100%); "Volume: 1.05" was taken for a percentage and read as 1%."""
+    from eli.utils import platform_compat as pc
+    monkeypatch.setattr(pc.shutil, "which", lambda c: "/usr/bin/wpctl" if c == "wpctl" else None)
+    for said, level in (("Volume: 0.65", 65), ("Volume: 1.05", 105), ("Volume: 0.40 [MUTED]", 40)):
+        monkeypatch.setattr(pc.subprocess, "check_output", lambda *a, _said=said, **k: _said)
+        assert pc._linux_get_volume() == level
+
+
+def test_a_step_names_the_level_it_found_and_the_level_it_left(monkeypatch):
+    """Four "vol up" said 39%, 77%, 87%, 75%: the level had been changed elsewhere between them, and the
+    replies, naming only the level left, read as up going down."""
+    from eli.execution.effectors.system_helpers import volume_fallback
+    level = _fake_mixer(monkeypatch, 29)
+    assert volume_fallback("up")["response"] == "Volume up from 29% to 39%"
+    level["v"] = 87                                  # changed elsewhere
+    out = volume_fallback("down")
+    assert out["response"] == "Volume down from 87% to 77%" and out["level"] == 77 and out["was"] == 87
+    level["v"] = 95
+    assert volume_fallback("up")["level"] == 100     # up stops at full
+    level["v"] = 105
+    out = volume_fallback("up")
+    assert out["level"] == 105 and level["v"] == 105, "up never lowers a level above full"
+    level["v"] = 4
+    assert volume_fallback("down")["level"] == 0
+
+
+def _listening_sink(monkeypatch, start=0.65, *, tool="wpctl"):
+    """ELI's wake-word listener over a sink faked at the command line, and platform_compat on the same
+    sink: nothing reaches the machine's own audio."""
+    import eli.perception.audio_stt as stt
+    from eli.utils import platform_compat as pc
+    sink = {"v": start}
+
+    def run_quiet(argv, timeout=1.5):
+        if argv[0] != tool:
+            return False, ""
+        if argv[1] in ("get-volume", "get-sink-volume"):
+            return True, (f"Volume: {sink['v']:.2f}" if tool == "wpctl"
+                          else f"Volume: front-left: 1 / {round(sink['v'] * 100)}% / 0 dB")
+        if argv[1] in ("set-volume", "set-sink-volume"):
+            said = argv[3]
+            sink["v"] = float(said[:-1]) / 100 if said.endswith("%") else float(said)
+            return True, ""
+        return False, ""
+    monkeypatch.setattr(stt, "_eli_run_quiet", run_quiet)
+    monkeypatch.setattr(stt, "_ELI_DUCK_ENABLED", True)
+    monkeypatch.setattr(stt, "media_player_duck_resume", lambda: None)
+    monkeypatch.setattr(pc, "get_volume", lambda: round(sink["v"] * 100))
+    monkeypatch.setattr(pc, "set_volume", lambda v: sink.update(v=max(0, min(100, v)) / 100) or True)
+    monkeypatch.setattr(pc, "adjust_volume", lambda d: sink.update(v=sink["v"] + d / 100) or True)
+    return stt, sink
+
+
+def test_a_volume_change_while_eli_listens_is_made_to_the_level_in_force(monkeypatch):
+    """After the wake word ELI holds the output low and puts the level back after the command. "volume
+    up" said then was made to the held level (18% to 28%), and the put-back undid it."""
+    from eli.execution.effectors.system_helpers import volume_fallback
+    stt, sink = _listening_sink(monkeypatch)
+    held = stt._eli_duck_output()
+    assert round(sink["v"] * 100) == 18
+    out = volume_fallback("up")
+    assert out["response"] == "Volume up from 65% to 75%"
+    stt._eli_restore_duck(held)                      # the listener's own put-back, after the command
+    assert round(sink["v"] * 100) == 75
+
+
+def test_a_level_set_while_eli_listens_stays_set(monkeypatch):
+    from eli.execution import executor_enhanced as exe
+    stt, sink = _listening_sink(monkeypatch)
+    held = stt._eli_duck_output()
+    out = exe.execute("VOLUME", {"level": 60, "percent": 60, "mode": "absolute", "direction": "set"})
+    assert out["ok"] is True and out["response"] == "Volume set to 60%"
+    stt._eli_restore_duck(held)
+    assert round(sink["v"] * 100) == 60
+
+
+def test_the_level_is_put_back_where_only_pactl_answers(monkeypatch):
+    """With no wpctl the output was ducked after the wake word and never put back."""
+    stt, sink = _listening_sink(monkeypatch, 0.55, tool="pactl")
+    held = stt._eli_duck_output()
+    assert round(sink["v"] * 100) == 18
+    stt._eli_restore_duck(held)
+    assert round(sink["v"] * 100) == 55

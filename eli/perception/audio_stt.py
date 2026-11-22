@@ -107,6 +107,31 @@ def _eli_parse_wpctl_volume(snapshot):
         return None
 
 
+# The output level ELI holds low while it listens: the snapshot to put back, and the one a volume command
+# already put back (release_output_duck), which the listener's own put-back then leaves alone.
+_OUTPUT_HOLD = {"snapshot": None, "given_back": None}
+_OUTPUT_HOLD_LOCK = threading.RLock()
+
+
+def _hold_output(snap):
+    with _OUTPUT_HOLD_LOCK:
+        _OUTPUT_HOLD["snapshot"], _OUTPUT_HOLD["given_back"] = snap, None
+    return snap
+
+
+def release_output_duck() -> bool:
+    """Put the output level back now, ending the hold while ELI listens: a volume command (and a question
+    about the level) is about the level in force once listening ends. True when there was a hold."""
+    with _OUTPUT_HOLD_LOCK:
+        snap = _OUTPUT_HOLD["snapshot"]
+        if snap is None:
+            return False
+        _eli_restore_output(snap)
+        _OUTPUT_HOLD["given_back"] = snap
+    log.debug("[AUDIO_DUCK] output level given back for a volume command")
+    return True
+
+
 def _eli_duck_output():
     if not _ELI_DUCK_ENABLED:
         return None
@@ -116,12 +141,12 @@ def _eli_duck_output():
     if snap and snap[0] == "wpctl":
         _eli_run_quiet(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", _ELI_DUCK_LEVEL], timeout=1.0)
         log.debug(f"[AUDIO_DUCK] ducked output to {_ELI_DUCK_LEVEL}; snapshot={snap[1]!r}")
-        return snap
+        return _hold_output(snap)
 
     if snap and snap[0] == "pactl":
         _eli_run_quiet(["pactl", "set-sink-volume", "@DEFAULT_SINK@", _ELI_DUCK_LEVEL], timeout=1.0)
         log.debug(f"[AUDIO_DUCK] ducked output to {_ELI_DUCK_LEVEL}; snapshot=pactl")
-        return snap
+        return _hold_output(snap)
 
     if snap and snap[0] == "platform":
         try:
@@ -130,7 +155,7 @@ def _eli_duck_output():
             target = max(5, min(30, int(str(_ELI_DUCK_LEVEL).rstrip("%") or "18")))
             if _pc.set_volume(target):
                 log.debug(f"[AUDIO_DUCK] platform volume ducked to {target}; snapshot={snap[1]!r}")
-                return snap
+                return _hold_output(snap)
         except Exception:
             log.debug("[AUDIO_DUCK] platform duck failed", exc_info=True)
 
@@ -140,7 +165,18 @@ def _eli_duck_output():
 def _eli_restore_output(snapshot):
     if not snapshot:
         return
+    with _OUTPUT_HOLD_LOCK:
+        if snapshot is _OUTPUT_HOLD["given_back"]:
+            # a volume command put the level back and changed it since; putting it back again undid that
+            _OUTPUT_HOLD["given_back"] = None
+            log.debug("[AUDIO_DUCK] output level already given back; left as it is")
+            return
+        if snapshot is _OUTPUT_HOLD["snapshot"]:
+            _OUTPUT_HOLD["snapshot"] = None
+        _eli_put_back(snapshot)
 
+
+def _eli_put_back(snapshot):
     backend, raw = snapshot
 
     if backend == "wpctl":
@@ -159,8 +195,15 @@ def _eli_restore_output(snapshot):
             log.debug("[AUDIO_DUCK] platform restore failed", exc_info=True)
         return
 
-    # pactl output is messier. Avoid unsafe parsing. Best effort only.
-    log.debug("[AUDIO_DUCK] pactl restore snapshot present; wpctl restore unavailable")
+    if backend == "pactl":
+        # "Volume: front-left: 42598 /  65% / -11.23 dB, ...": the level was left ducked for good where
+        # only pactl answered
+        m = _eli_re.search(r"(\d+)%", str(raw))
+        if m:
+            _eli_run_quiet(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{m.group(1)}%"], timeout=1.0)
+            log.debug(f"[AUDIO_DUCK] restored output volume to {m.group(1)}%")
+            return
+    log.debug(f"[AUDIO_DUCK] could not read the level to put back from {raw!r}")
 
 
 _MEDIA_DUCKED = False

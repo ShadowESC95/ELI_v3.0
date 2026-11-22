@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict
 
 from eli.utils.log import get_logger
@@ -109,25 +110,61 @@ def _volume_done(said: str, asked: int | None = None) -> Dict[str, Any]:
     return out
 
 
+def _end_listening_hold() -> None:
+    """While ELI listens after its wake word it holds the output low and puts the level back after the
+    command (perception.audio_stt). A volume command, or a question about the level, is about the level in
+    force once that hold ends, so the hold is ended first: "volume up" said then was made to the held level
+    ("now 28%") and the put-back undid it. Nothing is held unless the listener is loaded."""
+    listener = sys.modules.get("eli.perception.audio_stt")
+    end = getattr(listener, "release_output_duck", None)
+    if callable(end):
+        try:
+            end()
+        except Exception:
+            log.debug("listening hold not ended", exc_info=True)
+
+
+def _volume_stepped(word: str, was: int, wanted: int) -> Dict[str, Any]:
+    """A step up or down from the level found, with both levels in the reply: a level changed elsewhere
+    since the last command shows as that ("up from 65%" after "87%"), not as up going down."""
+    from eli.utils.platform_compat import get_volume
+    now = get_volume()
+    if now is None:
+        msg = f"Volume {word}"
+        return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+    if now == was and wanted != was:
+        msg = f"Volume is still at {now}%: the change to {wanted}% did not take."
+        return {"ok": False, "action": "VOLUME", "level": now, "error": "volume_unchanged",
+                "content": msg, "response": msg}
+    msg = f"Volume is already at {now}%." if now == was else f"Volume {word} from {was}% to {now}%"
+    return {"ok": True, "action": "VOLUME", "level": int(now), "was": int(was), "content": msg, "response": msg}
+
+
 def volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:
     """Volume on every OS: platform_compat first (Windows audio API or volume keys, macOS osascript,
-    Linux), then Linux's own tools. No direction and no level is a question: the level is read."""
+    Linux), then Linux's own tools. No direction and no level is a question: the level is read.
+    A step is made from the level found to a level set (up stops at full and never lowers a level above
+    it; down stops at 0), so up and down are what they say whichever tool is used."""
     direction = (direction or "").strip().lower()
     if not direction and level is None:
         direction = "get"
     if direction == "set" and level is None:
         direction = "get"
+    _end_listening_hold()
     try:
         from eli.utils.platform_compat import adjust_volume, get_volume, set_volume, set_muted
         if direction == "set" and level is not None:
             if set_volume(int(level)):
                 return _volume_done(f"Volume set to {int(level)}%", int(level))
-        if direction in ("up", "raise"):
-            if adjust_volume(int(delta)):
-                return _volume_done("Volume up")
-        if direction in ("down", "lower"):
-            if adjust_volume(-int(delta)):
-                return _volume_done("Volume down")
+        if direction in ("up", "raise", "down", "lower"):
+            up = direction in ("up", "raise")
+            was = get_volume()
+            if was is not None:
+                wanted = min(was + int(delta), max(was, 100)) if up else max(0, was - int(delta))
+                if wanted == was or set_volume(wanted):
+                    return _volume_stepped("up" if up else "down", was, wanted)
+            elif adjust_volume(int(delta) if up else -int(delta)):
+                return _volume_done("Volume up" if up else "Volume down")
         if direction == "mute":
             if set_muted(True):
                 return _volume_done("Muted")
