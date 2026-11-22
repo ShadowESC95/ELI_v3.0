@@ -420,6 +420,50 @@ def test_which_one_is_answered_by_number_or_by_name(agenda, proposals, answer):
     assert "Dentist appointment" in left and "check-up" not in left
 
 
+def test_the_answer_to_which_folder_runs_the_request_with_that_folder(proposals, tmp_path, monkeypatch):
+    """"Which folder? Give me the path." was never answered: a path was not a detail the follow-up
+    knew, and "analyse <folder>" was not the action that asked, so the reply went to chat."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.router_enhanced import route
+    from eli.runtime import background_tasks
+    monkeypatch.setattr(background_tasks, "work_targets", lambda *a, **k: [])   # no job in hand
+    papers = tmp_path / "field papers"
+    papers.mkdir()
+    asked = ex.execute("ANALYZE_PDF_FOLDER", {})
+    assert asked["response"] == "Which folder? Give me the path."
+    assert pp.get_follow_up()["awaiting"]["needs"] == "path"
+    got = route(f"it's in {papers}")
+    assert got["action"] == "ANALYZE_PDF_FOLDER" and got["meta"]["matched_by"] == "pending_proposal.answer"
+    assert got["args"]["path"] == str(papers)
+    assert pp.get_follow_up() is None
+
+
+def test_the_answer_to_which_candidate_completes_the_request(proposals):
+    """"These fix candidates are waiting; which one?" answered "2" went to chat: only a day, a time or a
+    place was a detail the follow-up knew."""
+    from eli.execution.router_enhanced import route
+    pp.set_pending_proposal("", awaiting={"command": "approve candidate {answer}", "action": "APPROVE_CANDIDATE",
+                                          "needs": "candidate"}, question="These fix candidates are waiting; which one?")
+    got = route("2")
+    assert got["action"] == "APPROVE_CANDIDATE" and got["meta"]["matched_by"] == "pending_proposal.answer"
+    assert got["args"]["candidate_ids"] == [2]
+
+
+@pytest.mark.parametrize("reply,is_it", [("~/papers", True), ("/data/scans", True), ("report.pdf", True),
+                                         ("my downloads", True), ("the folder is ~/x", True),
+                                         ("no thanks", False), ("what do you mean", False), ("play some jazz", False),
+                                         ("the blue one", False)])
+def test_a_reply_that_is_only_a_path_is_the_detail_asked_for(reply, is_it):
+    assert pp.is_the_detail(reply, "path") is is_it
+
+
+@pytest.mark.parametrize("reply,is_it", [("2", True), ("the second one", True), ("youtube", True),
+                                         ("no thanks", False), ("yes", False), ("play some jazz", False),
+                                         ("what do you mean", False)])
+def test_any_other_detail_is_a_short_answer_that_is_no_yes_no_or_new_request(reply, is_it):
+    assert pp.is_the_detail(reply, "candidate") is is_it
+
+
 @pytest.mark.parametrize("reply,is_it", [("friday at 3pm", True), ("in 20 minutes", True), ("tomorrow", True),
                                          ("at 4", True), ("make it 7.30pm", True), ("next monday at 9", True),
                                          ("set a timer for 5 minutes", False), ("what's on tomorrow", False),

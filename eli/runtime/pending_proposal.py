@@ -843,7 +843,8 @@ def is_short_answer(text: str) -> bool:
 
 def is_the_detail(reply: str, needs: str) -> bool:
     """The reply is the detail an action asked for and nothing else. "when": a day or a time
-    ("friday at 3pm", "in 20 minutes"), not a request that happens to contain one."""
+    ("friday at 3pm", "in 20 minutes"), not a request that happens to contain one; "path" or "file":
+    a file or folder (detail_of); any other: a short answer that is no yes, no and no new request."""
     if not is_short_answer(reply):
         return False
     if str(needs or "") == "when":
@@ -866,7 +867,50 @@ def is_the_detail(reply: str, needs: str) -> bool:
             return False
         return not is_consent(low) and not _re.search(
             r"\b(?:no|nope|nah|never ?mind|cancel|stop|skip|leave it|forget it|nowhere|dunno|idk|what|why|how)\b", low)
-    return False
+    if str(needs or "") in ("path", "file"):
+        # a file or a folder ("~/papers", "it's in /data/scans", "report.pdf", "my downloads"): "Which
+        # folder? Give me the path." was never answered by one, and the reply went to chat
+        return bool(detail_of(reply, "path"))
+    # Any other detail an action asks for (which service, which candidate): a short answer that is not
+    # a yes, a no, or a new request of its own. Only "when" and "place" were known, so "Which one?"
+    # answered "2" went to chat.
+    from eli.runtime.command_splitter import starts_with_command
+    low = str(reply or "").strip().lower().strip(" .!")
+    return bool(low) and not is_consent(low) and not starts_with_command(low, after_lead=True) and not _re.search(
+        r"\b(?:no|nope|nah|never ?mind|cancel|stop|skip|leave it|forget it|nothing|dunno|idk)\b", low)
+
+
+# What comes before a path in an answer: "it's ~/papers", "in /data/scans", "the folder is ~/x".
+_PATH_LEAD = _re.compile(r"^(?:(?:it'?s|its|it\s+is|that'?s|in|at|from|under|use|try|"
+                         r"the\s+(?:folder|file|directory|path)(?:\s+is)?)\s+)+", _re.I)
+
+
+def detail_of(reply: str, needs: str) -> str:
+    """The detail a reply gives, as the action takes it. For a path, the file or folder itself, in
+    full ("it's ~/papers" -> /home/<user>/papers), or "" when the reply names none: written as a path,
+    a name with a file extension, one that is there, or a folder everyone has."""
+    import os
+    said = str(reply or "").strip()
+    if str(needs or "") not in ("path", "file"):
+        return said.rstrip("?.!")
+    said = _PATH_LEAD.sub("", said).strip().strip("\"'`“”‘’").rstrip(".!,;")
+    if not said:
+        return ""
+    whole = os.path.abspath(os.path.expanduser(said))
+    if (os.path.exists(os.path.expanduser(said)) or said.startswith(("~", "/", "./", "../"))
+            or "/" in said or "\\" in said or _re.match(r"[A-Za-z]:[\\/]", said)):
+        return whole
+    from eli.execution.portable_intent_contract import _FILE_EXTENSIONS
+    last = said.split()[-1]
+    if "." in last and last.rsplit(".", 1)[1].lower() in _FILE_EXTENSIONS:
+        return whole
+    try:
+        from eli.utils.platform_compat import known_user_dir
+        known = known_user_dir(said)
+    except Exception:
+        log.debug("known folder lookup failed", exc_info=True)
+        known = ""
+    return os.path.abspath(os.path.expanduser(known)) if known else ""
 
 
 # ── going further into something a result listed ────────────────────────────

@@ -102,8 +102,10 @@ by the output governor, which used to delete "let me know if you'd like me to ..
 - consent (`is_consent`: "yes please", "go ahead", "sounds good", "do 1-3") covers the steps
   picked by number or by name, else all of them (`chosen_items`);
 - a pick needs no "yes" (`selection`: "the second one", "2 and 3", "the abstract one");
-- the detail an action asked for (`is_the_detail`: a day or time, or a place) runs the original
-  request again with it;
+- the detail an action asked for (`is_the_detail`: a day or time, a place, a file or folder
+  (`detail_of`), or for any other detail a short answer that is no yes, no or new request) runs the
+  original request again with it; a question that names the argument its answer fills (`arg`:
+  "Which folder? Give me the path." fills `path`) runs that action with it as it was;
 - anything else is a new message. One word is then an answer, not a fragment to ask again
   about.
 
