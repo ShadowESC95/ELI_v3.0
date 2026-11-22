@@ -169,7 +169,7 @@ KG, merged/reranked (`cognition/reranker.py`, `cognition/scoring.py`). Entry cla
   log resolved Moondream2** (`MoondreamChatHandler`) — a discrepancy (§9). OCR path exists
   (`analyze_image.py`, tesseract) but "read the text" routed to captioning in the log. **[L/V]**
 - **STT** audio_stt.py (1848): faster-whisper `small.en`, CPU, int8 *(runtime snapshot)*. **[L]**
-- **TTS** `tts_router.py`: Piper-only, `en_US-amy-medium`, `aplay`. **[L]**
+- **TTS** `tts_router.py`: Piper-only, `en_US-amy-medium`, played through the sound server (its PortAudio device, else `pw-play`/`paplay`/`aplay`). **[L]**
 - Also: screen read/analyze, gaze engine, ambient vision daemon, PDF/CSV analysis.
 
 ### 4.8 Coding agent — `coding/` (12 files, 2,031)

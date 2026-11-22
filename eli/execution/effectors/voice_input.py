@@ -42,6 +42,14 @@ def _h_listen_for_command(a, args):
 
 
 
+def _played_line(last: dict) -> str:
+    if not last:
+        return "nothing played yet"
+    if last.get("ok"):
+        return f"played through {last.get('via') or 'an unnamed route'}"
+    return f"NOT played ({last.get('detail') or 'playback failed'})"
+
+
 def _h_stt_diagnostics(a, args):
     try:
         from eli.perception.audio_stt import stt_diagnostics
@@ -61,7 +69,8 @@ def _h_stt_diagnostics(a, args):
             f"model: {wh.get('model', '?')} device: {wh.get('device_configured', '?')}",
             f"STT — output duck: {'✅' if combined.get('wake_duck_enabled') else 'off'} "
             f"media pause duck: {'✅' if combined.get('media_duck_enabled') else 'off'}",
-            f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('piper_model') else '❌'}",
+            f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('active_model') else '❌'}",
+            f"TTS — last speech: {_played_line(tts.get('last_playback') or {})}",
             f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
             f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
         ]
