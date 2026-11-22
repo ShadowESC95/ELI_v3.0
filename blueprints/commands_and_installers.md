@@ -136,6 +136,7 @@ bash scripts/install_android.sh
 ./eli.sh                                # shortcut for the desktop app
 .venv/bin/python -m eli                 # desktop app via module
 .venv/bin/python -m eli --headless      # text-only terminal REPL
+.venv/bin/python -m eli --help          # its options; an --option it does not read starts nothing
 ```
 
 **Headless slash commands:** `/status` · `/mode` · `/reset` · `/help` · `/quit`
