@@ -63,10 +63,10 @@ source tree at 3.0.171; where something is only true at runtime it is marked *(r
 | `eli/cli`, `eli/brain`, top level | 352 | 5 | Headless REPL, package entry |
 | **total** | **233,521** | **608** | |
 
-The largest files: `eli/kernel/engine.py` (8,521 lines, plus 9,245 lines in the
-`kernel/stages/` mixins it is composed from), `eli/execution/executor_enhanced.py` (7,588:
-registered actions run in their effector modules), `eli/execution/router_enhanced.py` (7,196),
-`api/server.py` (5,647), `eli/memory/memory.py` (5,524), `eli/cognition/agent_bus.py` (3,729),
+The largest files: `eli/kernel/engine.py` (8,525 lines, plus 9,253 lines in the
+`kernel/stages/` mixins it is composed from), `eli/execution/executor_enhanced.py` (7,512:
+registered actions run in their effector modules), `eli/execution/router_enhanced.py` (7,206),
+`api/server.py` (5,647), `eli/memory/memory.py` (5,549), `eli/cognition/agent_bus.py` (3,731),
 `eli/core/hardware_profile.py` (3,431), `eli/gui/labs/report_tab.py` (3,212),
 `eli/gui/main_window/_mixins/settings_model.py` (3,131) and `eli/cognition/gguf_inference.py`
 (3,010).
