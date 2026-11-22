@@ -92,3 +92,42 @@ def test_last_night_is_still_that_night_a_little_after_midnight():
     from eli.cognition.query_planner import wrong_day_now
     assert wrong_day_now("It's Monday night still, technically.", datetime(2026, 11, 3, 0, 20)) == ""
     assert wrong_day_now("It's Monday.", datetime(2026, 11, 4, 12, 0))
+
+
+@pytest.mark.parametrize("text,about_it", [
+    ("What is the last thing you remember/what we talked about?", True),
+    ("so when was our last conversation before this?", True),
+    ("what did we talk about last time?", True),
+    ("what did we talk about yesterday?", False),        # a period of its own
+    ("the last conversation was great.", False),         # a statement, not a question
+    ("play the last song", False),
+])
+def test_a_question_about_the_last_conversation_is_known(text, about_it):
+    from eli.cognition.query_planner import asks_about_last_conversation
+    assert asks_about_last_conversation(text) is about_it
+
+
+def test_the_last_conversation_is_the_one_before_this_one_in_the_log(memory_instance):
+    """Asked "when was our last conversation?", no period was read for the question: the conversation
+    before this one, which only the log knows, is that period."""
+    import sqlite3
+    from types import SimpleNamespace
+    from eli.cognition.orchestrator import _previous_conversation
+    mem = memory_instance
+    mem.add_conversation_turn("user", "a first message so the tables exist", session_id="s-now")
+    day = 86400.0
+    t0 = time.time() - 20 * day
+    rows = [("s-busy", t0 + i) for i in range(40)] + [("s-last", t0 + 8 * day), ("s-last", t0 + 8 * day + 600)]
+    con = sqlite3.connect(str(mem.db_path))
+    try:
+        for session, ts in rows:
+            con.execute("INSERT INTO conversation_turns (session_id, user_id, role, content, ts, timestamp) "
+                        "VALUES (?, '', 'user', 'something said', ?, ?)", (session, ts, ts))
+        con.commit()
+    finally:
+        con.close()
+    window = mem.previous_conversation_window("s-now")
+    assert window == (t0 + 8 * day, t0 + 8 * day + 601)
+    engine = SimpleNamespace(memory=mem, session_id="s-now")
+    assert _previous_conversation(engine, "so when was our last conversation before this?") == window
+    assert _previous_conversation(engine, "what did we talk about yesterday?") is None

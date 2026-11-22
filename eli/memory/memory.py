@@ -5218,6 +5218,31 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    def previous_conversation_window(self, current_session_id=None, user_id=None):
+        """(start, end) of the conversation before this one: the latest session in the log, other than
+        `current_session_id`, of this user (the turn's own when none is named; get_recent_conversation),
+        from its first turn to its last. None when there is none."""
+        conn = self._get_connection()
+        try:
+            scope, params = "user_id = ?", [user_id]
+            if not user_id:
+                from eli.memory import policy as _scope_policy
+                scope, params = _scope_policy.scope_sql("user_id", _scope_policy.owner_key(None), raw_ids=True)
+                scope, params = (scope.replace(" AND ", "", 1) if scope else "1=1"), list(params)
+            row = conn.execute(
+                f"SELECT session_id FROM conversation_turns WHERE COALESCE(session_id, '') != ? AND {scope} "
+                "ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT 1", [str(current_session_id or "")] + params).fetchone()
+            if not row:
+                return None
+            span = conn.execute(
+                "SELECT MIN(COALESCE(timestamp, ts, 0)), MAX(COALESCE(timestamp, ts, 0)) FROM conversation_turns "
+                f"WHERE COALESCE(session_id, '') = COALESCE(?, '') AND {scope}", [row[0]] + params).fetchone()
+            if not span or not span[0]:
+                return None
+            return float(span[0]), float(span[1]) + 1.0
+        finally:
+            conn.close()
+
     def get_recent_failures(self, limit=20):
         conn = self._get_connection()
         try:

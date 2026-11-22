@@ -97,6 +97,17 @@ def _followup_window(engine: Any, user_input: str, window: Any) -> Any:
     return window
 
 
+def _previous_conversation(engine: Any, user_input: str) -> Any:
+    """The span of the conversation before this one, when the question is about it."""
+    try:
+        from eli.cognition.query_planner import asks_about_last_conversation
+        if asks_about_last_conversation(user_input):
+            return engine.memory.previous_conversation_window(getattr(engine, "session_id", None))
+    except Exception:
+        log.debug("previous conversation window skipped", exc_info=True)
+    return None
+
+
 def _period_log_chars(reasoning_mode: object = None) -> int:
     """Room for the period log: a fifth of the loaded context, a little less in quick mode."""
     try:
@@ -1052,7 +1063,8 @@ class AgentOrchestrator:
         retrieval_plan = self.planner_agent.plan_retrieval(
             user_input, intent, "", stm, reasoning_mode=reasoning_mode)
         retrieval_plan["window"] = _followup_window(self.engine, user_input,
-                                                    _query_planner.plan_window(user_input))
+                                                    _query_planner.plan_window(user_input)
+                                                    or _previous_conversation(self.engine, user_input))
         # A calculation over a date in the message needs reasoning, not stored logs.
         if _query_planner.is_date_arithmetic(user_input):
             retrieval_plan["window"] = None
