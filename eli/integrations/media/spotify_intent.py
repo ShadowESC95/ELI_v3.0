@@ -86,7 +86,7 @@ _SIMILAR = re.compile(
 _ALBUM_FIRST = re.compile(r"^(?:the\s+)?(?:album|lp|ep)\s+(?P<name>.+?)(?:\s+by\s+(?P<artist>.+))?$", re.I)
 _ALBUM_LAST = re.compile(r"^(?:the\s+)?(?P<name>.+?)\s+(?:album|lp|ep)(?:\s+by\s+(?P<artist>.+))?$", re.I)
 _ALBUM_BY_LAST = re.compile(r"^(?:the\s+)?(?P<name>.+?)\s+by\s+(?P<artist>.+?)\s+(?:album|lp|ep)$", re.I)
-_ALBUM_OWNED = re.compile(rf"^(?:the\s+)?(?P<artist>.+?){_OWNS}?\s+(?:album|lp|ep)\s+(?P<name>.+)$", re.I)
+_ALBUM_OWNED = re.compile(rf"^(?P<the>the\s+)?(?P<artist>.+?){_OWNS}?\s+(?:album|lp|ep)\s+(?P<name>.+)$", re.I)
 _BY_ARTIST = re.compile(r"^(?:(?:some|any|the)\s+)?(?:songs?|tracks?|music|stuff|something|anything|hits)\s+"
                         r"(?:by|from)\s+(?P<artist>.+)$", re.I)
 _MOOD_OF = re.compile(rf"^(?P<artist>.+?){_OWNS}\s+(?P<mood>.+?)\s+(?:songs|tracks|music|stuff)$", re.I)
@@ -109,6 +109,16 @@ def _searchable_artist(artist: str) -> str:
     if a != _tidy(artist):
         return a
     return a[:-1] if len(a) > 2 and a.lower().endswith("s") and not a.lower().endswith("ss") else a
+
+
+def _album_owner(said: str, *, named_with_the: bool) -> str:
+    """Whose album "<said> album <name>" asks for. "veridians album ..." is Veridian's: the possessive
+    said or typed without its apostrophe, so the artist is named without it. With "the" in front ("the
+    copper tides album ox") the "s" is the name's own, a band named in the plural."""
+    a = _tidy(said)
+    if not named_with_the and len(a) > 2 and re.search(r"[^s]s$", a, re.I):
+        return a[:-1]
+    return a
 
 
 def media_request(query: str, kind: str | None = None) -> dict:
@@ -147,7 +157,10 @@ def media_request(query: str, kind: str | None = None) -> dict:
     for pattern in (_ALBUM_FIRST, _ALBUM_BY_LAST, _ALBUM_LAST, _ALBUM_OWNED):
         am = pattern.match(q)
         if am and len(_tidy(am.group("name"))) >= 2 and hint in ("", "album"):
-            return frame("album", am.group("name"), am.groupdict().get("artist") or "")
+            artist = am.groupdict().get("artist") or ""
+            if pattern is _ALBUM_OWNED:
+                artist = _album_owner(artist, named_with_the=bool(am.group("the")))
+            return frame("album", am.group("name"), artist)
     if album_said or hint == "album":
         bm = _BY.match(q)
         return frame("album", bm.group("title"), bm.group("artist")) if bm else frame("album", q)
@@ -169,6 +182,22 @@ def media_request(query: str, kind: str | None = None) -> dict:
         return frame("track", bm.group("title"), bm.group("artist"))
     if hint in MUSIC_KINDS:
         return {**frame(hint, q), "search": q}
+    return out
+
+
+def spotify_searches(asked: dict) -> list[str]:
+    """What to ask Spotify's search for a request read by media_request, best first: its words, then,
+    for a song or an album, the same with Spotify's search filters ("track:" or "album:", and "artist:"),
+    which hold the title to the song's or album's own name: the words alone started another of the
+    artist's songs. What starts is judged either way (cross_platform.track_matches, album_matches)."""
+    plain = str(asked.get("search") or "").strip()
+    out = [plain] if plain else []
+    field = {"track": "track", "album": "album"}.get(str(asked.get("kind") or ""))
+    title, artist = _tidy(asked.get("title")), _tidy(asked.get("artist"))
+    if field and title:
+        filtered = f"{field}:{title}" + (f" artist:{_searchable_artist(artist)}" if artist else "")
+        if filtered not in out:
+            out.append(filtered)
     return out
 
 

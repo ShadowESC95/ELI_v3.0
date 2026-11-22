@@ -291,23 +291,46 @@ def _session_bus_reachable() -> bool:
     return ok
 
 
-def spotify_play_top_search_result(query: str, timeout: float = 10.0, *, launch: bool = True) -> bool:
-    """Have Spotify play its top search result for `query`; True once the song asked for plays.
+def spotify_search_autoplays() -> bool:
+    """Whether a search opened in Spotify plays its top result: on Linux, over MPRIS (a session bus to
+    send OpenUri on). Elsewhere a search URI only opens the results."""
+    return bool(pc.LINUX and shutil.which("dbus-send") and _session_bus_reachable())
+
+
+# A track other than the one there before, seen playing on this many polls in a row, is what the search
+# found: MPRIS reports one track at a time, and a second reading rules out one taken mid-change.
+SEARCH_ANSWER_POLLS = 2
+
+
+def _playing(now: dict) -> bool:
+    return (now.get("status") or "playing") == "playing" and bool(now.get("artist") or now.get("title"))
+
+
+def spotify_play_top_search_result(query: str, timeout: float = 10.0, *, launch: bool = True,
+                                   accept=None) -> bool:
+    """Have Spotify play its top search result for `query`; True once what was asked for plays.
 
     Over MPRIS, OpenUri("spotify:search:<query>") makes the desktop client play the top result
     (the https://open.spotify.com/search/... form only shows the results). No window focus or
     keystrokes are involved, so it works on Wayland, where nothing can confirm which window has
     focus, and on X11 alike. Linux only: elsewhere a search URI opens the results without playing.
-    """
+
+    `accept(now)` judges the track that plays (spotify_live_track's fields): by default the words of
+    `query` in its title and artist (query_matches_track); an album is judged by the track's album
+    (album_matches), a song by its parts (track_matches). Once another track has started it is the
+    search's answer, and it is turned down then, not waited on for the rest of `timeout`."""
     q = str(query or "").strip()
-    if not q or not pc.LINUX or not shutil.which("dbus-send") or not _session_bus_reachable():
+    if not q or not spotify_search_autoplays():
         return False
     if launch and not spotify_launch_if_needed():
         return False
     if not spotify_wait_running(timeout=8.0):
         return False
+    judge = accept or (lambda now: query_matches_track(q, now.get("artist", ""), now.get("title", "")))
+    before = spotify_live_track()
+    was = (before.get("artist"), before.get("title"), _playing(before))
     deadline = time.monotonic() + timeout
-    sent_at, resent = None, False
+    sent_at, resent, answered = None, False, 0
     while time.monotonic() < deadline:
         # The client registers on D-Bus a moment after its process starts (sending fails until
         # then), and a cold start may ignore the first request while its interface loads.
@@ -318,9 +341,18 @@ def spotify_play_top_search_result(query: str, timeout: float = 10.0, *, launch:
         elif not resent and now - sent_at > timeout / 2:
             resent = spotify_open_uri(f"spotify:search:{q}") or True
         time.sleep(0.5)
-        head, artist, title = spotify_live_meta()
-        if head.startswith("▶") and query_matches_track(q, artist, title):
+        track = spotify_live_track()
+        if not _playing(track):
+            answered = 0
+            continue
+        if judge(track):
             return True
+        other = (track.get("artist"), track.get("title"), True) != was
+        answered = answered + 1 if sent_at is not None and other else 0
+        if answered >= SEARCH_ANSWER_POLLS:
+            log.debug("[SPOTIFY] search %r started %s — %s, not what was asked for",
+                      q, track.get("artist"), track.get("title"))
+            return False
     return False
 
 
@@ -388,62 +420,9 @@ def spotify_search(query: str, prefer: str | None = None) -> bool:
     return spotify_open_uri(f"spotify:search:{q}")
 
 
-def _spotify_scrape_uri(name: str, kind: str) -> str | None:
-    """Resolve a playlist/album/artist name to spotify:<kind>:<id> via search HTML."""
-    import re as _re
-    import urllib.request as _ureq
-
-    q = str(name or "").strip()
-    if not q:
-        return None
-    plural = {"playlist": "playlists", "album": "albums", "artist": "artists",
-              "track": "tracks"}.get(kind, kind)
-    url = f"https://open.spotify.com/search/{urllib.parse.quote(q)}/{plural}"
-    patterns = {
-        "playlist": (
-            r'"uri"\s*:\s*"spotify:playlist:([A-Za-z0-9]+)"',
-            r'spotify:playlist:([A-Za-z0-9]+)',
-        ),
-        "album": (
-            r'"uri"\s*:\s*"spotify:album:([A-Za-z0-9]+)"',
-            r'spotify:album:([A-Za-z0-9]+)',
-        ),
-        "artist": (
-            r'"uri"\s*:\s*"spotify:artist:([A-Za-z0-9]+)"',
-            r'spotify:artist:([A-Za-z0-9]+)',
-        ),
-        "track": (
-            r'"uri"\s*:\s*"spotify:track:([A-Za-z0-9]+)"',
-            r'spotify:track:([A-Za-z0-9]+)',
-        ),
-    }.get(kind, ())
-    try:
-        req = _ureq.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-        )
-        with _ureq.urlopen(req, timeout=8) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        for pat in patterns:
-            m = _re.search(pat, html)
-            if m:
-                return f"spotify:{kind}:{m.group(1)}"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return None
-
-
-def spotify_resolve_playlist_uri(name: str) -> str | None:
-    return _spotify_scrape_uri(name, "playlist")
-
-
-def spotify_resolve_album_uri(name: str, artist: str | None = None) -> str | None:
-    query = f"{name} {artist}".strip() if artist else name
-    return _spotify_scrape_uri(query, "album")
-
-
-def spotify_resolve_artist_uri(name: str) -> str | None:
-    return _spotify_scrape_uri(name, "artist")
+# A playlist, album or artist is not looked up on open.spotify.com: that is a call to Spotify's web
+# service (ELI uses only what runs on this machine), and its search page is a script with no results in
+# it, so the lookup never found one. Spotify's own search, opened in the app, is what finds them.
 
 
 def spotify_open_liked_songs() -> bool:
@@ -696,6 +675,42 @@ def _same_word(a: str, b: str) -> bool:
 def _all_words_in(wanted: str, have: str) -> bool:
     want, got = _match_tokens(wanted), _match_tokens(have)
     return bool(want) and bool(got) and all(any(_same_word(w, h) for h in got) for w in want)
+
+
+# What a version adds to a song's title: "(feat. …)", "[Live]", "- Remastered 2011", "- From \"8 Mile\"".
+_VERSION_IN_TITLE = re.compile(r"\s*[(\[][^)\]]*[)\]]|\s+[-–—]\s+.*$")
+# The words that join a name, not the words that say what kind of thing is asked for: a song may be
+# called "Music" or "Songs".
+_NAME_JOINERS = frozenset({"the", "a", "an", "of", "and", "by", "with", "feat", "ft", "featuring"})
+
+
+def _name_words(text: str) -> set[str]:
+    import unicodedata
+    low = unicodedata.normalize("NFKD", str(text or "").lower())
+    low = "".join(ch for ch in low if not unicodedata.combining(ch))
+    low = re.sub(r"(?<=\w)[.'’](?=\w)", "", low)
+    return {t for t in re.findall(r"\w+", low) if t not in _NAME_JOINERS}
+
+
+def _covers(wanted: set[str], have: set[str]) -> bool:
+    return all(any(_same_word(w, h) for h in have) for w in wanted)
+
+
+def track_matches(title: str, artist: str, now: dict) -> bool:
+    """The playing track is the song asked for by its parts: every word of the title asked for is in its
+    title, its own title (without what a version adds: "(feat. …)", "- Remastered") says nothing more,
+    and the artist, when named, is among its artists. Judged by the parts, a title's word in another of
+    the artist's songs no longer passes ("trouble" by Orlo is not Orlo's "Trouble Again", nor a song whose
+    artist and title between them hold the words)."""
+    now = now or {}
+    got = str(now.get("title") or "")
+    wanted, have = _name_words(title), _name_words(got)
+    if not wanted or not have or not _covers(wanted, have):
+        return False
+    own = _name_words(_VERSION_IN_TITLE.sub("", got)) or have
+    if not _covers(own, wanted):
+        return False
+    return not artist or _covers(_name_words(artist), _name_words(now.get("artist")))
 
 
 def album_matches(album: str, artist: str, now: dict) -> bool:

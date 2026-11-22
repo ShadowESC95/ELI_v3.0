@@ -76,7 +76,7 @@ def test_album_mid_string_artist_album_name():
     separator, which is how both real requests were phrased."""
     name, artist = si.album_request("veridians album salt and a stone")
     assert name == "salt and a stone"
-    assert artist == "veridians"
+    assert artist == "veridian"         # Veridian's album, the apostrophe left out
 
     name, artist = si.album_request("the copper tides album ox")
     assert name == "ox"
@@ -116,9 +116,11 @@ import pytest  # noqa: E402
 @pytest.mark.parametrize("said, kind, title, artist, search", [
     # an album asked for with its artist, the album word first: it never reached the album path
     ("the album salt and a stone by veridian", "album", "salt and a stone", "veridian", "salt and a stone veridian"),
-    # a possessive said without the apostrophe, and the filler after it, kept out of the search
-    ("veridians album salt and a stone (the full album)", "album", "salt and a stone", "veridians",
+    # a possessive said without the apostrophe is the artist's name without it, and the filler after
+    # it is kept out of the search; with "the" in front the "s" is the name's own
+    ("veridians album salt and a stone (the full album)", "album", "salt and a stone", "veridian",
      "salt and a stone veridian"),
+    ("the copper tides album ox", "album", "ox", "copper tides", "ox copper tide"),
     ("veridian's album salt and a stone", "album", "salt and a stone", "veridian", "salt and a stone veridian"),
     ("silver lanterns by veridian", "track", "silver lanterns", "veridian", "silver lanterns veridian"),
     ("songs by veridian", "artist", "", "veridian", "veridian"),
@@ -138,6 +140,16 @@ def test_media_request_reads_what_is_asked_for(said, kind, title, artist, search
 def test_songs_like_a_song_are_read_with_their_seed(said):
     got = si.media_request(said)
     assert got["kind"] == "similar" and got["seed"] == "silver lanterns" and got["search"] == "silver lanterns"
+
+
+def test_spotify_is_searched_for_a_song_or_an_album_by_its_words_then_its_name():
+    """The words of a request started another of the artist's songs ("trouble" by an artist played
+    their best-known one); held to the title with Spotify's search filters, the song itself starts."""
+    assert si.spotify_searches(si.media_request("trouble by orlo")) == ["trouble orlo", "track:trouble artist:orlo"]
+    assert si.spotify_searches(si.media_request("veridians album salt and a stone")) == [
+        "salt and a stone veridian", "album:salt and a stone artist:veridian"]
+    assert si.spotify_searches(si.media_request("songs by veridian")) == ["veridian"]
+    assert si.spotify_searches(si.media_request("puffin cove")) == ["puffin cove"]
 
 
 def test_a_kind_given_by_the_router_is_taken():

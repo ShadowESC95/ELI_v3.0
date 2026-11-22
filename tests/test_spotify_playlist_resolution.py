@@ -1,45 +1,7 @@
-"""Spotify playlist URI resolution and playback polling helpers."""
+"""How play_specific reaches Spotify: its own search first, then typing, then the results page. Nothing is
+looked up on open.spotify.com (a web call, and its page carries no results)."""
 # The media layer lives in effectors/media.py (the executor re-exports it), so patch it there.
 from eli.execution.effectors import media as ex
-
-
-def test_resolve_playlist_uri_from_search_html(monkeypatch):
-    html = (
-        '<script>{"uri":"spotify:playlist:37i9dQZF1DX0XUsuxWHRQd",'
-        '"name":"Workout"}</script>'
-    )
-
-    class _Resp:
-        def read(self):
-            return html.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
-    from eli.integrations.media.cross_platform import spotify_resolve_playlist_uri
-    assert spotify_resolve_playlist_uri("workout") == "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd"
-
-
-def test_resolve_album_uri_from_search_html(monkeypatch):
-    html = '{"uri":"spotify:album:4cQZRveqW4purQgPiE8xNK"}'
-
-    class _Resp:
-        def read(self):
-            return html.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
-    from eli.integrations.media.cross_platform import spotify_resolve_album_uri
-    assert spotify_resolve_album_uri("harbour lights lp", "orlo") == "spotify:album:4cQZRveqW4purQgPiE8xNK"
 
 
 def test_play_specific_asks_spotify_for_its_top_result_first(monkeypatch):
@@ -48,7 +10,7 @@ def test_play_specific_asks_spotify_for_its_top_result_first(monkeypatch):
     typed = []
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_launch_if_needed", lambda: True)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_play_top_search_result",
-                        lambda q, timeout=10.0, launch=True: True)
+                        lambda q, timeout=10.0, launch=True, accept=None: True)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_search_type_and_play",
                         lambda q, launch=True: typed.append(q) or True)
     monkeypatch.setattr(ex, "_spotify_live_meta", lambda *a, **k: ("▶ Playing", "Veridian", "Silver lanterns"))
@@ -61,7 +23,7 @@ def test_play_specific_asks_spotify_for_its_top_result_first(monkeypatch):
 def test_play_specific_types_into_spotify_when_the_top_result_is_not_it(monkeypatch):
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_launch_if_needed", lambda: True)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_play_top_search_result",
-                        lambda q, timeout=10.0, launch=True: False)
+                        lambda q, timeout=10.0, launch=True, accept=None: False)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_search_type_and_play",
                         lambda q, launch=True: True)
 
@@ -87,26 +49,6 @@ def test_play_specific_falls_back_to_search_when_no_track_uri_resolves(monkeypat
 
     assert result["played"] is False
     assert result["search_only"] is True
-
-
-def test_try_open_and_play_rejects_a_stale_track_that_never_changed(monkeypatch):
-    """Regression: opening a resolved URI then calling _spotify_play() can
-    report "Playing" purely because a track from before is still playing —
-    _spotify_open_uri() itself can silently fail to actually queue the new
-    target. Metadata identical before and after must not be reported as
-    success."""
-    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
-    monkeypatch.setattr(ex, "_spotify_open_uri", lambda u: True)
-    monkeypatch.setattr(ex, "_spotify_clear_track_repeat", lambda: True)
-    monkeypatch.setattr(ex, "_spotify_play", lambda: True)
-    monkeypatch.setattr(ex, "_spotify_live_meta",
-                         lambda *a, **k: ("▶ Playing", "Quiet Machine", "Harbour Streets"))
-    monkeypatch.setattr(ex.time, "sleep", lambda _s: None)
-
-    result = ex._spotify_try_open_and_play(
-        "spotify:track:abc123", label="“evil”", kind="track")
-
-    assert result is None, "must fall through to another path, not claim a stale track as success"
 
 
 def test_next_media_uses_mpv_when_youtube_is_active(monkeypatch):

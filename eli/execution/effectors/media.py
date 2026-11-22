@@ -219,60 +219,9 @@ def _spotify_running() -> bool:
     return _cp_running()
 
 
-def _spotify_resolve_playlist_uri(name: str) -> str | None:
-    from eli.integrations.media.cross_platform import spotify_resolve_playlist_uri as _cp
-    return _cp(name)
-
-
-def _spotify_resolve_album_uri(name: str, artist: str | None = None) -> str | None:
-    from eli.integrations.media.cross_platform import spotify_resolve_album_uri as _cp
-    return _cp(name, artist)
-
-
-def _spotify_resolve_artist_uri(name: str) -> str | None:
-    from eli.integrations.media.cross_platform import spotify_resolve_artist_uri as _cp
-    return _cp(name)
-
-
 def _spotify_open_liked_songs() -> bool:
     from eli.integrations.media.cross_platform import spotify_open_liked_songs as _cp
     return _cp()
-
-
-def _spotify_try_open_and_play(uri: str, *, label: str, kind: str) -> Dict[str, Any] | None:
-    """Open a concrete Spotify URI and start playback. None → try another path.
-
-    Lower false-positive risk than the generic search-tab fallbacks below —
-    opening a *resolved* spotify:<kind>:<id> URI genuinely queues that exact
-    target, unlike a blind spotify:search: with nothing selected — but
-    _spotify_play() is still only a transport-status check, so a before/after
-    change is required for the same reason it is everywhere else in this
-    file: a stale already-playing track reports identical "Playing" status.
-    """
-    import time as _time
-    if not uri:
-        return None
-    if not _spotify_running():
-        _ensure_spotify_running()
-        _spotify_wait_running(timeout=8.0)
-    _before = _spotify_live_meta()[1:]
-    if not _spotify_open_uri(uri):
-        return None
-    _time.sleep(0.9)
-    _spotify_clear_track_repeat()
-    if not _spotify_play():
-        return None
-    _, artist, track = _spotify_live_meta()
-    if (artist, track) == _before and (artist or track):
-        return None
-    meta = f"{artist} — {track}" if artist and track else (track or label)
-    _set_now_playing("spotify", meta)
-    msg = f"Playing {label} on Spotify."
-    if track:
-        msg = f"Playing {label} on Spotify — now: {meta}."
-    return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-            "kind": kind, "content": msg, "response": msg,
-            "track": _track("spotify", query=label, title=track, artist=artist, confirmed=True)}
 
 
 def _spotify_is_liked_songs_request(name: str) -> bool:
@@ -536,11 +485,6 @@ def _play_on_spotify(asked: Dict[str, Any]) -> Dict[str, Any]:
     # ── Named playlist, or a style or mood: a playlist keeps going, a track stops ──
     if kind in ("playlist", "genre"):
         name = asked["title"] if kind == "playlist" else asked["search"]
-        if kind == "playlist":
-            _hit = _spotify_try_open_and_play(
-                _spotify_resolve_playlist_uri(name), label=f"the “{name}” playlist", kind="playlist")
-            if _hit:
-                return _hit
         return _spotify_playlist_search(name, kind)
 
     # ── Album (optionally by artist): judged by the playing track's album ──
@@ -551,10 +495,6 @@ def _play_on_spotify(asked: Dict[str, Any]) -> Dict[str, Any]:
 
     # ── Artist ──
     if kind == "artist":
-        _hit = _spotify_try_open_and_play(
-            _spotify_resolve_artist_uri(asked["artist"]), label=f"songs by {asked['artist']}", kind="artist")
-        if _hit:
-            return _hit
         return _spotify_play_track(asked["search"])
 
     # ── Songs like a song: its own track starts it, Spotify's autoplay picks what follows ──
@@ -609,42 +549,50 @@ def _spotify_playlist_search(name: str, kind: str) -> Dict[str, Any]:
             "content": msg, "response": msg, "track": _track("spotify", query=name, confirmed=False)}
 
 
+def _album_started(asked: Dict[str, Any], now: Dict[str, Any]) -> Dict[str, Any]:
+    """A track of the album asked for is playing: said by the names the player gives it."""
+    title, artist = str(now.get("title") or ""), str(now.get("artist") or asked["artist"] or "")
+    album = str(now.get("album") or "") or f"the album “{asked['title']}”"
+    _set_now_playing("spotify", f"{artist} — {title}" if artist and title else f"{album} (album)")
+    msg = ((f"Playing “{title}” from {album}" if title else f"Playing {album}")
+           + (f" by {artist}" if artist else "") + " on Spotify.")
+    return {"ok": True, "action": "PLAY_MEDIA", "played": True, "kind": "album", "album": album,
+            "content": msg, "response": msg,
+            "track": _track("spotify", query=asked["search"], title=title or asked["title"], artist=artist,
+                            confirmed=True)}
+
+
 def _spotify_album(asked: Dict[str, Any]) -> Dict[str, Any]:
     import time as _time
-    from eli.integrations.media.cross_platform import album_matches, spotify_live_track
+    from eli.integrations.media import cross_platform as _cp
+    from eli.integrations.media.spotify_intent import spotify_searches
     _album, _album_artist = asked["title"], asked["artist"]
-    label = f"the “{_album}” album" + (f" by {_album_artist}" if _album_artist else "")
+    label = f"the album “{_album}”" + (f" by {_album_artist}" if _album_artist else "")
 
-    def _it_is() -> bool:
-        return _spotify_play() and album_matches(_album, _album_artist, spotify_live_track())
+    def _from_it(now: Optional[Dict[str, Any]] = None) -> bool:
+        return _cp.album_matches(_album, _album_artist, _cp.spotify_live_track() if now is None else now)
 
-    _hit = _spotify_try_open_and_play(
-        _spotify_resolve_album_uri(_album, _album_artist or None), label=label, kind="album")
-    if _hit and album_matches(_album, _album_artist, spotify_live_track()):
-        return _hit
-    if not _spotify_running():
-        _ensure_spotify_running()
-        _spotify_wait_running(timeout=8.0)
-    if _spotify_search(asked["search"], prefer="albums"):
-        _time.sleep(2.4)
-        _spotify_clear_track_repeat()
-        if _it_is():
-            _set_now_playing("spotify", f"{_album} (album)")
-            msg = f"Playing {label} on Spotify."
-            return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "kind": "album", "content": msg, "response": msg,
-                    "track": _track("spotify", query=asked["search"], title=_album, artist=_album_artist,
-                                    confirmed=True)}
-        # Retry play once after album search UI settles
-        _time.sleep(1.2)
-        if _it_is():
-            _set_now_playing("spotify", f"{_album} (album)")
-            msg = f"Playing {label} on Spotify."
-            return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "kind": "album", "content": msg, "response": msg,
-                    "track": _track("spotify", query=asked["search"], title=_album, artist=_album_artist,
-                                    confirmed=True)}
-    now = spotify_live_track()
+    if _cp.spotify_search_autoplays():
+        # A search opened in Spotify over MPRIS plays its top result, with no window or keystrokes
+        # (Wayland too); what starts is kept only when it is a track of the album asked for. The
+        # albums tab of a search ("…/albums") only shows results, so no album ever started.
+        if _cp.spotify_launch_if_needed():
+            for words in spotify_searches(asked):
+                if _cp.spotify_play_top_search_result(words, launch=False, accept=_from_it):
+                    return _album_started(asked, _cp.spotify_live_track())
+    else:
+        # Elsewhere a search only opens the results: Spotify's albums for it, then play.
+        if not _spotify_running():
+            _ensure_spotify_running()
+            _spotify_wait_running(timeout=8.0)
+        if _spotify_search(asked["search"], prefer="albums"):
+            _time.sleep(2.4)
+            _spotify_clear_track_repeat()
+            for settle in (0.0, 1.2):       # once more after the results have settled
+                _time.sleep(settle)
+                if _spotify_play() and _from_it():
+                    return _album_started(asked, _cp.spotify_live_track())
+    now = _cp.spotify_live_track()
     playing = (f" Spotify is playing “{now['artist']} — {now['title']}”"
                + (f" from {now['album']}" if now["album"] else "") + ", which is not it."
                if now["status"] == "playing" and now["title"] else "")

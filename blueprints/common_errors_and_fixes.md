@@ -281,6 +281,14 @@ desktop client play its top result with no window focus, then checks the song th
 one asked for. If Spotify's top result is a different song, ELI says what is playing. Typing into
 the search box is now only tried on X11 or for an XWayland window.
 
+**Albums the same way.** "play <artist>s album <name>" never played: ELI looked the album up on
+open.spotify.com (a call to Spotify's web service, whose page has no results in it) and then opened the
+albums tab of a search, which only shows results. An album is now started by the search that plays
+(its name and artist, then the same held to the album with Spotify's `album:` and `artist:` filters),
+and a track counts only when the player says it is from that album; a track from another record is
+turned down when it starts. "veridians album" is read as Veridian's album, the artist named without
+the possessive "s". Where a search does not play (macOS, Windows) the albums tab is still opened.
+
 ---
 
 ## AppImage: an app ELI opened closes at once, or Spotify/yt-dlp calls fail

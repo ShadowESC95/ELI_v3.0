@@ -58,8 +58,9 @@ def test_spotify_target_plays_and_never_opens_youtube(monkeypatch):
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     calls = _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
-    monkeypatch.setattr(cp, "spotify_live_meta",
-                         lambda player="spotify": ("▶ Playing", "The Notorious B.I.G.", "Juicy"))
+    # the player as it reports itself (spotify_live_meta and the search's own check read this)
+    monkeypatch.setattr(cp, "spotify_live_track", lambda player="spotify": {
+        "status": "playing", "artist": "The Notorious B.I.G.", "title": "Juicy", "album": ""})
 
     res = ex.play_specific("juicy by notorious big", "spotify")
 
@@ -98,8 +99,8 @@ def test_spotify_stale_track_resuming_is_not_reported_as_the_requested_song(monk
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     calls = _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
-    monkeypatch.setattr(cp, "spotify_live_meta",
-                         lambda player="spotify": ("▶ Playing", "Edge Of The Map", "Quiet Machine"))
+    monkeypatch.setattr(cp, "spotify_live_track", lambda player="spotify": {
+        "status": "playing", "artist": "Edge Of The Map", "title": "Quiet Machine", "album": ""})
 
     res = ex.play_specific("evil by orlo", "spotify")
 
@@ -236,29 +237,31 @@ def test_artist_album_name_phrasing_reaches_the_album_block_not_track_search(mon
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
 
-    track_search_calls = []
-    album_uri_calls = []
-    monkeypatch.setattr(ex, "_spotify_resolve_album_uri",
-                         lambda name, artist=None: album_uri_calls.append((name, artist)) or None)
+    searched, track_search_calls = [], []
+    monkeypatch.setattr(cp, "spotify_search_autoplays", lambda: True)
+    monkeypatch.setattr(cp, "spotify_launch_if_needed", lambda: True)
+    monkeypatch.setattr(cp, "spotify_play_top_search_result",
+                        lambda q, timeout=10.0, launch=True, accept=None: searched.append(q) or False)
     monkeypatch.setattr(ex, "_spotify_search",
                          lambda q, prefer=None: track_search_calls.append((q, prefer)) or False)
-    monkeypatch.setattr(
-        "eli.integrations.media.cross_platform.spotify_search_type_and_play",
-        lambda q: False,
-    )
+    monkeypatch.setattr(ex, "_spotify_play_track",
+                        lambda q, **k: (_ for _ in ()).throw(AssertionError("an album is not a track search")))
 
+    out = ex.play_specific("the copper tides album ox", "spotify")
+
+    # an album request (name 'ox', artist 'copper tides'), searched for in Spotify, which plays what it
+    # finds over MPRIS. The artist is searched in the form that finds both readings of an "s" said
+    # without an apostrophe: search matches word beginnings, so "copper tide" finds Copper Tides.
+    assert out["kind"] == "album"
+    assert searched == ["ox copper tide", "album:ox artist:copper tide"]
+    assert not track_search_calls
+
+    # where a search only shows its results (not Linux), Spotify's albums for it are opened
+    searched.clear()
+    monkeypatch.setattr(cp, "spotify_search_autoplays", lambda: False)
+    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
     ex.play_specific("the copper tides album ox", "spotify")
-
-    assert album_uri_calls == [("ox", "copper tides")], (
-        "must resolve as an album request (name='ox', artist='copper tides')"
-    )
-    # The artist is searched in the form that finds both readings of an "s" said without an
-    # apostrophe ("veridians album ..." is Veridian's; "copper tides" is the name): search matches
-    # word beginnings, so "copper tide" finds Copper Tides, and "veridian" finds Veridian.
-    assert ("ox copper tide", "albums") in track_search_calls, (
-        "the album search-tab fallback must search for the album name + "
-        "artist, not get skipped"
-    )
+    assert ("ox copper tide", "albums") in track_search_calls and not searched
 
 
 # ── a site ELI has no player for ────────────────────────────────────────────────────────────────────
@@ -374,16 +377,18 @@ def test_a_style_is_played_as_a_playlist_not_a_title(monkeypatch):
 def test_an_album_asked_for_with_its_artist_reaches_the_album_and_not_a_track_search(monkeypatch):
     """'play the album T by A' never reached the album path, and a failed album fell into a track
     search of the raw words, 'album' included."""
-    album_uri = []
-    monkeypatch.setattr(ex, "_spotify_resolve_album_uri",
-                        lambda name, artist=None: album_uri.append((name, artist)) or None)
+    searched = []
+    monkeypatch.setattr(cp, "spotify_search_autoplays", lambda: True)
+    monkeypatch.setattr(cp, "spotify_launch_if_needed", lambda: True)
+    monkeypatch.setattr(cp, "spotify_play_top_search_result",
+                        lambda q, timeout=10.0, launch=True, accept=None: searched.append(q) or False)
     monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: False)
     monkeypatch.setattr(ex, "_spotify_running", lambda: True)
     monkeypatch.setattr(ex, "_spotify_play_track",
-                        lambda q: (_ for _ in ()).throw(AssertionError("an album is not a track search")))
+                        lambda q, **k: (_ for _ in ()).throw(AssertionError("an album is not a track search")))
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_shuffle_state", lambda: None)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_live_track",
                         lambda player="spotify": {"status": "", "artist": "", "title": "", "album": ""})
     out = ex.play_specific("the album salt and a stone by veridian (the full album)", "spotify")
-    assert album_uri == [("salt and a stone", "veridian")]
+    assert searched == ["salt and a stone veridian", "album:salt and a stone artist:veridian"]
     assert out["ok"] is False and out["kind"] == "album"
