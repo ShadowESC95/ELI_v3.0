@@ -13,6 +13,7 @@ AND was gated on ELI_STT_CALIBRATE, which defaults to "0".
 """
 import types
 
+import numpy as np
 import pytest
 
 from eli.perception import audio_stt
@@ -288,3 +289,202 @@ def test_a_profile_learnt_from_every_capture_starts_over(tmp_path, monkeypatch):
     assert stt._load_voice_profile()["count"] == 0
     p.write_text(json.dumps({"learned_from": audio_stt._VOICE_PROFILE_SOURCE, "count": 7, "energy_mean": 2000.0}))
     assert stt._load_voice_profile()["count"] == 7
+
+
+# ── hearing the owner over ELI's own music ───────────────────────────────────
+_SR = 16000
+
+
+def _voice(rng, seconds, f0, syll_s, formant_scale=1.0):
+    """Speech-like sound: syllables of a voice's harmonics under vowel formants, with pauses."""
+    vowels = [(730, 1090, 2440), (530, 1840, 2480), (270, 2290, 3010), (570, 840, 2410), (300, 870, 2240)]
+    out = np.zeros(int(seconds * _SR))
+    pos = 0
+    while pos < len(out):
+        n = int(rng.uniform(*syll_s) * _SR)
+        t = np.arange(n) / _SR
+        pitch = f0 * (1 + 0.08 * np.sin(2 * np.pi * rng.uniform(1, 2) * t))
+        phase = 2 * np.pi * np.cumsum(pitch) / _SR
+        formants = np.array(vowels[rng.integers(len(vowels))]) * formant_scale
+        syl = np.zeros(n)
+        for h in range(1, int(4000 / f0)):
+            amp = sum(1.0 / (1 + ((h * f0 - f) / 90.0) ** 2) for f in formants) / h ** 0.5
+            syl += amp * np.sin(h * phase)
+        syl *= np.sin(np.pi * np.linspace(0, 1, n)) ** 0.5
+        e = min(len(out), pos + n)
+        out[pos:e] = syl[: e - pos]
+        pos = e + int(rng.uniform(0.02, 0.08) * _SR)
+    return out / (np.sqrt(np.mean(out ** 2)) + 1e-12)
+
+
+def _music(seconds, seed):
+    """Drums, a chord and a rap-like vocal, as ELI's sink would play them."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * _SR)
+    x = np.zeros(n)
+    beat = int(0.65 * _SR)
+    for k, start in enumerate(range(0, n, beat)):
+        m = min(int(0.25 * _SR), n - start)
+        decay = np.exp(-np.arange(m) / (0.05 * _SR))
+        hit = rng.standard_normal(m) if k % 2 else np.sin(2 * np.pi * 55 * np.arange(m) / _SR) * 3
+        x[start:start + m] += hit * decay
+    t = np.arange(n) / _SR
+    x += 0.3 * sum(np.sin(2 * np.pi * f * t) for f in (220.0, 277.2, 329.6))
+    x = x / np.sqrt(np.mean(x ** 2))
+    return x + _voice(rng, seconds, 170.0, (0.10, 0.18), formant_scale=1.12)
+
+
+def _through_the_room(x, seed, delay_s=0.045, ppm=80.0):
+    """The speakers and the room to the mic: a reverberant tail, a delay and another clock."""
+    rng = np.random.default_rng(seed)
+    ir = rng.standard_normal(int(0.4 * _SR)) * np.exp(-np.arange(int(0.4 * _SR)) / (0.06 * _SR)) * 0.2
+    ir[0] = 1.0
+    y = np.fft.irfft(np.fft.rfft(x, 2 * len(x)) * np.fft.rfft(ir, 2 * len(x)))[: len(x)]
+    idx = np.arange(len(y)) * (1 + ppm * 1e-6)
+    y = np.interp(idx[idx < len(y) - 1], np.arange(len(y)), y)
+    y = np.concatenate([np.zeros(int(delay_s * _SR)), y])[: len(x)]
+    return np.pad(y, (0, len(x) - len(y))) / (np.sqrt(np.mean(y ** 2)) + 1e-12)
+
+
+def _feed(det, ref, mic, chunk=1024):
+    onsets = []
+    for pos in range(0, len(mic) - chunk, chunk):
+        t = (pos + chunk) / _SR
+        det.reference(ref[pos:pos + chunk], t)
+        onsets += det.mic(mic[pos:pos + chunk], t)
+    return onsets
+
+
+def test_speech_over_the_music_is_found_where_loudness_cannot_tell_it():
+    """The mic drowned in ELI's own music (9,544 RMS) and the wake word was rarely heard. Speech 3 dB
+    below the music raises the mic's level too little to tell it from the beat; measured against
+    what the sink plays, it is sound the output does not explain."""
+    from eli.perception.near_speech import NearSpeech
+    found, said, music_alone_onsets = 0, 0, 0
+    for seed in (1, 2):
+        ref = _music(45.0, seed)
+        mic = _through_the_room(ref, seed)
+        alone = [t for t in _feed(NearSpeech(), ref, mic + 1e-3 * np.random.default_rng(seed).standard_normal(len(mic)))
+                 if t > 20.0]
+        music_alone_onsets += len(alone)
+        rng = np.random.default_rng(seed + 10)
+        speech = np.zeros(len(mic))
+        starts = [24.0, 29.5, 35.0, 40.5]
+        for s in starts:
+            u = _voice(rng, 1.6, 118.0, (0.15, 0.25))
+            speech[int(s * _SR):int(s * _SR) + len(u)] = u
+        present = speech != 0
+        gain = np.sqrt(np.mean(mic[present] ** 2)) * 10 ** (-3 / 20) / np.sqrt(np.mean(speech[present] ** 2))
+        onsets = _feed(NearSpeech(), ref, mic + gain * speech)
+        found += sum(any(s <= t <= s + 1.6 for t in onsets) for s in starts)
+        said += len(starts)
+    assert music_alone_onsets == 0
+    assert found >= said * 0.6, f"found {found} of {said} utterances"
+
+
+def test_the_output_not_heard_at_the_mic_is_nothing_to_judge():
+    """Headphones: the music never reaches the mic, so it is not the mic's noise and nothing is done."""
+    from eli.perception.near_speech import NearSpeech
+    det = NearSpeech()
+    rng = np.random.default_rng(3)
+    ref = _music(30.0, 3)
+    mic = _voice(rng, 30.0, 118.0, (0.15, 0.25)) * 0.1
+    assert _feed(det, ref, mic) == [] and not det.active
+
+
+def test_lowering_and_restoring_the_output_starts_no_onset():
+    """ELI lowers its media at an onset and puts it back: neither step in level is speech, read
+    before or after the sink's volume."""
+    from eli.perception.near_speech import NearSpeech
+    for monitor_follows_volume in (False, True):
+        ref = _music(60.0, 4)
+        mic = _through_the_room(ref, 4) + 1e-3 * np.random.default_rng(4).standard_normal(len(ref))
+        gain = np.ones(len(ref))
+        changes = []
+        for at in (30.0, 45.0):
+            gain[int(at * _SR):int((at + 3) * _SR)] = 0.18 ** 3
+            changes += [(int(at * _SR), True), (int((at + 3) * _SR), False)]
+        det, onsets, chunk = NearSpeech(), [], 1024
+        heard = ref * gain if monitor_follows_volume else ref
+        for pos in range(0, len(ref) - chunk, chunk):
+            while changes and changes[0][0] <= pos:
+                det.output_changed(lowered=changes.pop(0)[1])
+            t = (pos + chunk) / _SR
+            det.reference(heard[pos:pos + chunk], t)
+            onsets += det.mic((mic * gain)[pos:pos + chunk], t)
+        assert [t for t in onsets if t > 20.0] == [], monitor_follows_volume
+
+
+def _onset_listener(monkeypatch, media_playing=True):
+    import threading
+    stt = audio_stt.ELIAudioSTT.__new__(audio_stt.ELIAudioSTT)
+    stt._voice_gate = audio_stt.VoiceGate()
+    stt._eli_duck_snapshot, stt._eli_ignore_until = None, 0.0
+    stt.recognizer = types.SimpleNamespace(energy_threshold=1200.0)
+    stt._threshold_base, stt.audio_queue, stt.callback = 1200.0, __import__("queue").Queue(), None
+    calls = []
+    changed = []
+    stt._near = types.SimpleNamespace(mic=lambda x, t: [t], output_changed=lambda lowered: changed.append(lowered))
+    monkeypatch.setattr(audio_stt, "_eli_media_probably_audible", lambda: media_playing)
+    monkeypatch.setattr(audio_stt, "_eli_duck_output", lambda: calls.append("duck") or ("wpctl", "Volume: 0.65"))
+    monkeypatch.setattr(audio_stt, "_eli_restore_duck", lambda snap: calls.append(("restore", snap)))
+    monkeypatch.setattr(audio_stt, "media_player_duck_pause", lambda: calls.append("pause"))
+    return stt, calls, changed, threading
+
+
+def test_elis_media_is_lowered_at_the_onset_of_speech_not_after_the_wake_word(monkeypatch):
+    """"computer, tell me the time" over the music: the media went down only once Whisper had read
+    the wake word, so the command was said over the music and heard as "tell me what 20 minute is".
+    It goes down at the onset of speech the output does not explain, and back up when what was said
+    was not for ELI."""
+    stt, calls, changed, threading = _onset_listener(monkeypatch)
+    stt._on_mic_chunk(b"\x00\x01" * 1024, 48000, 1.0)
+    for t in threading.enumerate():
+        if t.name == "eli-onset-duck":
+            t.join(timeout=2)
+    assert calls == ["duck"] and changed == [True] and stt._eli_duck_snapshot is not None
+    stt._act_on_transcript("i think i lost my mind")          # the song, not the owner
+    assert calls[-1] == ("restore", ("wpctl", "Volume: 0.65")) and changed[-1] is False
+    assert stt._eli_duck_snapshot is None
+
+
+def test_a_wake_word_after_an_onset_duck_still_pauses_the_media(monkeypatch):
+    stt, calls, changed, threading = _onset_listener(monkeypatch)
+    stt._eli_duck_snapshot = ("wpctl", "Volume: 0.65")
+    stt._act_on_transcript("computer")
+    assert "pause" in calls and "duck" not in calls and stt._eli_duck_snapshot == ("wpctl", "Volume: 0.65")
+
+
+def test_without_elis_media_playing_an_onset_changes_nothing(monkeypatch):
+    stt, calls, changed, threading = _onset_listener(monkeypatch, media_playing=False)
+    stt._duck_at_onset()
+    assert calls == [] and stt._eli_duck_snapshot is None
+
+
+def test_what_is_said_while_the_loop_is_not_reading_is_kept(monkeypatch):
+    """The listen loop reads nothing while Whisper transcribes, and the device's small buffer overran:
+    the words said then were lost. The mic is read without a break; flush drops ELI's own voice."""
+    import time
+    produced = []
+
+    class _Device:
+        def read(self, frames):
+            time.sleep(0.004)
+            n = len(produced)
+            produced.append(n)
+            return n.to_bytes(4, "little") * (frames // 2)
+
+        def close(self):
+            produced.append("closed")
+
+    mic = audio_stt._ContinuousMic(_Device(), 4, 2).bind_rate(16000)
+    time.sleep(0.3)                                    # "transcribing": nothing read meanwhile
+    got = [int.from_bytes(mic.read(4)[:4], "little") for _ in range(len(produced) - 1)]
+    assert got == list(range(len(got))) and len(got) > 20, "a chunk captured while not read was lost"
+    time.sleep(0.1)                                    # ELI speaks: what the mic holds now is its voice
+    mic.flush()
+    flushed_at = len(produced)
+    after = int.from_bytes(mic.read(4)[:4], "little")
+    assert after >= flushed_at - 1, "audio from before the flush was read"
+    mic.close()
+    assert produced[-1] == "closed"

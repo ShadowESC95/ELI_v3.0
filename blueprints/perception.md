@@ -9,7 +9,8 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | File | LOC | Role |
 |---|---|---|
 | `mic_resolver.py` | ~620 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
-| `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
+| `audio_stt.py` | ~2.9k | STT + mic capture (read without a break) + ducking + adaptive pause + wake/voice capture |
+| `near_speech.py` | ~310 | **speech the machine's own output does not explain** — the default sink's monitor as reference, the music's share at the mic learnt band by band; lowers ELI's media at the onset of the owner's speech |
 | `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
 | `tts_router.py` | 1498 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
@@ -121,6 +122,18 @@ A large, feature-dense STT module:
   says it was not clear (`heard_clearly`).
 - **Playback** opens at the output device's own rate, the voice resampled to it, instead of
   failing first on a device that takes only its own rate.
+- **Hearing the owner over ELI's own music** (`near_speech.py`). The mic is read without a break
+  (`_ContinuousMic`: a thread takes every chunk as it is captured, so what is said while Whisper
+  transcribes is no longer lost, and the buffer is flushed while ELI speaks). Each chunk is compared
+  with what the default sink plays (read from its monitor by `parec` / `pw-record`, routing and
+  volumes untouched); speech the output does not explain lowers ELI's media at its onset
+  (`_duck_at_onset`, only while media plays), so the rest of the wake word and the command are heard
+  over quieter music; it goes back up when nothing for ELI followed, as after a wake word. On
+  synthetic fixtures (rap-like vocals over drums and chords through a speaker and a reverberant
+  room, the mic's clock 80 ppm off) it found 50 / 67 / 83 of 100 utterances at 9 / 6 / 3 dB below
+  the music, where a rise in loudness found none, with 2 false onsets in 4 minutes of music and
+  none from its own lowering and restoring. Off with `ELI_STT_ONSET_DUCK=0`; nothing happens where
+  the mic does not hear the output (headphones) or no sound server runs.
 - **Voice profile** (`voice_profile.json` in the user's runtime folder; `voice_profile_n` in the
   "Microphone ready" line): the level and length of the owner's speech, which may lower the energy
   gate toward it. It learns only from what the voice gate takes as the owner's — the wake word, a

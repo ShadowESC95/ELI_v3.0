@@ -428,7 +428,8 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `perception/` — 12.2k lines
 | Module | LOC | Role |
 |---|---|---|
-| `audio_stt.py` | 2689 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking, per-user voice profile bias. |
+| `audio_stt.py` | 2869 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking (also at the onset of speech over ELI's media), the mic read without a break, per-user voice profile bias learnt from accepted utterances. |
+| `near_speech.py` | 310 | Speech at the mic that the machine's own output does not explain: the default sink's monitor as reference, the music's share learnt per band, onsets of the owner's speech over ELI's music. |
 | `vision.py` | 726 | Local GGUF VL (Moondream fast / primary), hot-swap with text model, CPU-pinned CLIP, OCR. |
 | `tts_router.py` | 1498 | Piper/espeak TTS, voice selection, unspeakable-fragment guard; plays through the sound server (never a card it holds), at the device's own rate when it refuses the voice's. |
 | `audio_samples.py` | 74 | A sound file as one channel of float32 samples at the rate a consumer needs (speech input, playback, the wake word, the voice profile): PCM WAV read with the standard library, other formats with soundfile. |

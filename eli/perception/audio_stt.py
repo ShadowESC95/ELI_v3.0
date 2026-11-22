@@ -1168,6 +1168,85 @@ def speaking_lock_held(path) -> bool:
 # What the STT voice profile learns from: the utterances the voice gate takes as the owner's.
 _VOICE_PROFILE_SOURCE = "accepted utterances"
 
+# ELI's media lowered at the onset of speech its own output does not explain (near_speech), not only
+# once the wake word has been transcribed. ELI_STT_ONSET_DUCK=0 keeps the old behaviour.
+_ONSET_DUCK = os.environ.get("ELI_STT_ONSET_DUCK", "1").strip().lower() not in ("0", "false", "no", "off")
+# The most unread microphone audio kept, seconds: longer than any transcription the loop waits on.
+_MIC_BACKLOG_S = 10.0
+_DUCK_LOCK = threading.Lock()
+
+
+class _ContinuousMic:
+    """The microphone read without a break. The listen loop reads nothing while Whisper transcribes
+    the last capture, and the capture device's small buffer overran meanwhile: what was said then
+    ("computer, tell me the time" said in one go, the command while the wake word was being read)
+    was lost. A thread reads every chunk as it is captured, hands it to `on_chunk(data, t_end)`
+    (near speech, in real time), and keeps it for the loop's read(); flush() drops what the loop
+    must not hear (ELI's own voice while it spoke)."""
+
+    def __init__(self, stream, chunk: int, width: int, on_chunk=None):
+        self._stream, self._chunk, self._width = stream, int(chunk), int(width)
+        self._on_chunk = on_chunk
+        self._buf = bytearray()
+        self._cv = threading.Condition()
+        self._error: Optional[BaseException] = None
+        self._stop = threading.Event()
+        self._rate = 0
+        self._thread = threading.Thread(target=self._run, daemon=True, name="eli-mic-reader")
+        self._thread.start()
+
+    def bind_rate(self, rate: int) -> "_ContinuousMic":
+        self._rate = int(rate)
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                data = self._stream.read(self._chunk)
+            except Exception as exc:          # the device went away: the loop's read() raises it
+                with self._cv:
+                    self._error = exc
+                    self._cv.notify_all()
+                return
+            t_end = time.monotonic()
+            if self._on_chunk is not None:
+                try:
+                    self._on_chunk(data, self._rate, t_end)
+                except Exception:
+                    log.debug("[AUDIO] a microphone chunk was not judged", exc_info=True)
+            with self._cv:
+                self._buf += data
+                most = int(_MIC_BACKLOG_S * max(1, self._rate)) * self._width
+                if len(self._buf) > most > 0:
+                    del self._buf[: len(self._buf) - most]
+                self._cv.notify_all()
+
+    def read(self, size: int) -> bytes:
+        want = int(size) * self._width
+        with self._cv:
+            while len(self._buf) < want and self._error is None and not self._stop.is_set():
+                self._cv.wait(timeout=1.0)
+            if len(self._buf) < want and self._error is not None:
+                raise self._error
+            out = bytes(self._buf[:want])
+            del self._buf[:want]
+            return out
+
+    def flush(self) -> None:
+        with self._cv:
+            self._buf.clear()
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        if self._thread.is_alive():
+            log.warning("[AUDIO] the microphone reader did not stop; its stream is left open")
+            return
+        self._stream.close()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
 
 class VoiceGate:
     CONTINUATION_SLACK = 1.5
@@ -1591,6 +1670,80 @@ class ELIAudioSTT:
         except Exception:
             log.debug("[AUDIO] Mic verify failed", exc_info=True)
 
+    # ── Hearing the owner over ELI's own media ───────────────────────────
+    def _start_near_speech(self) -> None:
+        """Read what the default sink plays (near_speech.OutputTap) so speech the output does not
+        explain can be told from the music at the mic; nothing when there is no sound server or no
+        recorder for it, or with ELI_STT_ONSET_DUCK=0."""
+        self._near, self._tap = None, None
+        if not _ONSET_DUCK:
+            return
+        try:
+            from eli.perception.near_speech import NearSpeech, OutputTap
+            near = NearSpeech()
+            tap = OutputTap(near.reference)
+            if tap.start():
+                self._near, self._tap = near, tap
+        except Exception:
+            log.debug("[AUDIO] near-speech detection unavailable", exc_info=True)
+
+    def _stop_near_speech(self) -> None:
+        tap = getattr(self, "_tap", None)
+        if tap is not None:
+            tap.stop()
+        self._near, self._tap = None, None
+
+    def _hear_continuously(self, source) -> None:
+        """Every opening of the mic is read by a _ContinuousMic (after each enter of the source)."""
+        stream = getattr(source, "stream", None)
+        if stream is None or isinstance(stream, _ContinuousMic):
+            return
+        source.stream = _ContinuousMic(stream, source.CHUNK, source.SAMPLE_WIDTH,
+                                       self._on_mic_chunk).bind_rate(source.SAMPLE_RATE)
+
+    def _on_mic_chunk(self, data: bytes, rate: int, t_end: float) -> None:
+        near = getattr(self, "_near", None)
+        if near is None or np is None or not data:
+            return
+        x = np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+        if rate and rate != 16000:
+            from eli.perception.audio_samples import resample
+            x = resample(x, rate, 16000)
+        if near.mic(x, t_end):
+            threading.Thread(target=self._duck_at_onset, daemon=True, name="eli-onset-duck").start()
+
+    def _duck_at_onset(self) -> None:
+        """Speech began that ELI's output does not explain: ELI's media is lowered now, so the rest of
+        the wake word and the command after it are heard over quieter music. It goes back up when the
+        utterance turns out not to be for ELI (_restore_duck), as after a wake word."""
+        with _DUCK_LOCK:
+            if self._eli_duck_snapshot is not None or self._voice_gate.armed():
+                return
+            if not _eli_media_probably_audible():
+                return
+            snap = _eli_duck_output()
+            if snap is None:
+                return
+            self._eli_duck_snapshot = snap
+        near = getattr(self, "_near", None)
+        if near is not None:
+            near.output_changed(lowered=True)
+        log.debug("[AUDIO_DUCK] media lowered at the onset of speech the output does not explain")
+
+    def _restore_duck(self, why: str) -> None:
+        with _DUCK_LOCK:
+            snap, self._eli_duck_snapshot = self._eli_duck_snapshot, None
+        if snap is None:
+            return
+        try:
+            _eli_restore_duck(snap)
+            log.debug(f"[AUDIO_DUCK] {why} — volume restored")
+        except Exception as e:
+            log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {e}")
+        near = getattr(self, "_near", None)
+        if near is not None:
+            near.output_changed(lowered=False)
+
     # ── Voice profile learning ───────────────────────────────────────────
     def _voice_profile_user_id(self) -> str:
         try:
@@ -1933,6 +2086,12 @@ class ELIAudioSTT:
                 frames.pop()
         return _sr.AudioData(b"".join(frames), source.SAMPLE_RATE, source.SAMPLE_WIDTH)
 
+    @staticmethod
+    def _flush_mic(source) -> None:
+        stream = getattr(source, "stream", None)
+        if isinstance(stream, _ContinuousMic):
+            stream.flush()
+
     def _speak_prompt(self, text: str):
         try:
             from eli.perception import tts_router
@@ -2010,13 +2169,7 @@ class ELIAudioSTT:
             print("   ↳ NO CALLBACK SET")
 
         # Restore output after command dispatch.
-        try:
-            snap = getattr(self, "_eli_duck_snapshot", None)
-            if snap is not None:
-                _eli_restore_duck(snap)
-                self._eli_duck_snapshot = None
-        except Exception as e:
-            log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {e}")
+        self._restore_duck("command dispatched")
 
         # Short post-command gate so ELI/media output does not immediately get
         # re-transcribed as the next user command.
@@ -2083,36 +2236,31 @@ class ELIAudioSTT:
 
         self.audio_queue.put(transcript_display)
 
-        # Restore volume if we took a duck snapshot but the gate
-        # expired without ever dispatching a command (e.g. arm →
-        # arm_incomplete → user went silent → gate timed out).
-        if self._eli_duck_snapshot is not None and not self._voice_gate.armed():
-            try:
-                _eli_restore_duck(self._eli_duck_snapshot)
-                self._eli_duck_snapshot = None
-                log.debug("[AUDIO_DUCK] Gate expired without dispatch — volume restored")
-            except Exception as _re:
-                log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {_re}")
-
         # A command held for its service ("play some jazz", waiting for "on spotify") goes on as it
         # stands once its time is up, and before anything said later is acted on.
         self._emit_released()
         action, payload, wake = self._voice_gate.classify(transcript_route)
         self._emit_released()
 
+        # Lowered (at the wake word, or at the onset of this utterance) and nothing for ELI followed
+        # (arm → arm_incomplete → the user went silent, or speech that was not to ELI): back up.
+        if action not in ("arm", "arm_incomplete", "dispatch") and not self._voice_gate.armed():
+            self._restore_duck("no command followed")
+
         if action == "arm":
             print(f"🔊 [AUDIO] Wake word detected: '{wake}'")
             print("🎧 [AUDIO] Guarded command window armed")
             self._learn_voice(audio)
             try:
-                # Only snapshot+duck if not already ducked.
-                # Re-arm (user says wake word twice) must NOT overwrite
-                # the original pre-duck volume with the ducked level.
-                if self._eli_duck_snapshot is None:
-                    self._eli_duck_snapshot = _eli_duck_output()
-                    media_player_duck_pause()
-                else:
-                    log.debug("[AUDIO_DUCK] Already ducked — keeping existing snapshot")
+                # Only snapshot+duck if not already ducked: a re-arm (the wake word said twice) or a
+                # duck at the utterance's onset must NOT overwrite the pre-duck volume with the
+                # ducked level. The media is paused either way.
+                with _DUCK_LOCK:
+                    if self._eli_duck_snapshot is None:
+                        self._eli_duck_snapshot = _eli_duck_output()
+                    else:
+                        log.debug("[AUDIO_DUCK] Already ducked — keeping existing snapshot")
+                media_player_duck_pause()
             except Exception as e:
                 log.debug(f"[AUDIO_DUCK][ERROR] {e}")
             return
@@ -2188,6 +2336,8 @@ class ELIAudioSTT:
             with self.microphone as source:
                 _restore_stderr()
                 log.debug("[AUDIO] Microphone ready")
+                self._start_near_speech()
+                self._hear_continuously(source)
                 # Adaptive recalibration: every ELI_STT_RECALIBRATE_EVERY cycles
                 # of silence, redo ambient_noise to follow drifting fan/HVAC noise.
                 _recal_every = int(os.environ.get("ELI_STT_RECALIBRATE_EVERY", "60"))
@@ -2245,6 +2395,7 @@ class ELIAudioSTT:
                         # own voice and triggers a chain of repeat commands.
                         if _eli_is_speaking():
                             _tts_mon_last[0] = time.monotonic()
+                            self._flush_mic(source)          # ELI's own voice is not for the mic
                             time.sleep(0.15)
                             continue
 
@@ -2254,6 +2405,7 @@ class ELIAudioSTT:
                         if _tts_mon_last[0] > 0:
                             _drain_elapsed = time.monotonic() - _tts_mon_last[0]
                             if _drain_elapsed < _post_tts_drain_s:
+                                self._flush_mic(source)
                                 time.sleep(0.15)
                                 continue
 
@@ -2361,13 +2513,8 @@ class ELIAudioSTT:
                             self._voice_gate.touch_arm()
                         # Restore duck if the gate expired while we were waiting
                         # for the user to speak (covers arm_incomplete → silence → timeout).
-                        if self._eli_duck_snapshot is not None and not self._voice_gate.armed():
-                            try:
-                                _eli_restore_duck(self._eli_duck_snapshot)
-                                self._eli_duck_snapshot = None
-                                log.debug("[AUDIO_DUCK] Gate expired (no speech) — volume restored")
-                            except Exception as _re:
-                                log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {_re}")
+                        if not self._voice_gate.armed():
+                            self._restore_duck("gate expired (no speech)")
                         if _STT_VERBOSE and getattr(source, "stream", None) is not None:
                             try:
                                 import audioop as _aop
@@ -2392,6 +2539,7 @@ class ELIAudioSTT:
                                     try:
                                         source.__exit__(None, None, None)
                                         source.__enter__()
+                                        self._hear_continuously(source)
                                         self._dead_stream_streak = 0
                                     except Exception as _reopen_err:
                                         log.debug(f"[AUDIO] mic re-open failed: {_reopen_err}")
@@ -2414,6 +2562,7 @@ class ELIAudioSTT:
                         if getattr(source, "stream", None) is None:
                             try:
                                 source.__enter__()
+                                self._hear_continuously(source)
                                 log.debug("[AUDIO] mic stream was closed by another "
                                           "capture path — re-entered")
                                 continue
@@ -2596,6 +2745,7 @@ class ELIAudioSTT:
                 _tts_mon_stop.set()
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
+            self._stop_near_speech()
             with self._state_lock:
                 self.is_listening = False
                 self._thread = None
