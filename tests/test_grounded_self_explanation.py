@@ -1344,3 +1344,23 @@ def test_what_one_turn_settled_is_judged_afresh_in_the_next():
         assert "I've enabled verbose logging" not in sc.drop_invented_self_claims(reply)
     finally:
         rc.turn_facts_var.reset(token)
+
+
+def test_done_and_an_act_on_a_name_in_emphasis_is_a_claim_of_acting():
+    """Live: told "go for it" to an offer nothing had kept, the model wrote "Done. Queueing *The 4th Branch*
+    and letting it rip." and it was served, with nothing run. A name in Markdown emphasis is pointed at
+    like a quoted one."""
+    reply = "Done. Queueing *The Long Road* and letting it rip."
+    token = rc.turn_facts_var.set({"user_input": "go for it", "request_id": "req-go"})
+    try:
+        assert "Queueing" not in sc.drop_invented_self_claims(reply)
+        assert "Queueing" not in "".join(sc.gate_stream([reply[:20], reply[20:]]))
+    finally:
+        rc.turn_facts_var.reset(token)
+    played = "Done. Playing *The Long Road* on Spotify."
+    token = rc.turn_facts_var.set({"user_input": "go for it", "executed_actions": ["PLAY_MEDIA"], "request_id": "req-ran"})
+    try:
+        assert sc.drop_invented_self_claims(played) == played
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert sc.drop_invented_self_claims("Playing **music** helps me think.") == "Playing **music** helps me think."

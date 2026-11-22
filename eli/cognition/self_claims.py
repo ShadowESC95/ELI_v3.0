@@ -438,10 +438,11 @@ _DONE_LEAD = re.compile(r"^[\s*_>(\[-]*(?:done|all done|sorted|there you go)\s*[
 # scans...", "(Waiting for system execution output...)": the act named with no one doing it. What
 # tells it from a sentence about the act ("Enabling `x` adds nothing", "Playing music helps") is
 # that no verb follows: the thing it points at is followed by the end, a comma or a joining word,
-# or the sentence is short and trails off.
+# or the sentence is short and trails off. A name in Markdown emphasis is pointed at as a quoted one
+# is: "Done. Queueing *The Long Road* and letting it rip." was served with nothing run.
 _ACTING_NOW = re.compile(r"^[\s*_>(\[-]*(?:" + _DOING + r")\b", re.I)
 _POINTED_AT = re.compile(
-    r"^(?:\s+[\w'’-]+){0,4}?\s+(?:`[^`]+`|\"[^\"]+\"|“[^”]+”|[~.]?/[\w./-]+)"
+    r"^(?:\s+[\w'’-]+){0,4}?\s+(?:`[^`]+`|\"[^\"]+\"|“[^”]+”|(\*{1,2})[^*\n]+\1(?!\*)|_[^_\n]+_(?!_)|[~.]?/[\w./-]+)"
     r"\s*(?:$|[.,;:!…)*_]|(?:and|by|on|in|from|for|with|to|at|via|now|since|as|through|using)\b)", re.I)
 _TRAILS_OFF = re.compile(r"(?:\.\.\.|…|\bnow\b\s*[.!]?)[\s)*_\]]*$", re.I)
 _HAS_A_VERB = re.compile(

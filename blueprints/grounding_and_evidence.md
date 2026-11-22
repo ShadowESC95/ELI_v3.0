@@ -250,7 +250,8 @@ exist, and said "the audit trail is now active" for logging that was always on.
 - **A reply cannot say it did something when nothing ran.** On a turn in which no action was
   carried out, a sentence is dropped when it reports an act on the machine: "I've opened ...",
   "Spotify is opening now", "Scanning `/path` ...", "(Waiting for system execution
-  output...)", "Project `X` initialized." The verbs are the ones a command starts with, less
+  output...)", "Project `X` initialized.", "Queueing *X* and letting it rip." (a name in quotes,
+  backticks or Markdown emphasis is pointed at alike) The verbs are the ones a command starts with, less
   the work a reply does in its own words ("I've summarised it below" is the reply doing what
   it says). A lone "Done." is judged by what follows it: before another such report, or with
   nothing after it, it goes; before something the reply wrote, it stays. The reply then ends
