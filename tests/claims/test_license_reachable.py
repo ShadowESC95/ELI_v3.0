@@ -58,30 +58,6 @@ def test_windows_installer_shows_license():
     assert "AppCopyright=" in iss, "Inno installer declares no copyright"
 
 
-def test_license_flag_wired_into_both_entry_points():
-    src = (REPO / "eli" / "__main__.py").read_text(encoding="utf-8")
-    frozen = (REPO / "packaging" / "pyinstaller" / "eli_entry.py").read_text(encoding="utf-8")
-    for name, text in (("eli/__main__.py", src), ("eli_entry.py", frozen)):
-        assert "--license" in text, f"{name} does not handle --license"
-        assert "license_info" in text, f"{name} does not call the licence printer"
-
-
-def test_license_resolves_at_runtime():
-    from eli.runtime.license_info import license_path, license_text
-
-    assert license_path() is not None, "LICENSE not resolvable from a source checkout"
-    text = license_text()
-    assert "PROPRIETARY COMMERCIAL SOFTWARE" in text
-    assert "Jason Fitzgibbon Bridgeman" in text
-
-
-def test_who_made_eli_is_read_from_the_licence_it_ships_with():
-    """Asked who made it, the model invented a company; the licence names the maker."""
-    from eli.runtime.license_info import license_text, made_by
-    maker = made_by()
-    assert maker and maker in license_text() and "rights" not in maker.lower()
-
-
 def test_an_option_this_program_does_not_take_starts_nothing(monkeypatch, capsys):
     """`python -m eli --bundel legal` (a typo, or another program's option) opened ELI v3's window as if
     nothing had been asked. An --option the command does not read is refused before anything starts;
@@ -342,3 +318,27 @@ def test_the_third_party_notices_name_this_product():
     product = (REPO / "NOTICE").read_text(encoding="utf-8").splitlines()[0].strip()
     title = (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8").splitlines()[0]
     assert product == "ELI v3" and title == f"# Third-Party Notices — {product}", title
+
+
+def test_license_flag_wired_into_both_entry_points():
+    src = (REPO / "eli" / "__main__.py").read_text(encoding="utf-8")
+    frozen = (REPO / "packaging" / "pyinstaller" / "eli_entry.py").read_text(encoding="utf-8")
+    for name, text in (("eli/__main__.py", src), ("eli_entry.py", frozen)):
+        assert "--license" in text, f"{name} does not handle --license"
+        assert "license_info" in text, f"{name} does not call the licence printer"
+
+
+def test_license_resolves_at_runtime():
+    from eli.runtime.license_info import license_path, license_text
+
+    assert license_path() is not None, "LICENSE not resolvable from a source checkout"
+    text = license_text()
+    assert "PROPRIETARY COMMERCIAL SOFTWARE" in text
+    assert "Jason Fitzgibbon Bridgeman" in text
+
+
+def test_who_made_eli_is_read_from_the_licence_it_ships_with():
+    """Asked who made it, the model invented a company; the licence names the maker."""
+    from eli.runtime.license_info import license_text, made_by
+    maker = made_by()
+    assert maker and maker in license_text() and "rights" not in maker.lower()
