@@ -75,6 +75,29 @@ def _path_of(key: str) -> Path:
     return own / (hashlib.sha1(key.encode("utf-8")).hexdigest()[:20] + ".json")
 
 
+def _turn() -> tuple:
+    """The turn running in this context: its request id and when it began, on the wall clock (its start
+    is kept as a process clock reading; the record outlives the process). Outside a turn, now."""
+    from eli.kernel import request_context as rc
+    facts = rc.turn_facts_var.get()
+    facts = facts if isinstance(facts, dict) else {}
+    t0 = facts.get("t0")
+    began = time.time() - max(0.0, time.perf_counter() - float(t0)) if isinstance(t0, (int, float)) else time.time()
+    return str(facts.get("request_id") or ""), began
+
+
+def _left_by_a_later_turn() -> bool:
+    """Whether what is open was left by a turn that began after this one. A reply that comes late (its
+    action ran on while the user went on to the next thing) leaves that as it is: "play X" asked "Spotify
+    or YouTube?" while an earlier "play Y" ran on, and when that one finished its reply closed the
+    question, so the answer "spotify" went to chat."""
+    stored = _read(_path()) or {}
+    request, began = _turn()
+    if not stored.get("turn") or (request and stored.get("request") == request):
+        return False
+    return float(stored.get("turn") or 0.0) > began
+
+
 def set_pending_proposal(command: str, summary: str = "", *, items: Optional[List[Dict[str, Any]]] = None,
                          from_reply: bool = False, question: str = "",
                          awaiting: Optional[Dict[str, Any]] = None,
@@ -87,7 +110,12 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
     already open is kept. `written` is the reply itself, kept when a step offers to save what it wrote.
 
     An action that asks for confirmation (forgetting memories) sets its own proposal; that one
-    is marked on the turn so the capture of the reply text does not wipe it."""
+    is marked on the turn so the capture of the reply text does not wipe it. What a reply leaves open
+    (`from_reply`) never replaces what a turn that began after it left open (_left_by_a_later_turn);
+    an action's own question is always kept: it is the last thing asked."""
+    if from_reply and _left_by_a_later_turn():
+        log.debug("[PENDING_PROPOSAL] kept what a later turn left open; this reply came after it")
+        return
     command = (command or "").strip()
     items = [dict(i) for i in (items or []) if isinstance(i, dict) and i.get("command")]
     if not command:
@@ -100,8 +128,10 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
         return
     try:
         _retire_elis_own()
+        request, began = _turn()
         _path().write_text(
             json.dumps({"command": command, "summary": summary or command, "ts": time.time(),
+                        "turn": began, "request": request,
                         "items": items, "question": question, "awaiting": awaiting,
                         "listed": listed,
                         # the reply, when a step offers to save what it wrote ("Want me to save it to ~/x.md?")
@@ -185,14 +215,20 @@ def get_pending_proposal() -> Optional[Dict[str, Any]]:
     return data if data and data.get("command") else None
 
 
-def clear_pending_proposal() -> None:
-    """Close what the last reply offered or asked. A listing stays until the next replaces it."""
+def clear_pending_proposal(*, from_reply: bool = False) -> None:
+    """Close what the last reply offered or asked. A listing stays until the next replaces it. A reply
+    that offers nothing (`from_reply`) closes nothing a turn that began after it left open."""
+    if from_reply and _left_by_a_later_turn():
+        log.debug("[PENDING_PROPOSAL] kept what a later turn left open; this reply came after it")
+        return
     try:
         listed = _current_listing()
         _retire_elis_own()
         p = _path()
         if listed:
-            p.write_text(json.dumps({"command": "", "summary": "", "ts": time.time(), "items": [],
+            request, began = _turn()
+            p.write_text(json.dumps({"command": "", "summary": "", "ts": time.time(), "turn": began,
+                                     "request": request, "items": [],
                                      "question": "", "awaiting": None, "listed": listed}),
                          encoding="utf-8")
         elif p.exists():

@@ -70,7 +70,10 @@ message is read against it, in code, whatever the conversation is about
 (`runtime/pending_proposal.py`).
 
 *What a reply leaves open.* `_store_assistant_turn` (`kernel/stages/memory_commit.py`) calls `read_reply` on every reply and stores the
-result, replacing the last one (it lapses after 30 minutes):
+result, replacing the last one (it lapses after 30 minutes). A reply that comes late, from a turn
+whose action ran on while the user went on to the next message, replaces or closes nothing a turn
+that began after it left open (`_left_by_a_later_turn`, by each turn's start); an action's own
+question is always kept, being the last thing asked:
 
 - **steps** ELI offered, each with the number it was listed under. A step is an *action* when
   the router has a rule for its words; a *task* when ELI would do it by writing (explain,

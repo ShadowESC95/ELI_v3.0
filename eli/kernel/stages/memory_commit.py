@@ -322,14 +322,14 @@ class MemoryCommitMixin:
                 if _listed:
                     set_pending_proposal("", listed=_listed, from_reply=True)
                 else:
-                    clear_pending_proposal()
+                    clear_pending_proposal(from_reply=True)
             elif not _facts.get("proposal_set_by_action"):
                 _open = read_reply(_shown, offers_only=bool(_facts.get("executed_actions")))
                 if _open["items"] or _open["question"] or _listed:
                     set_pending_proposal("", items=_open["items"], question=_open["question"],
                                          listed=_listed, from_reply=True, written=_shown)
                 else:
-                    clear_pending_proposal()
+                    clear_pending_proposal(from_reply=True)
             elif _listed:
                 # The action left its own offer open; add what it listed beside it.
                 _kept = get_follow_up() or {}
