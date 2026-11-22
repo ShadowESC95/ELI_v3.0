@@ -41,6 +41,12 @@ def sanitize_media_query(query: str) -> str:
             break
         q = q2
     q = _ON_SPOTIFY_TAIL_RE.sub("", q).strip()
+    # "well play x": the words before the verb are not the title (command_splitter.after_lead). Only
+    # before "play": a title may open on a lead and a verb ("so close", "just give me a reason").
+    from eli.runtime.command_splitter import after_lead
+    told = after_lead(q)
+    if re.match(r"(?:ply|play)\s", told, re.I):
+        q = told
     q = re.sub(r"^(?:(?:please|just|now|ok|okay|go\s+on|can\s+you|could\s+you|will\s+you)\s+)*(?:ply|play)\s+",
                "", q, flags=re.I).strip()
     return q

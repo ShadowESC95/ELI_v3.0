@@ -241,6 +241,15 @@ def starts_with_command(text: str, *, after_lead: bool = False) -> bool:
     return bool(_COMMAND_START.match(_LEAD.sub("", said, count=1) if after_lead else said))
 
 
+def after_lead(text: str) -> str:
+    """The text from its command on when only a lead stands in front of a command's verb: "okay, well
+    play x by y" -> "play x by y", "um play x" -> "play x". Otherwise the text as it was: a lead's words
+    open titles too ("hey lantern by orlo", "no harbour no light"), so they go only before a verb."""
+    said = str(text or "").strip()
+    rest = _LEAD.sub("", said, count=1).strip()
+    return rest if rest != said and _COMMAND_START.match(rest) else said
+
+
 # The frames that ask ELI. "i want to ..." and "i need to ..." are in `_REQUEST` because a command
 # may follow them ("i want to play some jazz"), but on their own they say what the user wants or
 # has to do ("i need to study tonight"), not what ELI should.
@@ -435,4 +444,4 @@ def holds_more_than_one(value: str) -> bool:
 
 __all__ = ["split_commands", "sentences", "instruction", "read_message", "tells_by_form", "tells_eli_to_do", "holds_more_than_one",
            "correction", "without_correction_lead", "misspelt_commands",
-           "starts_with_command", "is_request", "COMMAND_VERBS"]
+           "starts_with_command", "after_lead", "is_request", "COMMAND_VERBS"]

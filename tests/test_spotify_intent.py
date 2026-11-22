@@ -9,6 +9,14 @@ def test_sanitize_strips_chat_log_prefix():
     assert "🧑" not in cleaned
 
 
+def test_the_words_before_play_are_not_the_title():
+    assert si.sanitize_media_query("well play soldiers logic by orlo") == "soldiers logic by orlo"
+    assert si.media_request("okay, well play soldiers logic by orlo")["search"] == "soldiers logic orlo"
+    # a title opening on such a word, with or without a verb after it, is the title
+    for title in ("so close", "just give me a reason", "hey lantern"):
+        assert si.sanitize_media_query(title) == title
+
+
 def test_liked_songs_playlist_name():
     assert si.playlist_name("my liked songs playlist") == "liked songs"
     assert si.is_liked_songs("liked songs")
