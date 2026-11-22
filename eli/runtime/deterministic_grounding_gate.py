@@ -115,12 +115,16 @@ def _eli_settings_v2() -> dict:
 
 
 def _eli_db_paths_v2() -> dict[str, _EliPath]:
-    root = _eli_project_root_v2()
+    """The stores in force, asked of their owners (ELI_USER_DB, ELI_AGENT_DB and the data folder
+    honoured), not built under the install's artifacts/; asking makes nothing."""
+    from eli.core.paths import agent_db_path, user_db_path
+    from eli.memory.vector_store import _get_index_paths
+    index, meta = _get_index_paths(create=False)
     return {
-        "user_db": root / "artifacts" / "db" / "user.sqlite3",
-        "agent_db": root / "artifacts" / "db" / "agent.sqlite3",
-        "vector_index": root / "artifacts" / "vectors" / "index.faiss",
-        "vector_meta": root / "artifacts" / "vectors" / "meta.pkl",
+        "user_db": _EliPath(user_db_path()),
+        "agent_db": _EliPath(agent_db_path()),
+        "vector_index": _EliPath(index),
+        "vector_meta": _EliPath(meta),
     }
 
 
@@ -275,7 +279,7 @@ def _eli_memory_internals_v2() -> str:
     lines.extend([
         "## Vector store",
         f"- index.faiss: {paths['vector_index']} exists={paths['vector_index'].exists()}",
-        f"- meta.pkl: {paths['vector_meta']} exists={paths['vector_meta'].exists()}",
+        f"- {paths['vector_meta'].name}: {paths['vector_meta']} exists={paths['vector_meta'].exists()}",
         "",
         "## Main files/functions",
         "- eli/memory/memory.py: Memory, get_memory, get_agent_memory, get_search_memory, recall/store helpers, schema setup.",
