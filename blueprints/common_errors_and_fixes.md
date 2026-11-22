@@ -278,8 +278,22 @@ runs there as a native Wayland window: xdotool/wmctrl cannot see it, so nothing 
 confirm focus, and ELI (rightly) refused to type blind.
 **Fix (in the code):** ELI asks Spotify over MPRIS to open `spotify:search:<song>`, which makes the
 desktop client play its top result with no window focus, then checks the song that started is the
-one asked for. If Spotify's top result is a different song, ELI says what is playing. Typing into
+one asked for. A song named with its artist is judged by both: every word of the title asked for is in
+the track's title, the track's own title (without "(feat. …)" or "- Remastered") says nothing more, and
+the artist is among its artists. When the words start another song (the artist's best-known one, say),
+it is turned down as soon as it starts and the search is made again held to the title and artist with
+Spotify's `track:` and `artist:` filters; if that does not start it either, ELI says which song was
+asked for and what is playing. Where the search plays, a results tab is no longer opened and play
+pressed after it: that only resumed whatever was there, a song paused meanwhile included. Typing into
 the search box is now only tried on X11 or for an XWayland window.
+
+**Albums the same way.** "play <artist>s album <name>" never played: ELI looked the album up on
+open.spotify.com (a call to Spotify's web service, whose page has no results in it) and then opened the
+albums tab of a search, which only shows results. An album is now started by the search that plays
+(its name and artist, then the same held to the album with Spotify's `album:` and `artist:` filters),
+and a track counts only when the player says it is from that album; a track from another record is
+turned down when it starts. "veridians album" is read as Veridian's album, the artist named without
+the possessive "s". Where a search does not play (macOS, Windows) the albums tab is still opened.
 
 ---
 

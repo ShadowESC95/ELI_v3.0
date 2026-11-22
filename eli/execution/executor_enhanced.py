@@ -2789,12 +2789,8 @@ from eli.execution.effectors.media import (  # noqa: F401
     _spotify_open_liked_songs,
     _spotify_open_uri,
     _spotify_play,
-    _spotify_resolve_album_uri,
-    _spotify_resolve_artist_uri,
-    _spotify_resolve_playlist_uri,
     _spotify_running,
     _spotify_search,
-    _spotify_try_open_and_play,
     _spotify_wait_running,
     _targets_mpv,
     next_media,
@@ -5211,60 +5207,11 @@ except NameError:
         }
 
     def _eli_voice_contract_set_volume(percent):
-        from eli.utils import platform_compat as _pc
-
-        level = max(0, min(100, int(percent)))
-        if _pc.set_volume(level):
-            return {
-                "ok": True,
-                "action": "VOLUME",
-                "content": f"Volume set to {level}%",
-                "response": f"Volume set to {level}%",
-            }
-
-        if _pc.LINUX:
-            import shutil
-            import subprocess
-
-            pactl = shutil.which("pactl")
-            if pactl:
-                subprocess.run(
-                    [pactl, "set-sink-mute", "@DEFAULT_SINK@", "0"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                rc = subprocess.run(
-                    [pactl, "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                ).returncode
-                if rc == 0:
-                    return {
-                        "ok": True,
-                        "action": "VOLUME",
-                        "content": f"Volume set to {level}%",
-                        "response": f"Volume set to {level}%",
-                    }
-
-            amixer = shutil.which("amixer")
-            if amixer:
-                rc = subprocess.run(
-                    [amixer, "-D", "pulse", "sset", "Master", f"{level}%"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                ).returncode
-                if rc == 0:
-                    return {
-                        "ok": True,
-                        "action": "VOLUME",
-                        "content": f"Volume set to {level}%",
-                        "response": f"Volume set to {level}%",
-                    }
-
-        return None
+        # The one volume path (effectors.system_helpers.volume_fallback): it ends ELI's own listening
+        # hold first, so "volume 60%" said after the wake word is not put back to the level before it,
+        # and it reads the level back. This wrapper had a copy of its own that did neither.
+        from eli.execution.effectors.system_helpers import volume_fallback
+        return volume_fallback("set", level=max(0, min(100, int(percent))))
 
     def _eli_voice_contract_direct_result(action, args):
         action_name = _eli_voice_contract_action_name(action)

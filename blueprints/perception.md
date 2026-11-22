@@ -103,8 +103,14 @@ Diagnostic: `python -m eli.tools.mic_diag`.
 A large, feature-dense STT module:
 - Mic capture + Whisper transcription (`local_whisper_stt`).
 - **Output ducking** — lowers system sink volume while listening
-  (`_eli_duck_output`/`_eli_restore_output` via `wpctl`) so ELI doesn't hear
-  itself.
+  (`_eli_duck_output`/`_eli_restore_output` via `wpctl`, or `pactl` where that is all there is;
+  with pactl the level used never to be put back) so ELI doesn't hear itself. A volume command
+  given meanwhile (`effectors.system_helpers.volume_fallback`, every VOLUME path) first puts the
+  level back (`release_output_duck`) and the listener's own put-back then leaves it: "volume up"
+  said after the wake word was made to the ducked level ("now 28%") and undone by the put-back.
+  A step up or down is made from the level found to a level set (up stops at 100% and never
+  lowers a level above it), and the reply names both levels, so a level changed elsewhere between
+  commands shows as that.
 - **Echo/self-hearing suppression** (`_eli_echo_like_assistant_output`,
   `_eli_media_probably_audible`). The voice (`tts_router._run_tts`, every engine) holds the
   speaking lock for the whole reply, holding its process id; the mic treats it as stale only when

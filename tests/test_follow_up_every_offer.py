@@ -346,6 +346,43 @@ def test_every_reply_replaces_what_the_last_one_left_open(proposals):
         rc.turn_facts_var.reset(token)
 
 
+def test_a_reply_that_comes_late_does_not_close_what_a_later_turn_asked(proposals, monkeypatch):
+    """"play <title>" asked "Where should I play it: Spotify or YouTube?" while an earlier "play <song> by
+    <artist>" was still running. When that one finished, its reply (which offered nothing) closed the
+    question, and the answer "spotify" went to chat."""
+    import time as _t
+    from eli.execution import executor_enhanced as exe
+    from eli.execution.effectors import media as em
+    from eli.execution.router_enhanced import route
+    from eli.kernel.engine import CognitiveEngine
+    monkeypatch.setattr(em, "_spotify_running", lambda: True)
+    monkeypatch.setattr("eli.runtime.action_outcomes._runs", lambda **k: [])
+    me = SimpleNamespace(memory=SimpleNamespace(add_conversation_turn=lambda *a, **k: None), session_id="s", user_id="u",
+                         _in_nested_turn=lambda: False)
+    now = _t.perf_counter()
+
+    def in_turn(request, began, do):
+        token = rc.turn_facts_var.set({"request_id": request, "t0": now - began, "user_input": request})
+        try:
+            return do()
+        finally:
+            rc.turn_facts_var.reset(token)
+
+    asked = in_turn("req-later", 5.0, lambda: exe.execute("PLAY_MEDIA", {"query": "puffin lanterns"}))
+    assert asked["asks_user"] is True
+    in_turn("req-earlier", 30.0, lambda: CognitiveEngine._store_assistant_turn(
+        me, "Spotify is playing “Orlo — Crack the Bottle”, not “trouble” by orlo."))
+    assert pp.get_follow_up()["awaiting"]["needs"] == "service"
+    got = in_turn("req-answer", 1.0, lambda: route("spotify"))
+    assert got["action"] == "PLAY_MEDIA" and got["args"].get("target") == "spotify"
+    assert got["args"].get("query") == "puffin lanterns"
+    # a reply from a turn that began later still replaces what is open, as every reply does
+    in_turn("req-ask", 0.8, lambda: CognitiveEngine._store_assistant_turn(me, EITHER))
+    assert pp.get_follow_up()["question"] == "Which one should I plan around?"
+    in_turn("req-next", 0.5, lambda: CognitiveEngine._store_assistant_turn(me, "Paris is the capital of France."))
+    assert pp.get_follow_up() is None
+
+
 @pytest.mark.parametrize("text,short", [("the second one", True), ("B", True), ("friday at 3pm", True),
                                         ("what do you mean?", False), ("how long would that take", False), ("", False),
                                         ("well I was thinking we could look at the whole thing again from the start maybe", False)])

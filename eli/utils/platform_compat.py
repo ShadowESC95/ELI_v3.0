@@ -1074,9 +1074,11 @@ def _linux_get_volume() -> int | None:
                 ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
                 text=True, stderr=subprocess.DEVNULL,
             )
+            # "Volume: 0.65", a factor (1.0 is 100%) however high: a level above full ("Volume: 1.05")
+            # was taken for a percentage and read as 1%.
             m = re.search(r"(\d+(?:\.\d+)?)", out)
             if m:
-                return int(round(float(m.group(1)) * (100 if float(m.group(1)) <= 1.0 else 1)))
+                return int(round(float(m.group(1)) * 100))
         except Exception:
             log.debug("wpctl get-volume failed", exc_info=True)
     if shutil.which("pactl"):

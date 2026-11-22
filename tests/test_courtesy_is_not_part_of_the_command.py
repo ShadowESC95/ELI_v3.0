@@ -34,6 +34,23 @@ def test_conversation_keeps_its_words():
     assert r["action"] == "CHAT" and r["args"]["message"] == "I love it thanks"
 
 
+# Nor are the words that only open a request: "okay, well play <song> by <artist>" searched for "well play
+# <song>", and when the right song did play it was refused, the extra words not being in its name.
+@pytest.mark.parametrize("text,query", [
+    ("okay, well play soldiers logic by orlo", "soldiers logic by orlo"),
+    ("well play soldiers logic by orlo", "soldiers logic by orlo"),
+    ("um play evil by quiet machine", "evil by quiet machine"),
+])
+def test_the_words_that_open_a_request_are_not_its_target(text, query):
+    r = route(text)
+    assert r["action"] == "PLAY_MEDIA" and r["args"]["query"] == query
+
+
+def test_a_title_that_opens_on_such_a_word_keeps_it():
+    r = route("hey lantern by quiet machine")
+    assert r["action"] == "PLAY_MEDIA" and r["args"]["query"] == "hey lantern by quiet machine"
+
+
 def test_a_leading_word_stays_when_it_is_the_command_or_an_answer():
     assert route("right click")["args"].get("button") == "right"
     assert route("no, play it on youtube")["args"].get("query") != "it"
