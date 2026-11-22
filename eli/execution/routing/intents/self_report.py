@@ -67,10 +67,33 @@ def _pm_asks_something(low: str) -> bool:
         return True
     return bool(_ASKING_RE.search(t))
 
+# A sentence that states something: a subject and its verb ("your logs are still saying ...", "your
+# audio needs better upgrades"). Without asking or telling, it is not a request for a record.
+_STATES = re.compile(r"\b(?:is|are|was|were|am|isn'?t|aren'?t|wasn'?t|weren'?t|has|have|had|keeps?|kept|says?|said|"
+                     r"saying|seems?|needs?|needed|does|did|doesn'?t|didn'?t)\b", re.I)
+
+
+def _sentences_that_ask(raw: str) -> list:
+    """The sentences of a message that ask for something, lower case: a question or a request
+    (`_pm_asks_something`), an instruction ("show me the logs"), or a bare phrase naming what is
+    wanted ("logs for the last turn"). A report from ELI's records answers one of these. Its words
+    spread over a complaint matched the record rules: "your logs are still saying that you are
+    speaking the reply, but i am not hearing anything" got the last-response dump, and a complaint
+    about the wake word whose "?" was in an aside got the outcome log."""
+    from eli.runtime.command_splitter import sentences, starts_with_command
+    out = []
+    for sentence in sentences(raw):
+        low = sentence.lower()
+        if _pm_asks_something(low) or starts_with_command(sentence, after_lead=True) or not _STATES.search(low):
+            out.append(low)
+    return out
+
+
 from eli.execution.routing._helpers import _mk, _is_wallclock_question, runtime_status_asked
 from eli.execution.routing.memory_runtime import (
     _eli_activity_question_is_about_dev_work,
     _eli_memory_runtime_route_lock_should_trigger,
+    _not_asking_about_the_memory_machinery,
 )
 from eli.execution.routing._helpers import (
     _mk,
@@ -193,12 +216,14 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
 
     # What has worked and what keeps failing, from ELI's own record of its runs (runtime/action_outcomes):
     # "what has worked lately", "which of your commands keep failing", "what are you unreliable at".
-    if (_pm_asks_something(low)
+    # Read in the one sentence that asks: the words of a complaint spread over several are not the question.
+    if any(_pm_asks_something(asked)
             and re.search(r"\b(?:work(?:ed|s|ing)?|fail(?:ed|s|ing)?|failures?|unreliable|reliable|reliability|succeed(?:ed|s)?|"
-                          r"broken|go(?:es|ing)?\s+wrong|went\s+wrong)\b", low)
+                          r"broken|go(?:es|ing)?\s+wrong|went\s+wrong)\b", asked)
             and re.search(r"\b(?:your|you|eli'?s?)\b.{0,40}\b(?:actions?|commands?|tools?|abilit(?:y|ies)|capabilit(?:y|ies)|"
-                          r"skills?|functions?|features?)\b|\b(?:actions?|commands?|tools?|capabilit(?:y|ies))\b.{0,30}\b(?:of\s+yours|you\s+(?:have|run|ran|use|tried))\b", low)
-            and not re.search(r"\b(?:last|previous|that|this)\s+(?:response|reply|answer|turn)\b|\bhow\s+do\s+(?:you|your)\b", low)):
+                          r"skills?|functions?|features?)\b|\b(?:actions?|commands?|tools?|capabilit(?:y|ies))\b.{0,30}\b(?:of\s+yours|you\s+(?:have|run|ran|use|tried))\b", asked)
+            and not re.search(r"\b(?:last|previous|that|this)\s+(?:response|reply|answer|turn)\b|\bhow\s+do\s+(?:you|your)\b", asked)
+            for asked in _sentences_that_ask(raw)):
         return _mk("EXPLAIN_FAILURE_LOG", {"scope": "outcomes", "question": raw}, 0.96,
                    matched_by="router.what_has_worked", need_grounding=True, allow_chat_without_evidence=False)
 
@@ -231,11 +256,12 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     # A request for raw metrics/agent logs/telemetry of a recent cycle must surface the real logged
     # telemetry (agent_dispatches + runtime_events via EXPLAIN_LAST_RESPONSE), not the settings
     # snapshot SELF_REPORT returns, which led ELI to claim "I have no logs".
-    if (re.search(r"\b(metric|metrics|telemetry|agent log|agent logs|raw log|raw logs|"
-                  r"dispatch log|breakdown|trace|logs?)\b", low)
-            and re.search(r"\b(that|this|last|previous|prior|the)\s+"
-                          r"(cycle|response|turn|request|run|answer|reply)\b", low)
-            and not re.search(r"\b(delete|clear|disable|turn off|stop)\b", low)):
+    if any(re.search(r"\b(metric|metrics|telemetry|agent log|agent logs|raw log|raw logs|"
+                     r"dispatch log|breakdown|trace|logs?)\b", asked)
+           and re.search(r"\b(that|this|last|previous|prior|the)\s+"
+                         r"(cycle|response|turn|request|run|answer|reply)\b", asked)
+           and not re.search(r"\b(delete|clear|disable|turn off|stop)\b", asked)
+           for asked in _sentences_that_ask(raw)):
         return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.98,
                    matched_by="router.explain_last_response.metrics",
                    need_grounding=True, allow_chat_without_evidence=False)
@@ -317,7 +343,7 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if "memory" in low and re.search(
         r"\b(db paths?|database|sqlite|tables?|functions?|internally|semantic|rag|faiss|fts5|vector(?:ing|s)?|index(?:ing|es)?|hyde|short[- ]?term|long[- ]?term)\b",
         low,
-    ):
+    ) and not _not_asking_about_the_memory_machinery(raw):
         return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime_architecture", allow_chat_without_evidence=False)
 
     if re.search(r"\b(explain your cognition pipeline|cognition pipeline from input to output|input to output.*every step|cognitive pipeline)\b", low):

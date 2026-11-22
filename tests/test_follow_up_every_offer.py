@@ -125,6 +125,22 @@ def test_a_record_with_only_a_question_is_not_an_offer_to_older_callers(proposal
     assert pp.get_follow_up() is None
 
 
+def test_an_offer_spoken_as_what_eli_will_do_if_you_want_is_kept_as_the_request_it_stands_for(proposals):
+    """Live: "I’ll have Spotify queue up *The 4th Branch* again if you want to hear it properly, or we can
+    move on" was not kept, so "go for it" reached the model, which wrote "Done. Queueing ..." with nothing
+    run. The offer in ELI's voice is kept as the request it stands for, and a yes runs it."""
+    from eli.execution.router_enhanced import route
+    reply = ("Good call.\n\nI’ll have Spotify queue up *The Long Road* again if you want to hear it properly, "
+             "or we can move on to something else. Your call.")
+    assert _kinds(reply) == [(None, "action", "queue up The Long Road on Spotify")]
+    assert pp.read_reply(reply)["items"][0]["action"] == "PLAY_MEDIA"
+    _leave_open(reply)
+    got = route("go for it")
+    assert got["action"] == "PLAY_MEDIA" and got["meta"]["matched_by"] == "pending_proposal.confirm"
+    assert got["args"]["target"] == "spotify" and "long road" in got["args"]["query"].lower()
+    assert _kinds("I'll explain the difference if you want.") == [(None, "task", "explain the difference")]
+
+
 # ── saying yes, picking, declining ───────────────────────────────────────────
 
 @pytest.mark.parametrize("text", ["yes please", "yes", "ok", "sure", "go ahead", "do it", "sounds good", "that works",
@@ -441,6 +457,50 @@ def test_which_one_is_answered_by_number_or_by_name(agenda, proposals, answer):
     assert "Dentist appointment" in left and "check-up" not in left
 
 
+def test_the_answer_to_which_folder_runs_the_request_with_that_folder(proposals, tmp_path, monkeypatch):
+    """"Which folder? Give me the path." was never answered: a path was not a detail the follow-up
+    knew, and "analyse <folder>" was not the action that asked, so the reply went to chat."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.router_enhanced import route
+    from eli.runtime import background_tasks
+    monkeypatch.setattr(background_tasks, "work_targets", lambda *a, **k: [])   # no job in hand
+    papers = tmp_path / "field papers"
+    papers.mkdir()
+    asked = ex.execute("ANALYZE_PDF_FOLDER", {})
+    assert asked["response"] == "Which folder? Give me the path."
+    assert pp.get_follow_up()["awaiting"]["needs"] == "path"
+    got = route(f"it's in {papers}")
+    assert got["action"] == "ANALYZE_PDF_FOLDER" and got["meta"]["matched_by"] == "pending_proposal.answer"
+    assert got["args"]["path"] == str(papers)
+    assert pp.get_follow_up() is None
+
+
+def test_the_answer_to_which_candidate_completes_the_request(proposals):
+    """"These fix candidates are waiting; which one?" answered "2" went to chat: only a day, a time or a
+    place was a detail the follow-up knew."""
+    from eli.execution.router_enhanced import route
+    pp.set_pending_proposal("", awaiting={"command": "approve candidate {answer}", "action": "APPROVE_CANDIDATE",
+                                          "needs": "candidate"}, question="These fix candidates are waiting; which one?")
+    got = route("2")
+    assert got["action"] == "APPROVE_CANDIDATE" and got["meta"]["matched_by"] == "pending_proposal.answer"
+    assert got["args"]["candidate_ids"] == [2]
+
+
+@pytest.mark.parametrize("reply,is_it", [("~/papers", True), ("/data/scans", True), ("report.pdf", True),
+                                         ("my downloads", True), ("the folder is ~/x", True),
+                                         ("no thanks", False), ("what do you mean", False), ("play some jazz", False),
+                                         ("the blue one", False)])
+def test_a_reply_that_is_only_a_path_is_the_detail_asked_for(reply, is_it):
+    assert pp.is_the_detail(reply, "path") is is_it
+
+
+@pytest.mark.parametrize("reply,is_it", [("2", True), ("the second one", True), ("youtube", True),
+                                         ("no thanks", False), ("yes", False), ("play some jazz", False),
+                                         ("what do you mean", False)])
+def test_any_other_detail_is_a_short_answer_that_is_no_yes_no_or_new_request(reply, is_it):
+    assert pp.is_the_detail(reply, "candidate") is is_it
+
+
 @pytest.mark.parametrize("reply,is_it", [("friday at 3pm", True), ("in 20 minutes", True), ("tomorrow", True),
                                          ("at 4", True), ("make it 7.30pm", True), ("next monday at 9", True),
                                          ("set a timer for 5 minutes", False), ("what's on tomorrow", False),
@@ -530,11 +590,33 @@ def test_questions_about_elis_memory_still_get_the_report(text, action):
     assert route(text)["action"] == action
 
 
+@pytest.mark.parametrize("disputed", [
+    "Thats not right, there must be an error with your memory database",
+    "that is not right, your memory tables must be broken",
+    "you got that wrong, your memory database must be messed up",
+])
+def test_disputing_the_last_answer_is_not_a_question_about_the_memory_machinery(disputed):
+    """Live: "Thats not right, there must be an error with your memory database" got the memory subsystem's
+    internals. It disputes the last answer; it goes to chat, which re-checks."""
+    from eli.cognition.correction_patterns import is_answer_correction
+    from eli.execution.router_enhanced import route
+    assert is_answer_correction(disputed)
+    assert route(disputed)["action"] != "EXPLAIN_MEMORY_RUNTIME"
+    assert route("how does your memory database work?")["action"] == "EXPLAIN_MEMORY_RUNTIME"
+    for not_a_dispute in ("turn right at the lights", "the right answer is four", "that is right"):
+        assert not is_answer_correction(not_a_dispute)
+
+
 # ── weather for a day ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text,place", [("check the weather for tomorrow", None), ("weather for tomorrow", None),
                                         ("what's the weather in Dublin tomorrow", "Dublin"), ("weather in Paris", "Paris"),
-                                        ("what's the forecast for this weekend in Bristol", "Bristol")])
+                                        ("what's the forecast for this weekend in Bristol", "Bristol"),
+                                        # what a question says after the place is no part of its name
+                                        ("Is it fine though? What's the weather in Larchmere like?", "Larchmere"),
+                                        ("how's the weather in Oakvale looking", "Oakvale"),
+                                        ("what's the weather in Brightwater going to be like tomorrow?", "Brightwater"),
+                                        ("what is the weather in New Larchmere like at the moment?", "New Larchmere")])
 def test_a_day_is_not_a_place_and_asking_about_tomorrow_is_not_a_job_for_tomorrow(text, place):
     from eli.execution.router_enhanced import route
     got = route(text)
@@ -575,6 +657,22 @@ def test_asked_about_tomorrow_the_answer_is_tomorrows_forecast_not_now(monkeypat
     later = ex.execute("GET_WEATHER", {"location": "Dublin", "_raw_user_text": "what's the weather in Dublin tomorrow"})
     assert later["ok"] and later["response"].startswith("Forecast for Dublin, Leinster, IE, ")
     assert later["response"].endswith(": 9 to 15°C, slight rain, 70% chance of rain.") and any("daily=" in u for u in calls)
+
+
+def test_the_place_looked_up_is_the_place_and_a_failure_is_not_told_it_is_another_attempt(monkeypatch, proposals):
+    """Live: "What's the weather in <town> like?" looked up "<town> like", found nothing, and the reply
+    said "This is attempt 2 for the same GET_WEATHER failure. Do you want me to inspect the target, logs,
+    or generated artifact ...?" on the first failure (two agents had run the one request)."""
+    from eli.execution import executor_enhanced as ex
+    from eli.plugins.weather import plugin as wp
+    calls = []
+    _weather_net(monkeypatch, calls)
+    ex.execute("GET_WEATHER", {"location": "Larchmere like", "_raw_user_text": "what's the weather in Larchmere like?"})
+    assert "name=Larchmere&" in calls[0]
+    monkeypatch.setattr(wp, "_get_json", lambda url: {"results": []})
+    for _ in range(2):
+        failed = ex.execute("GET_WEATHER", {"location": "Nowhere Fen", "_raw_user_text": "weather in Nowhere Fen"})
+        assert not failed["ok"] and "attempt" not in failed["response"] and "Do you want me to" not in failed["response"]
 
 
 def test_where_is_asked_once_and_the_answer_completes_the_request(monkeypatch, proposals):

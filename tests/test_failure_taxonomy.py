@@ -105,3 +105,18 @@ def test_something_to_act_on_that_is_not_running_is_a_missing_resource(error):
     """Read as unclassified, an app that was simply not open counted as an error inside ELI."""
     assert T.classify_category(error) == T.MISSING
     assert T.classify(error)["severity"] == "environment"
+
+
+def test_a_stored_suggestion_is_read_as_its_writer_stored_it(caplog):
+    """The improvements table holds a JSON object from some writers and the plain sentence from others.
+    The grounded-evidence block parsed every row as JSON and logged a traceback for each plain one,
+    three to a turn."""
+    import logging
+    from eli.kernel.stages.prompt_assembly import _stored_suggestion_text as read
+    with caplog.at_level(logging.DEBUG):
+        assert read('{"suggestion": "cache the folder listing", "area": "tools"}') == "cache the folder listing"
+        assert read("cache the folder listing") == "cache the folder listing"
+        assert read("{not json at all") == "{not json at all"
+        assert read('{"area": "tools"}') == '{"area": "tools"}'
+        assert read(None) == ""
+    assert not any(r.exc_info for r in caplog.records)

@@ -206,6 +206,12 @@ exist, and said "the audit trail is now active" for logging that was always on.
   then gives ELI's earlier replies whole instead of cut to 280 characters, and a correction
   that asks one (`that is not true, what day is that from?`) leaves the correction shortcut,
   which only sees the last exchange, for the full pipeline.
+- **A report from the record answers a sentence that asks for it.** The rules for ELI's records
+  (the outcome log, the last response's trace and metrics, the voice list) read their words in one
+  sentence that asks, tells or names what is wanted (`self_report._sentences_that_ask`); a sentence
+  ends at a stop inside a closing bracket too (`command_splitter.sentences`). "your logs are still
+  saying that you are speaking the reply, but i am not hearing anything" got the last-response dump,
+  and a complaint about the wake word the outcome log; both are answered as what they are.
 - **The claim check** (`gate_stream` on streamed replies, `drop_invented_self_claims` in
   `govern_output`). A sentence is dropped when it reports a change nothing made ("logging is
   now active", when no action ran); promises a standing change a reply cannot make ("no web
@@ -225,7 +231,12 @@ exist, and said "the audit trail is now active" for logging that was always on.
   to put something is not checked); when it says its answer comes from a search and no lookup ran
   this turn (`_FROM_A_LOOKUP`); and when it places a weekday against now and the clock says
   otherwise ("a fresh Monday looming in six hours" late on a Monday: `query_planner.wrong_day_now`),
-  except in writing the person asked for (a story, an example).
+  except in writing the person asked for (a story, an example). A reply is judged once: what the
+  check served, its own closing notes, and the reply shown at the end of the turn are settled
+  (`self_claims.settle`), so the stored and the spoken copy take it as it is. Speech runs after the
+  turn with no record of its own: judged again, "Playing ... on Spotify." after the song played was
+  taken for a claim nothing backed, and the check's own note was read aloud instead. A new turn
+  starts with nothing settled.
 - **A reply that fails is said again.** When too little is left, or it said it did what was asked and had
   not, the model gets one more go from what actually happened (`gate_stream(rewrite=)`,
   `engine._say_in_own_words`), and the new text has to pass the same check. Only what it adds is
@@ -245,7 +256,8 @@ exist, and said "the audit trail is now active" for logging that was always on.
 - **A reply cannot say it did something when nothing ran.** On a turn in which no action was
   carried out, a sentence is dropped when it reports an act on the machine: "I've opened ...",
   "Spotify is opening now", "Scanning `/path` ...", "(Waiting for system execution
-  output...)", "Project `X` initialized." The verbs are the ones a command starts with, less
+  output...)", "Project `X` initialized.", "Queueing *X* and letting it rip." (a name in quotes,
+  backticks or Markdown emphasis is pointed at alike) The verbs are the ones a command starts with, less
   the work a reply does in its own words ("I've summarised it below" is the reply doing what
   it says). A lone "Done." is judged by what follows it: before another such report, or with
   nothing after it, it goes; before something the reply wrote, it stays. The reply then ends

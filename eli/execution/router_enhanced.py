@@ -270,12 +270,10 @@ def _eli_weather_prepass(user_text: str):
         user_text,
         re.I)
     if m:
-        loc = m.group(1).strip().rstrip("?.!, ")
-        # "weather for tomorrow", "forecast for this weekend": a day, not a place
-        loc = re.sub(r"(?i)\b(?:today|tonight|tomorrow|now|later|this (?:morning|afternoon|evening|weekend|week)|"
-                     r"next week|the weekend|the week|(?:on |next |this )?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b",
-                     " ", loc)
-        loc = re.sub(r"(?i)^(?:in|at|for|near)\s+", "", re.sub(r"\s+", " ", loc).strip(" ,")).strip(" ,") or None
+        # "weather for tomorrow" is a day, not a place, and "in Wexford like" is Wexford: the weather
+        # plugin's own reading of a place (clean_place), here and in the handler alike
+        from eli.plugins.weather.plugin import clean_place
+        loc = clean_place(m.group(1)) or None
         return {
             "action": "GET_WEATHER",
             "args": {"location": loc, "_raw_user_text": user_text},
@@ -6780,10 +6778,15 @@ try:
                     waiting = prop.get("awaiting") if isinstance(prop.get("awaiting"), dict) else None
                     if waiting and _pp.is_the_detail(text, waiting.get("needs")):
                         # An action asked for a missing detail ("When is it?") and the reply is
-                        # that detail: the original request is run again with it.
+                        # that detail: the original request is run again with it. One that names the
+                        # argument the answer fills ("arg") is run as it was, with that argument.
                         _pp.clear_pending_proposal()
                         _asked_cmd = str(waiting.get("command") or "")
-                        _detail = str(text or "").strip().rstrip("?.!")
+                        _detail = _pp.detail_of(text, waiting.get("needs"))
+                        if waiting.get("arg") and waiting.get("action"):
+                            return _mk(str(waiting["action"]).upper(),
+                                       {**dict(waiting.get("args") or {}), str(waiting["arg"]): _detail}, 0.95,
+                                       matched_by="pending_proposal.answer")
                         whole = route(_asked_cmd.replace("{answer}", _detail) if "{answer}" in _asked_cmd
                                       else f"{_asked_cmd} {_detail}".strip())
                         if str(whole.get("action") or "").upper() == str(waiting.get("action") or "").upper():

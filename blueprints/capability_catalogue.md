@@ -740,7 +740,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 ## `planning/`
 | Module | Lines | Role |
 |---|---:|---|
-| `goal_autogenesis.py` | 269 | eli.planning.goal_autogenesis |
+| `goal_autogenesis.py` | 256 | eli.planning.goal_autogenesis |
 | `insight_synthesis.py` | 143 | Cached, background-synthesised reflection insight. |
 | `jobqueue.py` | 186 | Durable SQLite-backed job queue for external subprocess jobs; files under `<data>/jobs`. |
 | `jobqueue_cli.py` | 59 | Durable background jobs that run as separate processes and survive a restart. |

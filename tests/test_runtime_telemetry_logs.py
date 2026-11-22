@@ -35,6 +35,19 @@ def test_unrelated_requests_do_not_hijack_the_metrics_route(text):
     assert str(route(text).get("action")) != "EXPLAIN_LAST_RESPONSE"
 
 
+@pytest.mark.parametrize("text", [
+    "your logs are still saying that you are speaking the reply, but i am not hearing anything. "
+    "you randomly respond by voice once every 10 turns/requests/chat",
+    "the logs keep showing the reply was sent, and nothing arrived",
+])
+def test_a_complaint_that_mentions_the_logs_is_not_a_request_for_them(text):
+    """Live: a complaint that the voice stays silent while the logs say it speaks got "My last
+    response: text: … agents that contributed: none recorded …". It asks for no record."""
+    from eli.runtime.deterministic_introspection import detect_action
+    assert str(route(text).get("action")) != "EXPLAIN_LAST_RESPONSE"
+    assert detect_action(text) is None
+
+
 def test_last_response_evidence_includes_real_dispatch_telemetry(monkeypatch):
     fake = [
         {"ts": 1.0, "action": "CHAT",

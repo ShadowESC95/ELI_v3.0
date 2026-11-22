@@ -34,6 +34,21 @@ from eli.kernel.stages._common import _phatic_rapport_style_rule
 log = get_logger(__name__)
 
 
+def _stored_suggestion_text(stored: Any) -> str:
+    """The words of an improvements row's suggestion: some writers store a JSON object with a
+    "suggestion" field, others the plain sentence. Every plain one was parsed as JSON and logged a
+    traceback, three to a turn."""
+    text = str(stored or "")
+    if text.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("suggestion"):
+            return str(parsed["suggestion"])
+    return text
+
+
 def _date_facts_line(user_input: Any) -> str:
     """Weekday and days-from-today for every date the user's own message names."""
     try:
@@ -881,7 +896,6 @@ Answer:"""
             try:
                 import sqlite3 as _sq3
                 import time as _time
-                import json as _json
                 _adb = str(getattr(db_paths, "agent_db", ""))
                 _aconn = _sq3.connect(_adb)
                 _log_lines = ["Grounded self-improvement log (live from agent.sqlite3):"]
@@ -919,12 +933,7 @@ Answer:"""
                 _log_lines.append(f"- improvements table: {len(_imps)} open proposals")
                 for _i in _imps[:3]:
                     _its = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_i["timestamp"] or 0)))
-                    _suggestion = str(_i["description"] or "")
-                    try:
-                        _sug_obj = _json.loads(_suggestion)
-                        _suggestion = _sug_obj.get("suggestion", _suggestion) if isinstance(_sug_obj, dict) else _suggestion
-                    except ValueError:
-                        log.debug("suppressed exception", exc_info=True)
+                    _suggestion = _stored_suggestion_text(_i["description"])
                     _log_lines.append(f"  [{_its}] [{_i['category']}:{_i['area']}] {_suggestion[:100]}")
 
                 _aconn.close()

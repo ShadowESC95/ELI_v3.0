@@ -2289,10 +2289,12 @@ def _stub_marker(code: str) -> str:
 
 
 def _asks_which(action: str, what: str) -> dict:
-    """A file command with nothing named and nothing in hand. Never the current folder."""
+    """A file command with nothing named and nothing in hand. Never the current folder. The answer
+    is the action's "path" ("arg"): the request runs again with it (router, pending_proposal.answer).
+    It was re-routed as "analyse <answer>", which is not this action for a folder, so it never ran."""
     msg = f"Which {what}? Give me the path."
     return {"ok": False, "action": action, "error": "no path given", "content": msg, "response": msg,
-            "awaiting": {"command": "analyse {answer}", "action": action, "needs": "path"}}
+            "awaiting": {"command": "analyse {answer}", "action": action, "needs": "path", "arg": "path"}}
 
 
 def _analysis_holds_a_turn_up(n_files: int) -> bool:
@@ -4458,12 +4460,6 @@ def _action_pre_dispatch(
     return None
 
 
-# Per-process failure tally for the "attempt N" anti-retry hint, keyed by action+args+error and
-# reset each restart so a new session doesn't inherit a stale "attempt 4". The DB still logs
-# failures for learning; this only governs the user-facing repeat hint.
-_SESSION_FAILURE_COUNTS: "Dict[str, int]" = {}
-
-
 _INDEXED_AFTER = frozenset((
     "READ_FILE", "SUMMARIZE_FILE", "ANALYZE_PDF", "CREATE_DOCUMENT", "DOC_GENERATE", "GENERATE_DOCUMENT",
     "CONVERT_DOCUMENT", "WRITE_NOTE", "NEW_NOTE",
@@ -4641,7 +4637,6 @@ def _action_post_dispatch(
         from eli.world.world_event_bus import fire_tool_result_event
         fire_tool_result_event(str(action), True, said=what_came_of(str(action), dict(args or {}), result))
 
-    repeat_hint = ""
     _remediation_actions = _REMEDIATION_ACTIONS
     # Non-bugs that poisoned the SI failure feed: expected responses (no query typed, plugin not
     # configured, action outside this build). They must not enter the failure-cluster pipeline the
@@ -4661,11 +4656,11 @@ def _action_post_dispatch(
     ))
     try:
         # Grounded-remediation exit-20 ("No grounded install candidate found") is
-        # an honest terminal outcome, not a retryable failure. Don't log it as a
-        # failure and don't append the "attempt N" hint.
+        # an honest terminal outcome, not a retryable failure. Don't log it as a failure.
+        # How runs like this one have fared here is said below, from the record (action_outcomes):
+        # a per-process "This is attempt N ... Do you want me to inspect the target, logs, or
+        # generated artifact" line was added as well, counting the two agents that ran one request.
         if isinstance(result, dict) and not bool(result.get("ok", True)):
-            import json as _json
-
             # Remediation actions are terminal honest outcomes — skip failure logging.
             if str(action or "").upper() in _remediation_actions:
                 return result
@@ -4688,7 +4683,6 @@ def _action_post_dispatch(
 
             from eli.world.world_event_bus import fire_tool_result_event
             fire_tool_result_event(str(action), False, detail=err_text)
-            signature_input = f"{str(action or '').upper()} {_json.dumps(args or {}, sort_keys=True, default=str)}"
             # Failures live in one store, the agent/self-improvement DB (agent.sqlite3) next to
             # improvements and code_patches. Dual-writing to the user DB split the log; the
             # Self-Improve panel reads only the agent store.
@@ -4708,30 +4702,8 @@ def _action_post_dispatch(
                 )
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
-            # Count repeats in THIS running session only. The hint means "you
-            # keep retrying the same thing right now" — not all-time DB history,
-            # which falsely claimed "attempt 4" on a fresh session's first try.
-            _sess_key = f"{signature_input}\x00{err_text}"
-            occurrence_count = _SESSION_FAILURE_COUNTS.get(_sess_key, 0) + 1
-            _SESSION_FAILURE_COUNTS[_sess_key] = occurrence_count
-            if occurrence_count >= 2:
-                subject = ""
-                if isinstance(args, dict):
-                    subject = str(
-                        args.get("path")
-                        or args.get("target")
-                        or args.get("name")
-                        or args.get("app")
-                        or args.get("query")
-                        or ""
-                    ).strip()
-                target = f" `{subject}`" if subject else ""
-                repeat_hint = (
-                    f"This is attempt {occurrence_count} for the same {str(action or '').upper()} failure{target}. "
-                    "Do you want me to inspect the target, logs, or generated artifact instead of retrying the same command?"
-                )
     except Exception:
-        repeat_hint = ""
+        log.debug("failure not recorded", exc_info=True)
 
     # What ELI has learned of such failures (runtime/action_outcomes): the cause, how this has fared
     # here, and what worked instead. Only an action that does the same deed for this same thing by
@@ -4791,15 +4763,14 @@ def _action_post_dispatch(
     # reply: what has worked lately does not belong under a question
     if isinstance(result, dict) and (result.get("asks_user") or result.get("needs_input") or result.get("awaiting")):
         advice_words = ""
-        repeat_hint = ""
 
     def _with_notes(text: str) -> str:
-        return "\n\n".join(t for t in (str(text or "").strip(), advice_words, repeat_hint) if t).strip()
+        return "\n\n".join(t for t in (str(text or "").strip(), advice_words) if t).strip()
 
     try:
         from eli.runtime import grounded_remediation as _gr
     except Exception:
-        if (repeat_hint or advice_words) and isinstance(result, dict):
+        if advice_words and isinstance(result, dict):
             combined = _with_notes(result.get("content") or result.get("response") or result.get("error") or "")
             result["content"] = combined
             result["response"] = combined
@@ -4810,7 +4781,7 @@ def _action_post_dispatch(
             return _gr.as_executor_result(_with_notes(_offer), ok=False)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    if (repeat_hint or advice_words) and isinstance(result, dict):
+    if advice_words and isinstance(result, dict):
         combined = _with_notes(result.get("content") or result.get("response") or result.get("error") or "")
         result["content"] = combined
         result["response"] = combined

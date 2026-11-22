@@ -276,6 +276,12 @@ def test_a_catalogue_phrase_an_evening_alarm_and_a_web_search_are_read_right():
     assert not search["args"]["query"].startswith("for "), "the preposition after the stem is not the query"
     asked = route("which of your actions are unreliable?") or {}
     assert asked.get("action") == "EXPLAIN_FAILURE_LOG" and asked["args"]["scope"] == "outcomes"
+    # a complaint about a feature is not a question about the record, though its words are spread over it
+    complaint = route("your wake word is not being detected with music playing (i thought you have the skills to "
+                      "tell my voice from the music?) Also, i know what 20 minutes is. your audio needs some "
+                      "upgrades that actually work...") or {}
+    assert complaint.get("action") not in ("EXPLAIN_FAILURE_LOG", "LIST_VOICES"), complaint.get("meta")
+    assert (route("which voices do you have?") or {}).get("action") == "LIST_VOICES"
     assert (route("how do your agents work") or {}).get("action") == "EXPLAIN_COGNITION_RUNTIME"
 
 

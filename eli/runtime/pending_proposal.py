@@ -300,7 +300,7 @@ _STATED_OFFER_RE = _re.compile(
     r"\b(?:let me know if you(?:'d| would)? (?:like|want|need) me to|"
     r"if you(?:'d| would)? (?:like|want|prefer)(?: me to)?,?\s+i(?: can| could| will|'ll)|"
     r"(?:just )?say the word and i(?:'ll| will| can))\s+(?P<a>.+?)(?:[.!]|,| or |$)"
-    r"|\b(?:i (?:can|could)(?: also)?|i(?:'d| would) be (?:happy|glad|pleased) to|happy to|glad to)\s+(?P<b>.+?)"
+    r"|\b(?:i (?:can|could)(?: also)?|i(?:'ll| will)|i(?:'d| would) be (?:happy|glad|pleased) to|happy to|glad to)\s+(?P<b>.+?)"
     r"\s+if you(?:'d| would)? (?:like|want)(?: me to)?\b",
     _re.I,
 )
@@ -506,10 +506,23 @@ _OBJECT_YOU = _re.compile(
     r"update|keep|write|draft|find|make|build|talk|point|fill|let)\s+you\b", _re.I)
 
 
+# A name in Markdown emphasis ("*The Long Road*", "**Harbour Bells**") is the name.
+_EMPHASIS = _re.compile(r"(?<!\w)(\*{1,2}|_{1,2})(?=\S)([^*_\n]+?)(?<=\S)\1(?!\w)")
+# "have Spotify queue up X", "get Firefox to open the page": the act, done in the app named.
+_CAUSATIVE = _re.compile(r"^(?:have|get|make)\s+(?P<app>[A-Z][\w.&'-]*(?:\s+[A-Z][\w.&'-]*){0,2})\s+(?:to\s+)?(?P<act>\S.*)$")
+# "again" in ELI's offer points back at the conversation; the request it stands for is the act itself.
+_AGAIN_AT_END = _re.compile(r"\s+(?:again|once\s+more|one\s+more\s+time)$", _re.I)
+
+
 def _as_request(text: str) -> str:
     """ELI's offer in the user's voice: "walk you through your options" is "walk me through my
-    options" when the user is the one asking for it."""
+    options" when the user is the one asking for it, and "have Spotify queue up *The Long Road*
+    again" is "queue up The Long Road on Spotify"."""
     out = _COMMIT_LEAD.sub("", str(text or "").strip(), count=1).strip() or str(text or "").strip()
+    out = _AGAIN_AT_END.sub("", _EMPHASIS.sub(r"\2", out).strip(" .,;:")).strip()
+    done_by = _CAUSATIVE.match(out)
+    if done_by:
+        out = f"{done_by.group('act').strip()} on {done_by.group('app')}"
     out = _OBJECT_YOU.sub(lambda m: f"{m.group(1)} me", out)
     out = _re.sub(r"\byourself\b", "myself", out, flags=_re.I)
     out = _re.sub(r"\byours\b", "mine", out, flags=_re.I)
@@ -546,7 +559,8 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
     # Stored replies have had their blank lines closed up, which leaves the first item on the
     # line that introduces the list ("three ways: 1. Draft ...") and a closing question on the
     # line of the last item.
-    laid_out = _re.sub(r"(?<=[:.!?])[ \t]+(?=\d{1,2}[.)][ \t]+\S)", "\n", str(response_text or ""))
+    # the model writes "I’ll" as often as "I'll"; every pattern here is written with the plain one
+    laid_out = _re.sub(r"(?<=[:.!?])[ \t]+(?=\d{1,2}[.)][ \t]+\S)", "\n", str(response_text or "").replace("’", "'"))
     for line in laid_out.splitlines():
         if not line.strip():
             continue
@@ -638,6 +652,13 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
             continue  # the label of a step whose lines say what the step is
         route = {} if (asked and _NON_ACTION.match(text)) else _route_of(text)
         act = str(route.get("action") or "").upper()
+        if asked and act in _NOT_AN_ACTION and not _NON_ACTION.match(text):
+            # an offer in ELI's own voice may route only as the request it stands for ("have Spotify
+            # queue up *The Long Road* again" is "queue up The Long Road on Spotify")
+            request = _as_request(text)
+            again = _route_of(request) if request and request != text else {}
+            if _offerable(again.get("action")):
+                text, route, act = request, again, str(again["action"]).upper()
         if act in _NOT_AN_ACTION:
             # something ELI does by writing: only where it asked for a go-ahead
             if asked and not c.get("points_back"):
@@ -858,7 +879,8 @@ def is_short_answer(text: str) -> bool:
 
 def is_the_detail(reply: str, needs: str) -> bool:
     """The reply is the detail an action asked for and nothing else. "when": a day or a time
-    ("friday at 3pm", "in 20 minutes"), not a request that happens to contain one."""
+    ("friday at 3pm", "in 20 minutes"), not a request that happens to contain one; "path" or "file":
+    a file or folder (detail_of); any other: a short answer that is no yes, no and no new request."""
     if not is_short_answer(reply):
         return False
     if str(needs or "") == "when":
@@ -881,7 +903,50 @@ def is_the_detail(reply: str, needs: str) -> bool:
             return False
         return not is_consent(low) and not _re.search(
             r"\b(?:no|nope|nah|never ?mind|cancel|stop|skip|leave it|forget it|nowhere|dunno|idk|what|why|how)\b", low)
-    return False
+    if str(needs or "") in ("path", "file"):
+        # a file or a folder ("~/papers", "it's in /data/scans", "report.pdf", "my downloads"): "Which
+        # folder? Give me the path." was never answered by one, and the reply went to chat
+        return bool(detail_of(reply, "path"))
+    # Any other detail an action asks for (which service, which candidate): a short answer that is not
+    # a yes, a no, or a new request of its own. Only "when" and "place" were known, so "Which one?"
+    # answered "2" went to chat.
+    from eli.runtime.command_splitter import starts_with_command
+    low = str(reply or "").strip().lower().strip(" .!")
+    return bool(low) and not is_consent(low) and not starts_with_command(low, after_lead=True) and not _re.search(
+        r"\b(?:no|nope|nah|never ?mind|cancel|stop|skip|leave it|forget it|nothing|dunno|idk)\b", low)
+
+
+# What comes before a path in an answer: "it's ~/papers", "in /data/scans", "the folder is ~/x".
+_PATH_LEAD = _re.compile(r"^(?:(?:it'?s|its|it\s+is|that'?s|in|at|from|under|use|try|"
+                         r"the\s+(?:folder|file|directory|path)(?:\s+is)?)\s+)+", _re.I)
+
+
+def detail_of(reply: str, needs: str) -> str:
+    """The detail a reply gives, as the action takes it. For a path, the file or folder itself, in
+    full ("it's ~/papers" -> /home/<user>/papers), or "" when the reply names none: written as a path,
+    a name with a file extension, one that is there, or a folder everyone has."""
+    import os
+    said = str(reply or "").strip()
+    if str(needs or "") not in ("path", "file"):
+        return said.rstrip("?.!")
+    said = _PATH_LEAD.sub("", said).strip().strip("\"'`“”‘’").rstrip(".!,;")
+    if not said:
+        return ""
+    whole = os.path.abspath(os.path.expanduser(said))
+    if (os.path.exists(os.path.expanduser(said)) or said.startswith(("~", "/", "./", "../"))
+            or "/" in said or "\\" in said or _re.match(r"[A-Za-z]:[\\/]", said)):
+        return whole
+    from eli.execution.portable_intent_contract import _FILE_EXTENSIONS
+    last = said.split()[-1]
+    if "." in last and last.rsplit(".", 1)[1].lower() in _FILE_EXTENSIONS:
+        return whole
+    try:
+        from eli.utils.platform_compat import known_user_dir
+        known = known_user_dir(said)
+    except Exception:
+        log.debug("known folder lookup failed", exc_info=True)
+        known = ""
+    return os.path.abspath(os.path.expanduser(known)) if known else ""
 
 
 # ── going further into something a result listed ────────────────────────────

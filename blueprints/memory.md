@@ -294,6 +294,10 @@ budgets.
   embedded, and tombstones apply to either id field an entry carries.
 - **Only questions get a window.** `plan_window` applies a period only to a question or recall request, so a
   statement that says "last night" or "today" cannot narrow retrieval to that period.
+- **The last conversation is a period.** "When was our last conversation?", "what did we talk about
+  last time?" (`query_planner.asks_about_last_conversation`) are about the conversation before this
+  one: its span is read from the log (`Memory.previous_conversation_window`, the turn's own user's)
+  and the turn is answered from that period's record like any other.
 - **Explicit dates.** `parse_window` reads ISO dates ("2026-03-03"), "3 March", "March 3rd 2025",
   ranges ("between 1 May and 10 May"), "in June 2025" and "during 2024" as well as relative periods.
   A date with no year is its latest past occurrence.

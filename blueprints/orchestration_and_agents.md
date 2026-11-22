@@ -81,8 +81,10 @@ question is always kept, being the last thing asked:
   (`llm_intent._EXPLICIT_ONLY_ACTIONS`). An action is kept wherever ELI names it. A task is
   kept only where ELI asked for a go-ahead: its own offer, as a question ("Want me to walk you
   through it?") or as a statement ("let me know if you'd like me to draft it", "I can turn
-  this into a checklist if you'd like"), or the items of a list its question points at ("Shall
-  I go ahead with any of these?"). A reply that says what it will do and ends by asking for the
+  this into a checklist if you'd like", "I'll queue it up again if you want"), or the items of a
+  list its question points at ("Shall I go ahead with any of these?"). An offer in ELI's own voice
+  that the router cannot read as it stands is kept as the request it stands for (`_as_request`:
+  "have Spotify queue up *X* again" is "queue up X on Spotify"), so a "yes" or "go for it" runs it. A reply that says what it will do and ends by asking for the
   go-ahead ("I'll draft the patch ... Deal?", "Sound good?", `_GO_AHEAD_TAG`) offers what it said it
   would do; a step that says where what ELI writes is to go ("put the code in ~/fixes/x.patch",
   `destination`) is a save. A list of facts followed by an unrelated offer is not a set
@@ -103,8 +105,10 @@ by the output governor, which used to delete "let me know if you'd like me to ..
 - consent (`is_consent`: "yes please", "go ahead", "sounds good", "do 1-3") covers the steps
   picked by number or by name, else all of them (`chosen_items`);
 - a pick needs no "yes" (`selection`: "the second one", "2 and 3", "the abstract one");
-- the detail an action asked for (`is_the_detail`: a day or time, or a place) runs the original
-  request again with it;
+- the detail an action asked for (`is_the_detail`: a day or time, a place, a file or folder
+  (`detail_of`), or for any other detail a short answer that is no yes, no or new request) runs the
+  original request again with it; a question that names the argument its answer fills (`arg`:
+  "Which folder? Give me the path." fills `path`) runs that action with it as it was;
 - anything else is a new message. One word is then an answer, not a fragment to ask again
   about.
 
@@ -128,7 +132,8 @@ answer; act on it").
 Three older rules still hold. *One routing per turn*: `engine._route_once` caches the router's
 answer, because routing has an effect (a "yes" spends the offer it confirms). *ELI's own
 sentence is not a command*: `_stream_with_followthrough` (`kernel/stages/generation.py`) runs a promise in a reply only when it is a read
-(`_FOLLOWTHROUGH_READS`) or something the user's message asked for. *A mention with a clock
+(`_FOLLOWTHROUGH_READS`) or something the user's message asked for; a promise inside quotation
+marks is reported, not made (`action_commitment.detect_action_commitment`). *A mention with a clock
 time* that is not on the calendar gets a fixed offer sentence (`_agenda_offer`); a part of the
 day ("tonight") is not offered back as a time.
 

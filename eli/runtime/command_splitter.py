@@ -167,7 +167,9 @@ _ABOUT = re.compile(
 _CLAUSE_END = re.compile(
     r"[,;]\s+|\s+[-–—]\s+|\s*/\s*(?=[a-z])"
     r"|\s+(?=(?:can|could|would|will) (?:you|u)\b|i(?:'d| would) like you to\b|i (?:want|need) you to\b|please\s+\w)")
-_SENTENCE_END = re.compile(r"(?<=[.!?])[\s]+(?=[^\s])|\n+")
+# A sentence ends at its stop, and at a stop inside a closing bracket or quotation mark: "(i thought you
+# could do that?) Also, ..." is two sentences.
+_SENTENCE_END = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][)\]\"'’”]))[\s]+(?=[^\s])|\n+")
 # "mr. brightside", "vs. the world", "feat. red tamsin", initials ("p.s. i love you", "r.e.m."): a
 # full stop that does not end a sentence.
 _ABBREVIATION = re.compile(r"\b(?:mr|mrs|ms|dr|st|vs|feat|ft|vol|pt|jr|sr|inc|ltd|e\.g|i\.e|etc|[a-z])\.$", re.I)

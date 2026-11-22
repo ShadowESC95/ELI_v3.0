@@ -83,7 +83,8 @@ scores as highly as an on-topic one. Env `ELI_AGENT_BUS_RELEVANCE_GATE` disables
   Deterministic whole-system audit.
 
 ### 7. `plugin` — plugin effector  · 6.0s
-- **Gate:** `action ∈ PLUGIN_ACTIONS` (ADD_EVENT, GET_WEATHER, LIST_EVENTS, REMOVE_EVENT).
+- **Gate:** `action ∈ PLUGIN_ACTIONS` (ADD_EVENT, LIST_EVENTS, REMOVE_EVENT). An action is run by one
+  agent only: GET_WEATHER is `system`'s (it was in both sets, so every weather request ran twice).
 - **Algorithm:** `execute(action, args)` into the plugin layer; silent skip
   otherwise.
 

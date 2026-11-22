@@ -1300,3 +1300,67 @@ def test_a_source_tag_or_a_written_call_the_user_asked_for_is_not_a_tool_call():
         assert "read_config(path)" in sc.drop_invented_self_claims("read_config(path)")
     finally:
         rc.turn_facts_var.reset(token)
+
+
+def test_a_reply_is_judged_once_and_never_its_own_notes(period):
+    """Live: the spoken copy of "Playing “Eminem — Evil” on Spotify." was judged again with no turn of its
+    own, and "Nothing was carried out in this turn." was read aloud instead; the check's own note
+    ("Nothing is recorded on Wednesday 7 October.") was judged again by the passes that stored it."""
+    served = "".join(self_claims.gate_stream([REPLY[:50], REPLY[50:]]))
+    assert served.strip().endswith("Nothing is recorded on Wednesday 7 October.")
+    facts = turn_facts_var.get()
+    dropped = facts.get("claims_dropped")
+    for later in (served, served.strip()):                          # stored, and read aloud
+        assert self_claims.drop_invented_self_claims(later).strip() == served.strip()
+    assert facts.get("claims_dropped") == dropped                   # nothing judged again
+
+
+def test_what_an_action_said_is_spoken_as_shown(monkeypatch):
+    """The reply to a song played is read aloud outside the turn (the voice runs after it, with no turn
+    of its own): the claim check took "Playing ..." for a claim nothing backed and spoke its own note."""
+    reply = "Playing “Harbour Bells” by Orlo on Spotify."
+    token = rc.turn_facts_var.set({"user_input": "play harbour bells by orlo", "executed_actions": ["PLAY_MEDIA"],
+                                   "request_id": "req-play"})
+    try:
+        assert sc.drop_invented_self_claims(reply) == reply
+        sc.settle(reply)                                             # the turn ends: what was shown is final
+    finally:
+        rc.turn_facts_var.reset(token)
+    from eli.runtime.visible_output import visible_text
+    assert visible_text(reply) == reply
+    assert sc.drop_invented_self_claims(reply.replace("“", "").replace("”", "")).startswith("Playing")
+
+
+def test_what_one_turn_settled_is_judged_afresh_in_the_next():
+    reply = "Every action I run is already written to the evidence ledger. I've enabled verbose logging for you."
+    first = {"user_input": "turn on verbose logging", "executed_actions": ["SET_LOG_LEVEL"], "request_id": "req-1"}
+    token = rc.turn_facts_var.set(first)
+    try:
+        assert "I've enabled verbose logging" in sc.drop_invented_self_claims(reply)
+    finally:
+        rc.turn_facts_var.reset(token)
+    token = rc.turn_facts_var.set({"user_input": "how are you", "request_id": "req-2"})
+    try:
+        assert "I've enabled verbose logging" not in sc.drop_invented_self_claims(reply)
+    finally:
+        rc.turn_facts_var.reset(token)
+
+
+def test_done_and_an_act_on_a_name_in_emphasis_is_a_claim_of_acting():
+    """Live: told "go for it" to an offer nothing had kept, the model wrote "Done. Queueing *The 4th Branch*
+    and letting it rip." and it was served, with nothing run. A name in Markdown emphasis is pointed at
+    like a quoted one."""
+    reply = "Done. Queueing *The Long Road* and letting it rip."
+    token = rc.turn_facts_var.set({"user_input": "go for it", "request_id": "req-go"})
+    try:
+        assert "Queueing" not in sc.drop_invented_self_claims(reply)
+        assert "Queueing" not in "".join(sc.gate_stream([reply[:20], reply[20:]]))
+    finally:
+        rc.turn_facts_var.reset(token)
+    played = "Done. Playing *The Long Road* on Spotify."
+    token = rc.turn_facts_var.set({"user_input": "go for it", "executed_actions": ["PLAY_MEDIA"], "request_id": "req-ran"})
+    try:
+        assert sc.drop_invented_self_claims(played) == played
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert sc.drop_invented_self_claims("Playing **music** helps me think.") == "Playing **music** helps me think."

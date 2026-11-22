@@ -94,7 +94,8 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
             r'\b(?:in|at|for)\b\s+([\w\s\-]+?)(?:\s*[,?!.]|\s+and\s+|\s+(?:provide|tell|show|give|also|then|next|tomorrow|today|forecast)|$)',
             raw,
             re.I)
-        location = location_match.group(1).strip().rstrip("?.!, ") if location_match else None
+        from eli.plugins.weather.plugin import clean_place
+        location = (clean_place(location_match.group(1)) or None) if location_match else None
         return _mk("GET_WEATHER", {"location": location, "_raw_user_text": raw}, 0.90, matched_by="info.weather",
                    entities={"location": location} if location else None)
 
