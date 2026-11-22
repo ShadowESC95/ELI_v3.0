@@ -520,3 +520,36 @@ def test_a_folder_set_outside_the_install_is_kept_unless_it_is_another_elis(tmp_
     rs._eli_runtime_clear_stale_env_paths()
     assert os.environ.get("ELI_CONFIG_DIR") == str(sandbox)
     assert "ELI_ARTIFACTS_DIR" not in os.environ
+
+
+def test_every_reader_of_the_settings_reads_the_file_in_force(monkeypatch, tmp_path):
+    """Seven readers built the settings path themselves (the checkout's config/settings.json, or the
+    config folder's) instead of asking for the settings file in force (ELI_SETTINGS_FILE first): pointed
+    at another settings file, the reasoning, frontier, truth and runtime-path reports and the grounding
+    gate described a file nobody uses, the self-repair gate read another file's auto_patch_enabled, and a
+    memory reset cleared the name in the wrong file and left it in the one in force."""
+    in_force = tmp_path / "elsewhere" / "settings.json"
+    in_force.parent.mkdir()
+    in_force.write_text(json.dumps({"reasoning_mode": "research", "auto_patch_enabled": True,
+                                    "user_name": "Robin"}), encoding="utf-8")
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(in_force))
+    in_force = in_force.resolve()
+    from eli.core import memory_reset
+    from eli.runtime import (control_contracts, deterministic_grounding_gate, frontier_status,
+                             reasoning_status, self_improvement, truth_report)
+
+    assert reasoning_status._from_settings() == "research"
+    assert deterministic_grounding_gate._eli_settings_v2().get("reasoning_mode") == "research"
+    assert frontier_status._runtime_status()["settings_path"] == str(in_force)
+    assert control_contracts.runtime_paths()["config_settings"] == str(in_force)
+    report = truth_report.runtime_truth_report()
+    assert report["settings_path"] == str(in_force) and report["settings_exists"]
+    assert memory_reset.discover(tmp_path / "data", tmp_path / "config")["settings"] == [in_force]
+
+    asked = []
+    monkeypatch.setattr(self_improvement, "get_broker", lambda: asked.append("broker"))   # past the gate
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    engine = object.__new__(self_improvement.SelfImprovementEngine)
+    engine.analyze_and_improve = lambda: {"improvements": []}
+    engine._background_analyze("an error", 1)
+    assert asked == ["broker"], "the self-repair gate did not read auto_patch_enabled from the file in force"

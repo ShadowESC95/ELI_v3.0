@@ -39,13 +39,14 @@ def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
 
 
 def _runtime_status() -> Dict[str, Any]:
-    root = _project_root()
     artifacts = _artifacts_dir()
     snap = _read_json(artifacts / "runtime_snapshot.json")
-    settings = _read_json(root / "config" / "settings.json")
+    from eli.core.runtime_settings import _settings_file    # the settings file in force
+    settings_path = _settings_file()
+    settings = _read_json(settings_path)
     return {
         "snapshot_path": str(artifacts / "runtime_snapshot.json"),
-        "settings_path": str(root / "config" / "settings.json"),
+        "settings_path": str(settings_path),
         "model_path": str(
             snap.get("model_path")
             or settings.get("model_path")

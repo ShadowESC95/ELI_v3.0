@@ -496,7 +496,9 @@ def runtime_paths() -> Dict[str, Any]:
         _agent_db = _artifacts / "db" / "agent.sqlite3"
 
     snap = _read_json(_artifacts / "runtime_snapshot.json")
-    cfg = _read_json(_config / "settings.json")
+    from eli.core.runtime_settings import _settings_file    # the settings file in force
+    _settings = _settings_file()
+    cfg = _read_json(_settings)
 
     model_path = str(
         snap.get("model_path")
@@ -525,7 +527,7 @@ def runtime_paths() -> Dict[str, Any]:
         "config_dir": str(_config),
         "python": _python,
         "runtime_snapshot": str(_artifacts / "runtime_snapshot.json"),
-        "config_settings": str(_config / "settings.json"),
+        "config_settings": str(_settings),
         "model_path": model_path,
         "models_dir": str(_models),
         "user_db": str(_user_db),

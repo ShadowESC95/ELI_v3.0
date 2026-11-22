@@ -110,7 +110,8 @@ def _eli_json_file_v2(path: _EliPath) -> dict:
 
 
 def _eli_settings_v2() -> dict:
-    return _eli_json_file_v2(_eli_project_root_v2() / "config" / "settings.json")
+    from eli.core.runtime_settings import _settings_file    # the settings file in force
+    return _eli_json_file_v2(_settings_file())
 
 
 def _eli_db_paths_v2() -> dict[str, _EliPath]:
