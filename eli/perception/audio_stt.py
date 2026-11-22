@@ -1165,6 +1165,10 @@ def speaking_lock_held(path) -> bool:
     return True
 
 
+# What the STT voice profile learns from: the utterances the voice gate takes as the owner's.
+_VOICE_PROFILE_SOURCE = "accepted utterances"
+
+
 class VoiceGate:
     CONTINUATION_SLACK = 1.5
     """A held command is the user's whole turn once they have been quiet for half again as long as
@@ -1624,14 +1628,20 @@ class ELIAudioSTT:
         self._apply_voice_profile_bias()
 
     def _load_voice_profile(self) -> dict:
+        """The profile at _voice_profile_path. One written before it learnt from the owner's accepted
+        utterances alone (no "learned_from") measured every capture, songs included: it starts over."""
         import json
         p = self._voice_profile_path()
         try:
             if p.exists():
-                return json.loads(p.read_text(encoding="utf-8"))
+                prof = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(prof, dict) and prof.get("learned_from") == _VOICE_PROFILE_SOURCE:
+                    return prof
+                log.info(f"[AUDIO] voice profile at {p} learnt from every capture, music included "
+                         f"({(prof or {}).get('count', 0)} samples); learning it again from the owner's speech")
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        return {"count": 0, "energy_mean": 0.0, "energy_min": 0.0,
+        return {"learned_from": _VOICE_PROFILE_SOURCE, "count": 0, "energy_mean": 0.0, "energy_min": 0.0,
                 "energy_max": 0.0, "duration_mean_s": 0.0}
 
     def _save_voice_profile(self) -> None:
@@ -1766,8 +1776,25 @@ class ELIAudioSTT:
         log.debug(f"[AUDIO_ADAPT] room quiet again — threshold {cur:.0f} → {nxt:.0f} (base {base:.0f})")
         return True
 
+    def _learn_voice(self, audio) -> None:
+        """An utterance the gate took as the owner's (the wake word, a command it sent on) goes into
+        the voice profile, unless what the mic heard was more than the voice: ELI's media playing, or
+        a room loud enough that the noise self-heal holds the gate above its base. Its level then
+        measures the music: learnt from every capture, the profile's 95 samples averaged 9,129 RMS,
+        the level the self-heal measured for the music alone (9,544)."""
+        if audio is None:
+            return
+        base = float(getattr(self, "_threshold_base", 0.0) or 0.0)
+        if base > 0 and float(self.recognizer.energy_threshold) > base * 1.05:
+            log.debug("[AUDIO] voice profile not updated: the room is louder than the gate's base")
+            return
+        if _eli_media_probably_audible():
+            log.debug("[AUDIO] voice profile not updated: media is playing")
+            return
+        self._record_voice_sample(audio)
+
     def _record_voice_sample(self, audio) -> None:
-        """Update voice profile statistics from a confirmed user utterance."""
+        """Update voice profile statistics from a confirmed user utterance (_learn_voice decides)."""
         try:
             import audioop
             raw = audio.get_raw_data()
@@ -1781,6 +1808,7 @@ class ELIAudioSTT:
             new_mean = mean + (energy - mean) / n
             new_dmean = dmean + (duration - dmean) / n
             self._voice_profile = {
+                "learned_from": _VOICE_PROFILE_SOURCE,
                 "count": n,
                 "energy_mean": new_mean,
                 "energy_min": min(mn, energy) if n > 1 else energy,
@@ -2000,11 +2028,12 @@ class ELIAudioSTT:
         self._eli_ignore_reason = "post_command_echo_gate"
         log.debug(f"[AUDIO_ECHO_GATE] ignoring mic for {gate_s:.1f}s after command dispatch")
 
-    def _act_on_transcript(self, transcript: str) -> None:
+    def _act_on_transcript(self, transcript: str, audio=None) -> None:
         """What a heard utterance does: the echo and bleed gates, then the voice gate, and on a
         dispatch the command the gate chose is handed on: the wake word taken off, a held "play X"
         joined to the "on spotify" that finished it, an alias repaired. The raw latest utterance went
-        on instead, so "play X" + "on spotify" reached the router as "on spotify" alone."""
+        on instead, so "play X" + "on spotify" reached the router as "on spotify" alone. `audio`, the
+        capture, goes into the voice profile when the gate takes it as the owner's (_learn_voice)."""
         transcript_display = _eli_fast_command_alias(transcript)
         transcript_route = _collapse_repeated_phrase(transcript_display, strip_punctuation=True)
         # Speaker-bleed filter: when media is audible and the transcript
@@ -2074,6 +2103,7 @@ class ELIAudioSTT:
         if action == "arm":
             print(f"🔊 [AUDIO] Wake word detected: '{wake}'")
             print("🎧 [AUDIO] Guarded command window armed")
+            self._learn_voice(audio)
             try:
                 # Only snapshot+duck if not already ducked.
                 # Re-arm (user says wake word twice) must NOT overwrite
@@ -2143,6 +2173,7 @@ class ELIAudioSTT:
                     except RuntimeError:      # the window it reports to has closed
                         log.warning("[AUDIO] the unclear-command notice had nowhere to go", exc_info=True)
                 return
+            self._learn_voice(audio)
             self._emit(payload)
 
     def _emit_released(self) -> None:
@@ -2556,10 +2587,9 @@ class ELIAudioSTT:
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)
 
-                    # Update user voice profile for next time's threshold bias.
-                    self._record_voice_sample(audio)
-
-                    self._act_on_transcript(transcript)
+                    # The voice profile learns from what is taken as the owner's (_act_on_transcript), not
+                    # from every capture: recorded here, it learnt the songs the mic transcribed.
+                    self._act_on_transcript(transcript, audio)
                     continue
         finally:
             try:
