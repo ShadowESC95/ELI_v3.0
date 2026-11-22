@@ -4339,6 +4339,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 return
             user_text = _eli_sanitize_user_input(str(facts.get("user_input") or "")).strip()
             reply = str(reply or "").strip()
+            if reply:
+                # What the user was shown is final: reading it aloud, after the turn, takes it as it is.
+                from eli.cognition.self_claims import settle
+                settle(reply)
             self._ensure_user_turn_stored(facts)
             if reply and not facts.get("assistant_stored"):
                 self._store_assistant_turn(reply)

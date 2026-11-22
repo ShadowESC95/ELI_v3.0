@@ -15,6 +15,7 @@ active" for logging that was always on. Two things fix that at the source:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from functools import lru_cache
 from typing import Callable, Any, Dict, Iterable, List, Optional
@@ -1302,7 +1303,7 @@ class _Check:
 
     def why(self, unit: str) -> str:
         s = str(unit or "")
-        if not s.strip():
+        if not s.strip() or is_settled(s):
             return ""
         if not self._writing and is_a_pretend_tool_call(s):
             # dropped, and the turn says nothing was carried out unless something did run
@@ -1600,6 +1601,61 @@ def _turn_context() -> Dict[str, Any]:
         return {}
 
 
+# Replies already judged, and the notes this check writes itself. A finished reply is read aloud after
+# its turn, and every spoken text goes through the governor again with no turn of its own: "Playing
+# “X” on Spotify." after the song was played was judged a claim nothing backed, and "Nothing was carried
+# out in this turn." was spoken instead. A settled text is taken as it is, in the turn that settled it
+# and by passes that run with no turn of their own (speech, after the turn); a new turn starts with
+# nothing settled, so a sentence true in one turn is judged afresh in the next.
+_settled: set = set()
+_settled_turn: Any = None
+_settled_lock = threading.Lock()
+
+
+def _turn_token() -> Any:
+    """This turn's identity, or None outside any turn."""
+    facts = _turn_context()
+    if not facts:
+        return None
+    if "_claims_turn" not in facts:
+        import uuid
+        facts["_claims_turn"] = uuid.uuid4().hex
+    return facts["_claims_turn"]
+
+
+def _fingerprint(text: Any) -> str:
+    """The words of a text, as the passes after the screen give it (speech drops the markup and the
+    quotation marks, and closes up the lines)."""
+    return " ".join(re.sub(r"[\W_]+", " ", str(text or "").lower()).split())
+
+
+def settle(text: Any) -> None:
+    """Mark a finished reply, or a note of this check's own, as judged in this turn."""
+    global _settled_turn
+    key = _fingerprint(text)
+    if not key:
+        return
+    turn = _turn_token()
+    with _settled_lock:
+        if turn is not None and turn != _settled_turn:
+            _settled.clear()
+            _settled_turn = turn
+        _settled.add(key)
+
+
+def is_settled(text: Any) -> bool:
+    """Whether `text` is a reply (or a note of this check's) already judged in this turn, or, outside
+    any turn, in the last turn that settled one."""
+    key = _fingerprint(text)
+    if not key:
+        return False
+    turn = _turn_token()
+    with _settled_lock:
+        if turn is not None and turn != _settled_turn:
+            return False
+        return key in _settled
+
+
 # "Here is the patch for `router_enhanced.py`", "**File:** .../eli/execution/router_enhanced.py",
 # "--- a/eli/...": a change to ELI's own code presented from a reply. Live, ELI "patched" a line that
 # did not exist, with invented line numbers. Without an action that changed code this turn, the words
@@ -1766,15 +1822,20 @@ def gate_stream(chunks: Iterable[str], evidence: str = "", rewrite: Optional[Cal
             served.append(out)
             yield out
     if check.code_served:
+        settle("".join(served))
         return
     if rewrite is not None and check.fell_short():
         again = not_said_yet(str(rewrite(list(check.dropped), "".join(served)) or ""), "".join(served))
         if again and holds_up(again, evidence):
-            yield ("\n\n" if check.kept_words else "") + again
+            again = ("\n\n" if check.kept_words else "") + again
+            settle("".join(served) + again)
+            yield again
             return
     after = check.afterword()
     if after:
+        settle(after)
         yield after
+    settle("".join(served) + after)
 
 
 def ask_again(dropped: List[str], served: str) -> str:
@@ -1796,9 +1857,11 @@ def drop_invented_self_claims(text: str, evidence: str = "") -> str:
     """`text` without sentences that invent ELI's settings, files, causes or fixes, or report
     changes it didn't make. Code blocks are left alone. Never returns an empty reply."""
     body = str(text or "")
-    if not body.strip():
+    if not body.strip() or is_settled(body):
         return body
     kept = "".join(gate_stream([body], evidence, rewrite=ask_again))
     kept = re.sub(r"[ \t]+\n", "\n", kept)
-    return re.sub(r"\n{3,}", "\n\n", kept).strip() or body
+    kept = re.sub(r"\n{3,}", "\n\n", kept).strip() or body
+    settle(kept)
+    return kept
 
