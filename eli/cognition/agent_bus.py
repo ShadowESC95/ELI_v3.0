@@ -1593,15 +1593,17 @@ class FrontierAgent(_BaseAgent):
 
 class PluginAgent(_BaseAgent):
     """
-    Routes to installed plugins: weather, calendar, web automation,
-    document reader, smart home, PDF/CSV analysis.
-    Falls through silently if no plugin matches.
+    Routes to installed plugins: calendar, web automation, document reader,
+    smart home, PDF/CSV analysis. Falls through silently if no plugin matches.
+    An action is run by one agent only: GET_WEATHER is the system agent's (it was in
+    both sets, so every weather request ran twice, and the second failure of the
+    pair was told it was "attempt 2").
     """
     name = "plugin"
     timeout_s = 6.0
 
     PLUGIN_ACTIONS: Set[str] = {
-        "GET_WEATHER", "LIST_EVENTS", "ADD_EVENT", "REMOVE_EVENT",
+        "LIST_EVENTS", "ADD_EVENT", "REMOVE_EVENT",
     }
 
     def run(self, user_input: str, intent: Dict[str, Any],

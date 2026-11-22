@@ -215,7 +215,6 @@ def _failed_executor_errors(block: str) -> list:
         r'"error"\s*:\s*"([^"]{1,300})"',
         r"(FileNotFoundError:\s*[^\n\r]{1,300})",
         r"(No such file or directory[^\n\r]{0,200})",
-        r"(This is attempt\s+\d+\s+for the same\s+[A-Z_]+\s+failure\s+`[^`]+`)",
     ):
         for m in _re.finditer(pat, str(block or "")):
             s = m.group(1).strip()

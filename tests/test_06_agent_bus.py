@@ -71,3 +71,17 @@ def test_an_agents_factor_is_what_became_of_the_replies_it_was_behind(monkeypatc
     monkeypatch.setattr(ep, "outcomes", lambda kind, **k: [])
     monkeypatch.setattr(bus, "_outcome_cache", {"loaded_at": 0.0, "rows": []})
     assert bus._outcome_factor("memory") is None
+
+
+def test_an_action_is_run_by_one_agent_only(monkeypatch):
+    """Live: the system and the plugin agent both ran GET_WEATHER for one request, so every weather
+    request went out twice, and the second failure of the pair was told it was "attempt 2"."""
+    from eli.cognition.agent_bus import PluginAgent, SystemAgent
+    assert not (SystemAgent.SYSTEM_ACTIONS & PluginAgent.PLUGIN_ACTIONS)
+    ran = []
+    monkeypatch.setattr("eli.execution.executor_enhanced.execute",
+                        lambda action, args=None, **k: ran.append(action) or {"ok": True, "action": action, "content": "x"})
+    intent = {"action": "GET_WEATHER", "args": {"location": "Larchmere"}}
+    for agent in (SystemAgent(), PluginAgent()):
+        agent.run("what's the weather in Larchmere?", intent, "s", "u")
+    assert ran == ["GET_WEATHER"]
