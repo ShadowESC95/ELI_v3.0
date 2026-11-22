@@ -78,8 +78,10 @@ result, replacing the last one (it lapses after 30 minutes):
   (`llm_intent._EXPLICIT_ONLY_ACTIONS`). An action is kept wherever ELI names it. A task is
   kept only where ELI asked for a go-ahead: its own offer, as a question ("Want me to walk you
   through it?") or as a statement ("let me know if you'd like me to draft it", "I can turn
-  this into a checklist if you'd like"), or the items of a list its question points at ("Shall
-  I go ahead with any of these?"). A reply that says what it will do and ends by asking for the
+  this into a checklist if you'd like", "I'll queue it up again if you want"), or the items of a
+  list its question points at ("Shall I go ahead with any of these?"). An offer in ELI's own voice
+  that the router cannot read as it stands is kept as the request it stands for (`_as_request`:
+  "have Spotify queue up *X* again" is "queue up X on Spotify"), so a "yes" or "go for it" runs it. A reply that says what it will do and ends by asking for the
   go-ahead ("I'll draft the patch ... Deal?", "Sound good?", `_GO_AHEAD_TAG`) offers what it said it
   would do; a step that says where what ELI writes is to go ("put the code in ~/fixes/x.patch",
   `destination`) is a save. A list of facts followed by an unrelated offer is not a set

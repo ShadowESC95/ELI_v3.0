@@ -264,7 +264,7 @@ _STATED_OFFER_RE = _re.compile(
     r"\b(?:let me know if you(?:'d| would)? (?:like|want|need) me to|"
     r"if you(?:'d| would)? (?:like|want|prefer)(?: me to)?,?\s+i(?: can| could| will|'ll)|"
     r"(?:just )?say the word and i(?:'ll| will| can))\s+(?P<a>.+?)(?:[.!]|,| or |$)"
-    r"|\b(?:i (?:can|could)(?: also)?|i(?:'d| would) be (?:happy|glad|pleased) to|happy to|glad to)\s+(?P<b>.+?)"
+    r"|\b(?:i (?:can|could)(?: also)?|i(?:'ll| will)|i(?:'d| would) be (?:happy|glad|pleased) to|happy to|glad to)\s+(?P<b>.+?)"
     r"\s+if you(?:'d| would)? (?:like|want)(?: me to)?\b",
     _re.I,
 )
@@ -470,10 +470,23 @@ _OBJECT_YOU = _re.compile(
     r"update|keep|write|draft|find|make|build|talk|point|fill|let)\s+you\b", _re.I)
 
 
+# A name in Markdown emphasis ("*The Long Road*", "**Harbour Bells**") is the name.
+_EMPHASIS = _re.compile(r"(?<!\w)(\*{1,2}|_{1,2})(?=\S)([^*_\n]+?)(?<=\S)\1(?!\w)")
+# "have Spotify queue up X", "get Firefox to open the page": the act, done in the app named.
+_CAUSATIVE = _re.compile(r"^(?:have|get|make)\s+(?P<app>[A-Z][\w.&'-]*(?:\s+[A-Z][\w.&'-]*){0,2})\s+(?:to\s+)?(?P<act>\S.*)$")
+# "again" in ELI's offer points back at the conversation; the request it stands for is the act itself.
+_AGAIN_AT_END = _re.compile(r"\s+(?:again|once\s+more|one\s+more\s+time)$", _re.I)
+
+
 def _as_request(text: str) -> str:
     """ELI's offer in the user's voice: "walk you through your options" is "walk me through my
-    options" when the user is the one asking for it."""
+    options" when the user is the one asking for it, and "have Spotify queue up *The Long Road*
+    again" is "queue up The Long Road on Spotify"."""
     out = _COMMIT_LEAD.sub("", str(text or "").strip(), count=1).strip() or str(text or "").strip()
+    out = _AGAIN_AT_END.sub("", _EMPHASIS.sub(r"\2", out).strip(" .,;:")).strip()
+    done_by = _CAUSATIVE.match(out)
+    if done_by:
+        out = f"{done_by.group('act').strip()} on {done_by.group('app')}"
     out = _OBJECT_YOU.sub(lambda m: f"{m.group(1)} me", out)
     out = _re.sub(r"\byourself\b", "myself", out, flags=_re.I)
     out = _re.sub(r"\byours\b", "mine", out, flags=_re.I)
@@ -510,7 +523,8 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
     # Stored replies have had their blank lines closed up, which leaves the first item on the
     # line that introduces the list ("three ways: 1. Draft ...") and a closing question on the
     # line of the last item.
-    laid_out = _re.sub(r"(?<=[:.!?])[ \t]+(?=\d{1,2}[.)][ \t]+\S)", "\n", str(response_text or ""))
+    # the model writes "I’ll" as often as "I'll"; every pattern here is written with the plain one
+    laid_out = _re.sub(r"(?<=[:.!?])[ \t]+(?=\d{1,2}[.)][ \t]+\S)", "\n", str(response_text or "").replace("’", "'"))
     for line in laid_out.splitlines():
         if not line.strip():
             continue
@@ -602,6 +616,13 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
             continue  # the label of a step whose lines say what the step is
         route = {} if (asked and _NON_ACTION.match(text)) else _route_of(text)
         act = str(route.get("action") or "").upper()
+        if asked and act in _NOT_AN_ACTION and not _NON_ACTION.match(text):
+            # an offer in ELI's own voice may route only as the request it stands for ("have Spotify
+            # queue up *The Long Road* again" is "queue up The Long Road on Spotify")
+            request = _as_request(text)
+            again = _route_of(request) if request and request != text else {}
+            if _offerable(again.get("action")):
+                text, route, act = request, again, str(again["action"]).upper()
         if act in _NOT_AN_ACTION:
             # something ELI does by writing: only where it asked for a go-ahead
             if asked and not c.get("points_back"):

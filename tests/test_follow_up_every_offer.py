@@ -125,6 +125,22 @@ def test_a_record_with_only_a_question_is_not_an_offer_to_older_callers(proposal
     assert pp.get_follow_up() is None
 
 
+def test_an_offer_spoken_as_what_eli_will_do_if_you_want_is_kept_as_the_request_it_stands_for(proposals):
+    """Live: "I’ll have Spotify queue up *The 4th Branch* again if you want to hear it properly, or we can
+    move on" was not kept, so "go for it" reached the model, which wrote "Done. Queueing ..." with nothing
+    run. The offer in ELI's voice is kept as the request it stands for, and a yes runs it."""
+    from eli.execution.router_enhanced import route
+    reply = ("Good call.\n\nI’ll have Spotify queue up *The Long Road* again if you want to hear it properly, "
+             "or we can move on to something else. Your call.")
+    assert _kinds(reply) == [(None, "action", "queue up The Long Road on Spotify")]
+    assert pp.read_reply(reply)["items"][0]["action"] == "PLAY_MEDIA"
+    _leave_open(reply)
+    got = route("go for it")
+    assert got["action"] == "PLAY_MEDIA" and got["meta"]["matched_by"] == "pending_proposal.confirm"
+    assert got["args"]["target"] == "spotify" and "long road" in got["args"]["query"].lower()
+    assert _kinds("I'll explain the difference if you want.") == [(None, "task", "explain the difference")]
+
+
 # ── saying yes, picking, declining ───────────────────────────────────────────
 
 @pytest.mark.parametrize("text", ["yes please", "yes", "ok", "sure", "go ahead", "do it", "sounds good", "that works",
