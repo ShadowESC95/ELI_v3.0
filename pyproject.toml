@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # Proprietary commercial software: licensed only under the ELI End User Licence
 # Agreement (COMMERCIAL_EULA.md). See LICENSE. All rights reserved.
 license = "LicenseRef-ELI-EULA"
-authors = [{ name = "ELI Contributors" }]
+authors = [{ name = "Jason Fitzgibbon Bridgeman", email = "jaybridgeman0095@gmail.com" }]
 keywords = ["ai", "assistant", "llm", "local", "gpu", "gguf"]
 classifiers = [
     "Programming Language :: Python :: 3",

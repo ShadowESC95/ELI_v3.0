@@ -72,7 +72,7 @@ def test_license_resolves_at_runtime():
     assert license_path() is not None, "LICENSE not resolvable from a source checkout"
     text = license_text()
     assert "PROPRIETARY COMMERCIAL SOFTWARE" in text
-    assert "ShadowESC95" in text
+    assert "Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95) <jaybridgeman0095@gmail.com>" in text
 
 
 def test_who_made_eli_is_read_from_the_licence_it_ships_with():
@@ -80,3 +80,4 @@ def test_who_made_eli_is_read_from_the_licence_it_ships_with():
     from eli.runtime.license_info import license_text, made_by
     maker = made_by()
     assert maker and maker in license_text() and "rights" not in maker.lower()
+    assert maker == "Jason Fitzgibbon Bridgeman", maker   # the name, never the handle or a cut-off email

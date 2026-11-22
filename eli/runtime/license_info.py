@@ -30,7 +30,8 @@ _COMPANIONS = ("NOTICE", "THIRD_PARTY_NOTICES.md", "models/MODEL_LICENSES.md")
 SUMMARY = (
     "ELI v3 — proprietary commercial software, licensed under the\n"
     "ELI End User Licence Agreement (COMMERCIAL_EULA.md).\n"
-    "Copyright (c) 2026 ShadowESC95. All rights reserved.\n"
+    "Copyright (c) 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95)\n"
+    "<jaybridgeman0095@gmail.com>. All rights reserved.\n"
     "\n"
     "Use requires a purchased licence or a trial under that agreement.\n"
     "You may NOT redistribute, publish, host for others, sublicense or sell it.\n"
@@ -106,9 +107,9 @@ def license_text() -> str:
 
 
 def made_by() -> str:
-    """Who holds the copyright, as the licence this build ships with names them: who made ELI.
-    "" when the licence names nobody."""
-    m = re.search(r"Copyright\s*(?:©|\(c\))\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s+)?([^.\n]+)", license_text(), re.I)
+    """Who holds the copyright, as the licence this build ships with names them: who made ELI, the
+    name alone (the handle and email after it are not part of it). "" when the licence names nobody."""
+    m = re.search(r"Copyright\s*(?:©|\(c\))\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s+)?([^.(<\n]+)", license_text(), re.I)
     return m.group(1).strip() if m else ""
 
 

@@ -662,7 +662,7 @@ Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §5 · how it works:
 
 ## License
 
-ELI v3 is **proprietary commercial software** — © 2026 ShadowESC95. All rights
+ELI v3 is **proprietary commercial software** — © 2026 Jason Fitzgibbon Bridgeman (GitHub: [ShadowESC95](https://github.com/ShadowESC95), <jaybridgeman0095@gmail.com>). All rights
 reserved. It is licensed only under the **[ELI End User Licence Agreement](COMMERCIAL_EULA.md)**
 (see [LICENSE](LICENSE)); having a copy of the software or its source does not by itself grant a
 licence. Third-party components keep their own licences — see

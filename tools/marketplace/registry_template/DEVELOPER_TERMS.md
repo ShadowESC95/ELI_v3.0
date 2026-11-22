@@ -22,7 +22,7 @@
 
 ## 1. Definitions
 
-- **"We", "us":** ShadowESC95, operator of the ELI marketplace.
+- **"We", "us":** Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95), operator of the ELI marketplace.
 - **"You", "publisher":** the person or organisation submitting a package.
 - **"Package":** a plugin, MCP server, bundle, integration or other software you submit, with its
   manifest, listing text, icons and screenshots.

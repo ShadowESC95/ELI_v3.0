@@ -1,6 +1,6 @@
 # ELI End User Licence Agreement
 
-**Copyright © 2026 ShadowESC95. All rights reserved.**
+**Copyright © 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95) <jaybridgeman0095@gmail.com>. All rights reserved.**
 
 > **Status: draft for solicitor review.** These are the intended terms for ELI v3 and the official
 > ELI bundles. The binding version is the one presented at purchase. Purchase date and receipt govern
@@ -38,7 +38,7 @@ This summary is here to help you. It is not part of the legal terms; the numbere
 
 ## 1. Definitions
 
-- **"We", "us", "the Licensor":** ShadowESC95.
+- **"We", "us", "the Licensor":** Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95) <jaybridgeman0095@gmail.com>.
 - **"You":** the person or organisation that purchased the licence, or that is using a trial.
 - **"ELI Product":** ELI v3 and each official ELI bundle or add-on we publish, such as ELI Legal,
   ELI VR, ELI Healthcare, ELI Finance and ELI Creation Station. Each one is a separate ELI Product.
