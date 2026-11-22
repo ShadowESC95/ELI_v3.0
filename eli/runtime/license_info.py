@@ -30,7 +30,7 @@ _COMPANIONS = ("NOTICE", "THIRD_PARTY_NOTICES.md", "models/MODEL_LICENSES.md")
 SUMMARY = (
     "ELI v3 — proprietary commercial software, licensed under the\n"
     "ELI End User Licence Agreement (COMMERCIAL_EULA.md).\n"
-    "Copyright (c) 2026 Jason Fitzgibbon Bridgeman. All rights reserved.\n"
+    "Copyright (c) 2026 ShadowESC95. All rights reserved.\n"
     "\n"
     "Use requires a purchased licence or a trial under that agreement.\n"
     "You may NOT redistribute, publish, host for others, sublicense or sell it.\n"

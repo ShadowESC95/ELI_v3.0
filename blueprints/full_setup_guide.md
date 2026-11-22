@@ -325,6 +325,6 @@ the `.desktop` files from `~/.local/share/applications/`.)
 
 ---
 
-*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman. Source-available under the PolyForm
+*ELI v3.0 — © 2026 ShadowESC95. Source-available under the PolyForm
 Internal Use License 1.0.0 (free to use and modify on your own machine; not for
 redistribution). Questions: jaybridgeman0095@gmail.com*

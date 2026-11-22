@@ -1,6 +1,6 @@
 # Third-Party Notices — ELI v2.0
 
-ELI (© 2026 Jason Fitzgibbon Bridgeman) is proprietary software licensed under
+ELI (© 2026 ShadowESC95) is proprietary software licensed under
 the **ELI End User Licence Agreement** (see `LICENSE` and `COMMERCIAL_EULA.md`). This file lists
 **third-party** components used at runtime or shipped in release packages,
 with their licenses. It accompanies portable tarballs, wheels, and source

@@ -301,7 +301,7 @@ Never delete another ELI version's folder (such as `ELI_v2`): it holds that prod
 
 ---
 
-*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman. Source-available under the PolyForm Internal
+*ELI v3.0 — © 2026 ShadowESC95. Source-available under the PolyForm Internal
 Use License 1.0.0. Questions: jaybridgeman0095@gmail.com*
 
 

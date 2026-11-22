@@ -72,7 +72,7 @@ def test_license_resolves_at_runtime():
     assert license_path() is not None, "LICENSE not resolvable from a source checkout"
     text = license_text()
     assert "PROPRIETARY COMMERCIAL SOFTWARE" in text
-    assert "Jason Fitzgibbon Bridgeman" in text
+    assert "ShadowESC95" in text
 
 
 def test_who_made_eli_is_read_from_the_licence_it_ships_with():

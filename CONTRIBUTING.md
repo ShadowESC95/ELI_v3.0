@@ -27,7 +27,7 @@ author), you agree that:**
 
 1. The contribution is **your own original work** and you have the right to
    submit it.
-2. You grant **Jason Fitzgibbon Bridgeman** (the copyright holder) a perpetual,
+2. You grant **ShadowESC95** (the copyright holder) a perpetual,
    worldwide, irrevocable, royalty-free license to **use, modify, sublicense, and
    relicense** your contribution — including for commercial purposes — as part of
    ELI v3, under the project's current license and any future license the
