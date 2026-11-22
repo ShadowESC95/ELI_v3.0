@@ -428,9 +428,10 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `perception/` — 12.2k lines
 | Module | LOC | Role |
 |---|---|---|
-| `audio_stt.py` | 2689 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking, per-user voice profile bias. |
+| `audio_stt.py` | 2869 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking (also at the onset of speech over ELI's media), the mic read without a break, per-user voice profile bias learnt from accepted utterances. |
+| `near_speech.py` | 310 | Speech at the mic that the machine's own output does not explain: the default sink's monitor as reference, the music's share learnt per band, onsets of the owner's speech over ELI's music. |
 | `vision.py` | 726 | Local GGUF VL (Moondream fast / primary), hot-swap with text model, CPU-pinned CLIP, OCR. |
-| `tts_router.py` | 1357 | Piper/espeak TTS, voice selection, unspeakable-fragment guard; plays at the device's own rate when it refuses the voice's. |
+| `tts_router.py` | 1498 | Piper/espeak TTS, voice selection, unspeakable-fragment guard; plays through the sound server (never a card it holds), at the device's own rate when it refuses the voice's. |
 | `audio_samples.py` | 74 | A sound file as one channel of float32 samples at the rate a consumer needs (speech input, playback, the wake word, the voice profile): PCM WAV read with the standard library, other formats with soundfile. |
 | `os_controller.py` | 1110 | Screenshot/volume/keys/mouse/clipboard + `gaze_click`. |
 | `screen_locator.py` | 497 | OCR (tesseract) → locate a named UI element on screen. |
@@ -665,7 +666,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `effectors/system_intel.py` | 97 | What a GPU reading means, as facts (`gpu_use_facts`). |
 | `effectors/system_open.py` | 222 | Opening settings panels, the browser, the file manager, the media hub. |
 | `effectors/timers.py` | 113 | `SET_ALARM`, `SET_TIMER`. |
-| `effectors/tts_speech.py` | 23 | `SPEAK`; speech itself is `perception/tts_router.py`'s. |
+| `effectors/tts_speech.py` | 30 | `SPEAK`, replying where the words were played or why not; speech itself is `perception/tts_router.py`'s. |
 | `effectors/voice_input.py` | 144 | `DICTATE`, `LISTEN_FOR_COMMAND`, STT and voice diagnostics. |
 | `effectors/wake_word.py` | 166 | Enrol/set/train the wake word, train the voice. |
 | `effectors/web_info.py` | 396 | `WEB_SEARCH`, `NEWS_FETCH`, `GET_WEATHER`, `MORNING_REPORT`. |

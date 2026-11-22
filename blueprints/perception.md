@@ -9,10 +9,11 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | File | LOC | Role |
 |---|---|---|
 | `mic_resolver.py` | ~620 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
-| `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
+| `audio_stt.py` | ~2.9k | STT + mic capture (read without a break) + ducking + adaptive pause + wake/voice capture |
+| `near_speech.py` | ~310 | **speech the machine's own output does not explain** — the default sink's monitor as reference, the music's share at the mic learnt band by band; lowers ELI's media at the onset of the owner's speech |
 | `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 1357 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `tts_router.py` | 1498 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
 | `tts_xtts.py` | 396 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
 | `vision.py` | 726 |
@@ -127,6 +128,24 @@ A large, feature-dense STT module:
   says it was not clear (`heard_clearly`).
 - **Playback** opens at the output device's own rate, the voice resampled to it, instead of
   failing first on a device that takes only its own rate.
+- **Hearing the owner over ELI's own music** (`near_speech.py`). The mic is read without a break
+  (`_ContinuousMic`: a thread takes every chunk as it is captured, so what is said while Whisper
+  transcribes is no longer lost, and the buffer is flushed while ELI speaks). Each chunk is compared
+  with what the default sink plays (read from its monitor by `parec` / `pw-record`, routing and
+  volumes untouched); speech the output does not explain lowers ELI's media at its onset
+  (`_duck_at_onset`, only while media plays), so the rest of the wake word and the command are heard
+  over quieter music; it goes back up when nothing for ELI followed, as after a wake word. On
+  synthetic fixtures (rap-like vocals over drums and chords through a speaker and a reverberant
+  room, the mic's clock 80 ppm off) it found 50 / 67 / 83 of 100 utterances at 9 / 6 / 3 dB below
+  the music, where a rise in loudness found none, with 2 false onsets in 4 minutes of music and
+  none from its own lowering and restoring. Off with `ELI_STT_ONSET_DUCK=0`; nothing happens where
+  the mic does not hear the output (headphones) or no sound server runs.
+- **Voice profile** (`voice_profile.json` in the user's runtime folder; `voice_profile_n` in the
+  "Microphone ready" line): the level and length of the owner's speech, which may lower the energy
+  gate toward it. It learns only from what the voice gate takes as the owner's — the wake word, a
+  command it sends on (`_learn_voice`) — and not while ELI's media plays or the noise self-heal
+  holds the gate up; learnt from every capture it measured the songs the mic transcribed. A
+  profile written before (no `learned_from`) starts over.
 - Transcript cleanup: `_cleanup`, `_collapse_repeated_phrase`,
   `_eli_fast_command_alias` (maps spoken phrases to commands),
   `_is_safe_direct`/`_allow_direct_chat` (gates which utterances bypass to chat).
@@ -227,7 +246,8 @@ Decides the emotion ELI **expresses** and drives three output channels at once.
 The procedural face reacts in real time to what ELI is *doing*, via three cheap flags
 in `expression_state` (priority: thinking > speaking > tone):
 - **Lip-sync** — the mouth animates while TTS plays (`tts_router._run_tts` sets the
-  `speaking` flag; amplitude-driven when available, else a natural talk oscillation).
+  `speaking` flag; amplitude-driven from the voice's samples, by the PortAudio callback or a
+  timer beside the system player).
 - **Thinking look** — a focused/reflective face while the model generates (the GUI sets
   `thinking` around `is_generating`).
 - Otherwise it shows the current expressed tone. Pure-Qt, embedded in the world panel.
@@ -284,6 +304,16 @@ choice is persisted *before* hardware tuning so its VRAM is a deliberate up-fron
 router now passes tuned `--sentence_silence` / `--length_scale` / `--noise_scale` /
 `--noise_w` (`_piper_prosody_args()`, env-overridable, `ELI_TTS_PROSODY=0` to disable) so
 `?`/`!`/`.` land as intonation and pauses — the "Amy sounds flat" fix.
+
+*Where speech plays.* Through the desktop's sound server wherever one runs
+(`platform_compat.sound_server()`: PipeWire or PulseAudio found by the socket a client would
+reach; the system mixer on Windows and macOS). `tts_router._play_wav_blocking` opens a PortAudio
+stream only on the server's own ALSA device (`pipewire`, `pulse`; on Windows anything but
+WDM-KS), never a raw card the server holds; with none listed (a bundle whose PortAudio sees only
+the cards) the system player plays (`pw-play`, `paplay`, then `aplay`), and lip-sync takes the
+voice's loudness from the samples on a timer. Each part logs where it played or `NOT played`
+with the reason; `last_playback()`, the `SPEAK` reply, the voice test and the speech diagnostics
+say the same.
 
 *No robotic voices.* `list_voices()` hides the espeak `sys:` voices and Piper `low`/`x_low`
 tiers by default (they sound synthetic), surfacing them only as a genuine last resort when
