@@ -206,6 +206,12 @@ exist, and said "the audit trail is now active" for logging that was always on.
   then gives ELI's earlier replies whole instead of cut to 280 characters, and a correction
   that asks one (`that is not true, what day is that from?`) leaves the correction shortcut,
   which only sees the last exchange, for the full pipeline.
+- **A report from the record answers a sentence that asks for it.** The rules for ELI's records
+  (the outcome log, the last response's trace and metrics, the voice list) read their words in one
+  sentence that asks, tells or names what is wanted (`self_report._sentences_that_ask`); a sentence
+  ends at a stop inside a closing bracket too (`command_splitter.sentences`). "your logs are still
+  saying that you are speaking the reply, but i am not hearing anything" got the last-response dump,
+  and a complaint about the wake word the outcome log; both are answered as what they are.
 - **The claim check** (`gate_stream` on streamed replies, `drop_invented_self_claims` in
   `govern_output`). A sentence is dropped when it reports a change nothing made ("logging is
   now active", when no action ran); promises a standing change a reply cannot make ("no web

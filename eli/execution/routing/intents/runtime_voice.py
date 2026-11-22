@@ -138,8 +138,11 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
 
     if re.search(r"\bvoices?\b|\baccents?\b", low):
         _has_dl = bool(re.search(r"\b(download|install|fetch|add|grab)\b", low))
-        # LIST — asking what's available (no fetch/switch verb)
-        if (re.search(r"\b(what|which|list|show|available)\b", low)
+        # LIST — asking what's available (no fetch/switch verb), in the sentence that asks about voices:
+        # "your wake word is not being detected ... Also, i know what 20 minutes is" listed the voices
+        from eli.execution.routing.intents.self_report import _sentences_that_ask
+        if (any(re.search(r"\bvoices?\b|\baccents?\b", asked) and re.search(r"\b(what|which|list|show|available)\b", asked)
+                for asked in _sentences_that_ask(raw))
                 and not _has_dl
                 and not re.search(r"\b(use|switch|change|set|make)\b", low)):
             return _mk("LIST_VOICES", {}, 0.9, matched_by="voice.list")

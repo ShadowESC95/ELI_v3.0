@@ -123,6 +123,10 @@ def test_sentences_are_split_at_their_ends_and_not_inside_a_title():
     assert cs.sentences("that was great can you play some jazz") == ["that was great", "can you play some jazz"]
     assert cs.sentences("it stopped again please resume it") == ["it stopped again", "please resume it"]
     assert cs.sentences("can you play some jazz") == ["can you play some jazz"]
+    # a stop inside a closing bracket or quotation mark ends the sentence too
+    assert cs.sentences("it stays quiet (i thought you could hear me?) Also, i know what time it is.") == [
+        "it stays quiet (i thought you could hear me?)", "Also, i know what time it is."]
+    assert cs.sentences('She said "go." Then she left.') == ['She said "go."', "Then she left."]
 
 
 @pytest.mark.parametrize("text", ["wait, stop the music", "No, open firefox", "No. Open firefox",
