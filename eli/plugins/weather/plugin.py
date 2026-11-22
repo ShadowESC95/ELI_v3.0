@@ -72,12 +72,27 @@ _DAY_WORDS = re.compile(
     r"the weekend|the week|(?:on |next |this )?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b")
 
 
+# What a question about the weather says after the place, which is no part of its name: "what's the
+# weather in Wexford like", "how's the weather in Cork looking", "in Lyon going to be like", "in Galway
+# right now", "in Oslo at the moment, please". Taken off the end only, so a name is never cut inside.
+_AFTER_THE_PLACE = re.compile(
+    r"(?i)(?:[\s,]+(?:like|looking|doing|(?:(?:is|it'?s|going|gonna)\s+)?(?:going\s+to\s+be|gonna\s+be|to\s+be|be)|"
+    r"right\s+now|at\s+the\s+moment|at\s+present|currently|these\s+days|then|please|thanks|thank\s+you|"
+    r"for\s+me|outside|out\s+there|there|at\s+all))+\s*$")
+
+
 def clean_place(text: str) -> str:
     """A place name with any day words taken out: "tomorrow in Dublin" is Dublin, and
-    "tomorrow" on its own is no place at all."""
+    "tomorrow" on its own is no place at all. What a question says after the place ("like",
+    "looking", "going to be like", "right now") goes too: "Wexford like" was looked up as a place."""
     out = _DAY_WORDS.sub(" ", str(text or ""))
     out = re.sub(r"(?i)^\s*(?:in|at|for|near)\s+", "", re.sub(r"\s+", " ", out).strip(" ,?.!"))
-    return out.strip(" ,?.!")
+    out = out.strip(" ,?.!")
+    while True:
+        shorter = _AFTER_THE_PLACE.sub("", out).strip(" ,?.!")
+        if shorter == out:
+            return out
+        out = shorter
 
 
 def _forecast_for(g: dict, label: str, day: _date) -> dict:

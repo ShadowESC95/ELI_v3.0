@@ -270,12 +270,10 @@ def _eli_weather_prepass(user_text: str):
         user_text,
         re.I)
     if m:
-        loc = m.group(1).strip().rstrip("?.!, ")
-        # "weather for tomorrow", "forecast for this weekend": a day, not a place
-        loc = re.sub(r"(?i)\b(?:today|tonight|tomorrow|now|later|this (?:morning|afternoon|evening|weekend|week)|"
-                     r"next week|the weekend|the week|(?:on |next |this )?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b",
-                     " ", loc)
-        loc = re.sub(r"(?i)^(?:in|at|for|near)\s+", "", re.sub(r"\s+", " ", loc).strip(" ,")).strip(" ,") or None
+        # "weather for tomorrow" is a day, not a place, and "in Wexford like" is Wexford: the weather
+        # plugin's own reading of a place (clean_place), here and in the handler alike
+        from eli.plugins.weather.plugin import clean_place
+        loc = clean_place(m.group(1)) or None
         return {
             "action": "GET_WEATHER",
             "args": {"location": loc, "_raw_user_text": user_text},

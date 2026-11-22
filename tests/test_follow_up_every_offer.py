@@ -513,7 +513,12 @@ def test_questions_about_elis_memory_still_get_the_report(text, action):
 
 @pytest.mark.parametrize("text,place", [("check the weather for tomorrow", None), ("weather for tomorrow", None),
                                         ("what's the weather in Dublin tomorrow", "Dublin"), ("weather in Paris", "Paris"),
-                                        ("what's the forecast for this weekend in Bristol", "Bristol")])
+                                        ("what's the forecast for this weekend in Bristol", "Bristol"),
+                                        # what a question says after the place is no part of its name
+                                        ("Is it fine though? What's the weather in Larchmere like?", "Larchmere"),
+                                        ("how's the weather in Oakvale looking", "Oakvale"),
+                                        ("what's the weather in Brightwater going to be like tomorrow?", "Brightwater"),
+                                        ("what is the weather in New Larchmere like at the moment?", "New Larchmere")])
 def test_a_day_is_not_a_place_and_asking_about_tomorrow_is_not_a_job_for_tomorrow(text, place):
     from eli.execution.router_enhanced import route
     got = route(text)
@@ -554,6 +559,22 @@ def test_asked_about_tomorrow_the_answer_is_tomorrows_forecast_not_now(monkeypat
     later = ex.execute("GET_WEATHER", {"location": "Dublin", "_raw_user_text": "what's the weather in Dublin tomorrow"})
     assert later["ok"] and later["response"].startswith("Forecast for Dublin, Leinster, IE, ")
     assert later["response"].endswith(": 9 to 15°C, slight rain, 70% chance of rain.") and any("daily=" in u for u in calls)
+
+
+def test_the_place_looked_up_is_the_place_and_a_failure_is_not_told_it_is_another_attempt(monkeypatch, proposals):
+    """Live: "What's the weather in <town> like?" looked up "<town> like", found nothing, and the reply
+    said "This is attempt 2 for the same GET_WEATHER failure. Do you want me to inspect the target, logs,
+    or generated artifact ...?" on the first failure (two agents had run the one request)."""
+    from eli.execution import executor_enhanced as ex
+    from eli.plugins.weather import plugin as wp
+    calls = []
+    _weather_net(monkeypatch, calls)
+    ex.execute("GET_WEATHER", {"location": "Larchmere like", "_raw_user_text": "what's the weather in Larchmere like?"})
+    assert "name=Larchmere&" in calls[0]
+    monkeypatch.setattr(wp, "_get_json", lambda url: {"results": []})
+    for _ in range(2):
+        failed = ex.execute("GET_WEATHER", {"location": "Nowhere Fen", "_raw_user_text": "weather in Nowhere Fen"})
+        assert not failed["ok"] and "attempt" not in failed["response"] and "Do you want me to" not in failed["response"]
 
 
 def test_where_is_asked_once_and_the_answer_completes_the_request(monkeypatch, proposals):
