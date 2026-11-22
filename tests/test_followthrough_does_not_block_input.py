@@ -368,3 +368,36 @@ def test_what_is_read_aloud_leaves_out_scripts_and_reads_headlines_as_lines():
     assert said("Headlines (3 fetched):\n• [Example News] Rivers rise\n• [Sample Post] (2h) New bridge…") == \
         "3 fetched. Example News: Rivers rise. Sample Post: New bridge"
     assert said("Just a plain answer.") == "Just a plain answer."
+
+
+def test_each_message_is_laid_out_on_its_own_after_a_bulleted_reply(window):
+    """Live: after a reply laid out as a bulleted list, every message after it, the user's too, came out
+    as bullet points: the next block took the list's last block's format."""
+    w = window
+    for piece in ("__STREAM_START__", "Here is what I have:\n", "- the first thing\n", "- the second thing",
+                  "__STREAM_END__"):
+        w._append_chat_response(piece)
+    w._draw_chat("user", "and what about the third?")
+    w._append_chat_response("Nothing for the third, I'm afraid.")
+
+    def block_of(words):
+        block = w.chat_display.document().begin()
+        while block.isValid():
+            if words in block.text():
+                return block
+            block = block.next()
+        raise AssertionError(f"{words!r} is not in the transcript")
+
+    assert block_of("the second thing").textList() is not None, "the reply's own list is laid out as one"
+    for words in ("and what about the third?", "Nothing for the third", "ELI ["):
+        later = [b for b in _blocks(w) if words in b.text()][-1]
+        assert later.textList() is None, f"{words!r} was laid out inside the reply's list"
+    assert block_of("You [").textList() is None
+
+
+def _blocks(w):
+    block, out = w.chat_display.document().begin(), []
+    while block.isValid():
+        out.append(block)
+        block = block.next()
+    return out

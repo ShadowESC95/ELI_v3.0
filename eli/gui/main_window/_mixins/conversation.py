@@ -1127,6 +1127,14 @@ class ConversationMixin:
             self.chat_response_signal.emit(f"🗨️ {who} ({where}, {_time.strftime('%H:%M', _time.localtime(when))}): {content}")
         self._other_turns_seen = newest
 
+    @staticmethod
+    def _new_block(cursor) -> None:
+        """A new paragraph at the cursor, outside any list, quote or indent the text before it is in. A
+        reply laid out as a bulleted list left its last block in the list, and every block after it
+        took that block's format: each later message, the user's too, came out as a bullet."""
+        from PySide6.QtGui import QTextBlockFormat
+        cursor.insertBlock(QTextBlockFormat(), QTextCharFormat())
+
     def _append_chat_response(self, text: str):
         """Handle streamed tokens and complete responses (always on GUI thread)."""
         _ELI_HEADER_COLOR = "#88c0d0"   # nordic blue for ELI's name
@@ -1138,13 +1146,13 @@ class ConversationMixin:
             ts = datetime.now().strftime("%H:%M:%S")
             cursor = self.chat_display.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
-            cursor.insertBlock()
+            self._new_block(cursor)
             header_fmt = QTextCharFormat()
             header_fmt.setFontWeight(QFont.Weight.Bold)
             header_fmt.setForeground(QColor(_ELI_HEADER_COLOR))
             cursor.setCharFormat(header_fmt)
             cursor.insertText(f"🤖 ELI [{ts}]:")
-            cursor.insertBlock()
+            self._new_block(cursor)
             body_fmt = QTextCharFormat()
             body_fmt.setFontWeight(QFont.Weight.Normal)
             body_fmt.setForeground(QColor(_ELI_BODY_COLOR))
@@ -1161,7 +1169,7 @@ class ConversationMixin:
             self._render_rich_reply(getattr(self, "_stream_body_start", None), _ELI_BODY_COLOR)
             cursor = self.chat_display.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
-            cursor.insertBlock()
+            self._new_block(cursor)
             self.chat_display.setTextCursor(cursor)
             self.chat_display.ensureCursorVisible()
             return
@@ -1179,7 +1187,7 @@ class ConversationMixin:
             stop_fmt.setForeground(QColor("#bf616a"))
             cursor.setCharFormat(stop_fmt)
             cursor.insertText("\n[Generation stopped.]")
-            cursor.insertBlock()
+            self._new_block(cursor)
             self.chat_display.setTextCursor(cursor)
             self.chat_display.ensureCursorVisible()
             return
@@ -1227,13 +1235,13 @@ class ConversationMixin:
         ts = datetime.now().strftime("%H:%M:%S")
         cursor = self.chat_display.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertBlock()
+        self._new_block(cursor)
         header_fmt = QTextCharFormat()
         header_fmt.setFontWeight(QFont.Weight.Bold)
         header_fmt.setForeground(QColor(_ELI_HEADER_COLOR))
         cursor.setCharFormat(header_fmt)
         cursor.insertText(f"🤖 ELI [{ts}]:")
-        cursor.insertBlock()
+        self._new_block(cursor)
         body_fmt = QTextCharFormat()
         body_fmt.setFontWeight(QFont.Weight.Normal)
         body_fmt.setForeground(QColor(_ELI_BODY_COLOR))
@@ -1243,7 +1251,7 @@ class ConversationMixin:
         self._render_rich_reply(_start, _ELI_BODY_COLOR)
         cursor = self.chat_display.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertBlock()
+        self._new_block(cursor)
         self.chat_display.setTextCursor(cursor)
         self.chat_display.ensureCursorVisible()
 
