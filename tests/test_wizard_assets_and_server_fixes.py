@@ -55,3 +55,53 @@ def test_a_second_window_is_refused_while_the_first_runs_and_allowed_after(tmp_p
     third = subprocess.run([sys.executable, "-c", _HOLD_SINGLETON], env=env, capture_output=True,
                            text=True, timeout=120)
     assert "HOLDING" in third.stdout
+
+
+def test_a_helper_run_through_the_frozen_app_is_python_and_never_a_second_window(tmp_path):
+    """In a frozen build sys.executable is ELI itself, and the entry passed only -c and -m through:
+    `ELI script.py` (the IDE's Run, the test and eval reports) started a GUI, met the single-instance
+    guard, and put up "ELI is already running". Whatever `python` takes (switches, -c, -m, a .py
+    script) runs as python, with python's exit status; the coding sandbox's -c runner still runs."""
+    import os
+    import subprocess
+    import sys
+    entry = "packaging/pyinstaller/eli_entry.py"
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")    # were it to reach the GUI, nothing shows
+
+    parse = subprocess.run([sys.executable, "-c", r"""
+import importlib.util, sys
+sys.argv = ["ELI"]
+spec = importlib.util.spec_from_file_location("eli_entry", "packaging/pyinstaller/eli_entry.py")
+entry = importlib.util.module_from_spec(spec); spec.loader.exec_module(entry)
+for argv in (["cand.py", "a"], ["-u", "cand.py"], ["-I", "-X", "utf8", "-c", "pass", "x"], ["-m", "pip"], ["-"],
+             ["--server"], ["--selftest"], [], ["picture.png"], ["-u"]):
+    print(argv, entry._python_invocation(argv))
+"""], env=env, capture_output=True, text=True, timeout=120)
+    assert parse.returncode == 0, parse.stderr
+    lines = parse.stdout.splitlines()
+    assert lines[0].endswith("('path', 'cand.py', ['a'], [])")
+    assert lines[1].endswith("('path', 'cand.py', [], ['-u'])")
+    assert lines[2].endswith("('c', 'pass', ['x'], ['-I', '-X', 'utf8'])")
+    assert lines[3].endswith("('m', 'pip', [], [])") and lines[4].endswith("('stdin', '-', [], [])")
+    assert all(line.endswith(" None") for line in lines[5:]), lines[5:]     # ELI's own, or nothing to run
+
+    script = tmp_path / "candidate.py"
+    script.write_text("import sys\nimport sibling\nprint('ran', sys.argv[1:], sibling.VALUE)\n", encoding="utf-8")
+    (tmp_path / "sibling.py").write_text("VALUE = 7\n", encoding="utf-8")
+    ran = subprocess.run([sys.executable, entry, "-u", str(script), "one"], env=env, capture_output=True,
+                         text=True, timeout=120)
+    assert ran.returncode == 0 and "ran ['one'] 7" in ran.stdout, ran.stderr[-800:]
+    assert "already running" not in ran.stdout + ran.stderr
+
+    from eli.coding.sandbox import _FROZEN_RUNNER
+    runner = subprocess.run([sys.executable, entry, "-c", _FROZEN_RUNNER, str(script), "two"], env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert runner.returncode == 0 and "ran ['two'] 7" in runner.stdout, runner.stderr[-800:]
+
+    script.write_text("raise ValueError('candidate failed')\n", encoding="utf-8")
+    failed = subprocess.run([sys.executable, entry, str(script)], env=env, capture_output=True, text=True, timeout=120)
+    assert failed.returncode == 1 and "ValueError: candidate failed" in failed.stderr
+
+    missing = subprocess.run([sys.executable, entry, str(tmp_path / "gone.py")], env=env, capture_output=True,
+                             text=True, timeout=120)
+    assert missing.returncode == 2 and "can't open file" in missing.stderr
