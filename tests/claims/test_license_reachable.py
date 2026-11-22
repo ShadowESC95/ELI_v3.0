@@ -335,3 +335,10 @@ def test_the_release_says_where_the_source_of_each_lgpl_package_it_carries_is(tm
     notices = (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     lgpl = notices[notices.index("## Source code of the LGPL components"):]
     assert "LGPL_SOURCES.md" in lgpl and "gpl-sources.tar.gz" in lgpl and "packaging/gpl_sources.py" in lgpl
+
+
+def test_the_third_party_notices_name_this_product():
+    """THIRD_PARTY_NOTICES.md, which every download carries, was headed "ELI v2.0", another product."""
+    product = (REPO / "NOTICE").read_text(encoding="utf-8").splitlines()[0].strip()
+    title = (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8").splitlines()[0]
+    assert product == "ELI v3" and title == f"# Third-Party Notices — {product}", title

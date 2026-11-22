@@ -1,4 +1,4 @@
-# Third-Party Notices — ELI v2.0
+# Third-Party Notices — ELI v3
 
 ELI (© 2026 Jason Fitzgibbon Bridgeman) is proprietary software licensed under
 the **ELI End User Licence Agreement** (see `LICENSE` and `COMMERCIAL_EULA.md`). This file lists
