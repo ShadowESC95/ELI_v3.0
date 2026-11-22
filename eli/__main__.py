@@ -1,4 +1,5 @@
-"""Console entry point: `python -m eli`, which eli.sh, eli.bat and scripts/eli_launch.sh run.
+"""Console entry point: `python -m eli`, which eli.sh, eli.bat and scripts/eli_launch.sh run, and the
+`eli`, `eli-v3` and `eli-cli` commands (console_main).
 
 Flags:
   --headless, -H   Run as a terminal REPL without any GUI.  Useful for
@@ -182,6 +183,16 @@ def main() -> int:
     # ── GUI (default) ────────────────────────────────────────────────────────
     from eli.gui.app import main as _gui_main
     return int(_gui_main() or 0)
+
+
+def console_main() -> int:
+    """The `eli`, `eli-v3` and `eli-cli` commands (pyproject [project.scripts]): this install's root
+    pinned first, as the window's own entry pins it (eli.gui.app.pin_this_install), then every option
+    read as `python -m eli` reads it. Pointed at the window, they ignored all but --setup, --choose and
+    --no-bundles."""
+    from eli.gui.app import pin_this_install
+    pin_this_install()
+    return main()
 
 
 if __name__ == "__main__":

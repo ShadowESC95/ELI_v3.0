@@ -19,7 +19,7 @@ scratch:
 - **Package builds:** `eli_mkxi-2.0.0-py3-none-any.whl` builds cleanly from the clone.
 - **`pyproject.toml` complete:** name/version/`requires-python >=3.10`, 18 core deps, 14 extra
   groups, `[full]` meta-extra (`eli-mkxi[gui,tts,asr,llm,image,docs,server,vision,web,…]`), 3
-  console scripts (`eli`/`eli-mkxi`/`eli-cli` → `eli.gui.app:main`), setuptools backend.
+  console scripts (`eli`/`eli-v3`/`eli-cli` → `eli.__main__:console_main`), setuptools backend.
 - **Dependencies covered across 4 sources:** core deps + `.[full]` extras (PySide6, faster-
   whisper, piper, fastapi, transformers, opencv…) + `requirements.lock.txt` (160 pinned) +
   **explicit torch & llama-cpp** (GPU-variant, installed by the OS installer).

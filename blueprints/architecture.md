@@ -77,7 +77,7 @@ registered actions run in their effector modules), `eli/execution/router_enhance
 
 | Command | Target | Notes |
 |---|---|---|
-| `eli`, `eli-v3`, `eli-cli` | `eli.gui.app:main` | GUI (default) |
+| `eli`, `eli-v3`, `eli-cli` | `eli.__main__:console_main` | this install's root pinned, then every option `python -m eli` reads; GUI by default |
 | `eli-mcp` | `eli.integrations.mcp.server:main` | ELI as an MCP server |
 | `eli-jobs` | `eli.planning.jobqueue_cli:main` | durable job queue CLI |
 | `eli-license` | `eli.licensing.cli:main` | licence key commands |

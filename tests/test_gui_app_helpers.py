@@ -132,3 +132,38 @@ def test_a_returning_launch_writes_nothing_and_setup_writes_only_what_it_chose(m
     assert set(saved[0]) == set(tuned) | {"model_path", "bundled_model_path", "custom_model_path",
                                          "gguf_model_path", "first_run_complete"}
     assert saved[0]["n_ctx"] == 4096 and "theme" not in saved[0] and "ram_budget_percent" not in saved[0]
+
+
+def test_the_eli_commands_read_every_option_with_this_install_pinned_first(monkeypatch, tmp_path, capsys):
+    """The `eli`, `eli-v3` and `eli-cli` scripts entered eli.gui.app.main, which reads only --setup,
+    --choose and --no-bundles: `eli --mcp-config` or `eli --headless` opened the window. They read every
+    option as `python -m eli` does, with the install the venv belongs to pinned before anything writes."""
+    import importlib
+    import json
+    import os
+    import re
+    import sys
+    from pathlib import Path
+    toml = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    block = toml[toml.index("[project.scripts]"):toml.index("[project.gui-scripts]")]
+    install = tmp_path / "install"
+    (install / "eli" / "gui").mkdir(parents=True)
+    for name in ("ELI_PROJECT_ROOT", "ELI_DATA_DIR", "ELI_CONFIG_DIR", "ELI_MODELS_DIR"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))              # put back afterwards
+    monkeypatch.setattr(sys, "executable", str(install / ".venv" / "bin" / "python"))
+    started, first_write = [], []
+    monkeypatch.setattr(app, "main", lambda: started.append("window") or 0)
+    monkeypatch.setattr("eli.licensing.launch_gate.launch_allowed", lambda **k: True)
+    monkeypatch.setattr("eli.utils.log.keep_console_log", lambda *a, **k: first_write.append(os.environ["ELI_DATA_DIR"]))
+    monkeypatch.setattr("eli.core.init_data.bootstrap_once", lambda: None)
+    monkeypatch.setattr("eli.cli.headless.run_headless", lambda: started.append("headless") or 0)
+    for script in ("eli", '"eli-v3"', "eli-cli"):
+        found = re.search(rf'^{re.escape(script)} = "([\w.]+):(\w+)"', block, re.M)
+        assert found, script
+        target = getattr(importlib.import_module(found.group(1)), found.group(2))
+        monkeypatch.setattr(sys, "argv", [script.strip('"'), "--mcp-config"])
+        assert target() == 0 and "eli" in json.loads(capsys.readouterr().out)["mcpServers"]
+        monkeypatch.setattr(sys, "argv", [script.strip('"'), "--headless"])
+        assert target() == 0 and started[-1] == "headless", (script, started)
+    assert "window" not in started
+    assert first_write and set(first_write) == {str(install / "artifacts")}, first_write

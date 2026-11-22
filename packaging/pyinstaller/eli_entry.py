@@ -1,6 +1,6 @@
 """Frozen-app entry point for PyInstaller builds.
 
-The console scripts in pyproject.toml (`eli = eli.gui.app:main`) are used for
+The console scripts in pyproject.toml (`eli = eli.__main__:console_main`) are used for
 source/venv installs; PyInstaller needs a real script file. This wrapper is
 that script; all launch logic stays in eli.gui.app / api.server so the frozen
 build and a source install run identical code.
