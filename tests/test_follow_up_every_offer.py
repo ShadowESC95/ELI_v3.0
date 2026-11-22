@@ -553,6 +553,23 @@ def test_questions_about_elis_memory_still_get_the_report(text, action):
     assert route(text)["action"] == action
 
 
+@pytest.mark.parametrize("disputed", [
+    "Thats not right, there must be an error with your memory database",
+    "that is not right, your memory tables must be broken",
+    "you got that wrong, your memory database must be messed up",
+])
+def test_disputing_the_last_answer_is_not_a_question_about_the_memory_machinery(disputed):
+    """Live: "Thats not right, there must be an error with your memory database" got the memory subsystem's
+    internals. It disputes the last answer; it goes to chat, which re-checks."""
+    from eli.cognition.correction_patterns import is_answer_correction
+    from eli.execution.router_enhanced import route
+    assert is_answer_correction(disputed)
+    assert route(disputed)["action"] != "EXPLAIN_MEMORY_RUNTIME"
+    assert route("how does your memory database work?")["action"] == "EXPLAIN_MEMORY_RUNTIME"
+    for not_a_dispute in ("turn right at the lights", "the right answer is four", "that is right"):
+        assert not is_answer_correction(not_a_dispute)
+
+
 # ── weather for a day ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text,place", [("check the weather for tomorrow", None), ("weather for tomorrow", None),

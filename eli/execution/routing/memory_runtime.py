@@ -59,6 +59,16 @@ def _not_about_the_machinery(text) -> bool:
             or bool(re.search(r"\bhow\s+(?:does|do|did)\s+(?:it|that|this|you)\s+feel\b", said, re.I)))
 
 
+def _not_asking_about_the_memory_machinery(text) -> bool:
+    """What rules out an answer about how the memory works: the remembered content asked for, the
+    machinery not meant, or the last answer disputed. "Thats not right, there must be an error with
+    your memory database" got the subsystem's internals, from both memory-runtime rules."""
+    from eli.cognition.correction_patterns import is_answer_correction
+    raw = str(text or "")
+    return bool(_asks_for_remembered_content(raw.lower()) or _not_about_the_machinery(raw)
+                or is_answer_correction(raw))
+
+
 def _eli_memory_runtime_route_lock_should_trigger(text):
     import re as _re
 
@@ -68,7 +78,7 @@ def _eli_memory_runtime_route_lock_should_trigger(text):
     if not low:
         return False
 
-    if _asks_for_remembered_content(low) or _not_about_the_machinery(text):
+    if _not_asking_about_the_memory_machinery(raw):
         return False
     # "GPU memory", "VRAM temperature": hardware, not the memory subsystem, unless it also names the machinery.
     if _re.search(r"\b(?:gpu|vram|cuda|nvidia|graphics|thermal|temperature|temp)\b", low) and not _re.search(

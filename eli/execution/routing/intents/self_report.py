@@ -93,6 +93,7 @@ from eli.execution.routing._helpers import _mk, _is_wallclock_question, runtime_
 from eli.execution.routing.memory_runtime import (
     _eli_activity_question_is_about_dev_work,
     _eli_memory_runtime_route_lock_should_trigger,
+    _not_asking_about_the_memory_machinery,
 )
 from eli.execution.routing._helpers import (
     _mk,
@@ -342,7 +343,7 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if "memory" in low and re.search(
         r"\b(db paths?|database|sqlite|tables?|functions?|internally|semantic|rag|faiss|fts5|vector(?:ing|s)?|index(?:ing|es)?|hyde|short[- ]?term|long[- ]?term)\b",
         low,
-    ):
+    ) and not _not_asking_about_the_memory_machinery(raw):
         return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime_architecture", allow_chat_without_evidence=False)
 
     if re.search(r"\b(explain your cognition pipeline|cognition pipeline from input to output|input to output.*every step|cognitive pipeline)\b", low):
