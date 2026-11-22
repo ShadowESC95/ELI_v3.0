@@ -1205,12 +1205,12 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                         log.debug(f"[PROACTIVE] World→runtime feedback failed: {_world_loop_err}")
 
                     # Goal autogenesis: turn ELI's own signals into goals. The goal store was always empty because
-                    # create_goal was operator-only. High-value world suggestions and recurring failures become
-                    # proposal_only goals that need approval. Deduped and capped, so safe every tick.
+                    # create_goal was operator-only. Recurring failures, repeated behaviour and findings about its own
+                    # code become proposal_only goals that need approval; a world-model reading names nothing
+                    # observed and makes none. Deduped and capped, so safe every tick.
                     try:
                         from eli.planning.goal_autogenesis import propose_goals_from_signals
                         _new_goals = propose_goals_from_signals(
-                            world_suggestions=_world_suggs,
                             patterns=patterns,
                             improvements=improvements,
                             memory=self.agent_mem or self.user_mem,
