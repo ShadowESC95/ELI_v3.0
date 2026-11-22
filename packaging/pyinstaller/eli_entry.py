@@ -17,6 +17,9 @@ Modes:
                 exit. The Windows installer has a licence pane of its own; the
                 dmg, AppImage and portable zip do not, so this is how the terms
                 stay reachable from every download.
+  --bundle, --bundles, --mcp-server, --mcp-config, --headless, --trust-agent
+                ELI's own commands, run by eli/__main__.py as in a source tree
+                (a bundle beside the window, ELI as another app's MCP server).
   python args   python-compatible passthrough: interpreter switches, then
                 -c CODE, -m MODULE, - (stdin) or a .py script. ELI spawns
                 `sys.executable …` helpers (import smoke tests, sandbox runs of
@@ -1130,12 +1133,20 @@ def _serve() -> int:
     return server_main()
 
 
+_CLI_COMMANDS = ("--bundle", "--bundles", "--mcp-server", "--mcp-config", "--headless", "-H", "--trust-agent")
+
+
 def _mode() -> str:
     argv = sys.argv[1:]
     if "--selftest" in argv:
         return "selftest"
     if "--license" in argv or "--licence" in argv:
         return "license"
+    # ELI's own commands, read by eli/__main__.py as in a source tree: a frozen ELI spawns
+    # `ELI --bundle <id>` (eli/bundles) and tells other apps to run `ELI --mcp-server`
+    # (connection_config), and this entry opened its window for each, which met the single-instance guard.
+    if any(flag in argv for flag in _CLI_COMMANDS):
+        return "cli"
     if "--install-gpu-pack" in argv:
         return "gpu-pack"
     if "--remove-gpu-pack" in argv:
@@ -1173,6 +1184,9 @@ if __name__ == "__main__":
     elif mode == "license":
         from eli.runtime.license_info import print_license
         sys.exit(print_license())
+    elif mode == "cli":
+        from eli.__main__ import main as _cli_main
+        sys.exit(_cli_main())
     elif mode == "gpu-pack":
         import eli_gpu_pack
         sys.exit(eli_gpu_pack.install([a for a in sys.argv[1:] if a != "--install-gpu-pack"]))

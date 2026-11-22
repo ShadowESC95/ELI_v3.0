@@ -95,7 +95,9 @@ constructs the `CognitiveEngine` singleton → loads the GGUF named in `config/s
 A packaged build starts at `packaging/pyinstaller/eli_entry.py`. One window at a time is kept
 by an OS lock on a file in the data folder (`_gui_singleton_or_exit`: `msvcrt` on Windows,
 `fcntl` elsewhere), held for the life of the process and released by the system however the
-process ends; `ELI_ALLOW_MULTI_INSTANCE=1` lifts it.
+process ends; `ELI_ALLOW_MULTI_INSTANCE=1` lifts it. Only the window takes that lock: ELI's own
+commands (`--bundle`, `--mcp-server`, `--headless`, ...) go to `eli/__main__.py` as in a source tree, and a
+python command line ELI hands its own executable (`-c`, `-m`, a `.py` script) runs as python.
 
 ---
 

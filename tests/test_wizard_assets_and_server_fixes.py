@@ -105,3 +105,37 @@ for argv in (["cand.py", "a"], ["-u", "cand.py"], ["-I", "-X", "utf8", "-c", "pa
     missing = subprocess.run([sys.executable, entry, str(tmp_path / "gone.py")], env=env, capture_output=True,
                              text=True, timeout=120)
     assert missing.returncode == 2 and "can't open file" in missing.stderr
+
+
+def test_the_frozen_app_hands_eli_s_own_commands_to_what_the_source_tree_runs_for_them():
+    """A frozen ELI spawns `ELI --bundle <id>` for a bundle beside its window (eli/bundles), and tells
+    other apps to run `ELI --mcp-server` (eli/integrations/mcp/server.connection_config); the entry knew
+    neither, so each opened a second window and met the single-instance guard. Those commands, and
+    --bundles, --mcp-config, --headless and --trust-agent, go to eli/__main__.py as in a source tree."""
+    import json
+    import os
+    import subprocess
+    import sys
+    entry = "packaging/pyinstaller/eli_entry.py"
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    modes = subprocess.run([sys.executable, "-c", r"""
+import importlib.util, sys
+sys.argv = ["ELI"]
+spec = importlib.util.spec_from_file_location("eli_entry", "packaging/pyinstaller/eli_entry.py")
+entry = importlib.util.module_from_spec(spec); spec.loader.exec_module(entry)
+for argv in (["--bundle", "legal"], ["--bundles"], ["--mcp-server"], ["--mcp-config", "--allow-control"],
+             ["--headless"], ["-H"], ["--trust-agent", "agent.py"], [], ["--server"], ["--selftest"]):
+    sys.argv = ["ELI", *argv]
+    print(entry._mode())
+"""], env=env, capture_output=True, text=True, timeout=120)
+    assert modes.returncode == 0, modes.stderr
+    assert modes.stdout.split() == ["cli"] * 7 + ["gui", "server", "selftest"]
+
+    config = subprocess.run([sys.executable, entry, "--mcp-config"], env=env, capture_output=True, text=True,
+                            timeout=120)
+    assert config.returncode == 0, config.stderr[-800:]
+    assert "eli" in json.loads(config.stdout)["mcpServers"]
+    bundle = subprocess.run([sys.executable, entry, "--bundle", "no-such-bundle"], env=env, capture_output=True,
+                            text=True, timeout=120)
+    assert bundle.returncode == 2 and "No bundle 'no-such-bundle'" in bundle.stderr, bundle.stderr[-800:]
+    assert "already running" not in bundle.stdout + bundle.stderr
