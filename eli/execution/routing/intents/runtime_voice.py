@@ -23,6 +23,36 @@ from eli.execution.routing._helpers import (
 log = get_logger(__name__)
 
 
+_VOICE_CLIP_EXT = r"\.(?:wav|mp3|mp4|m4a|ogg|flac|aac|webm)\b"
+
+
+def _voice_clip_args(raw: str) -> dict:
+    """The clip's path and the voice's name in a request to make a voice from a recording: "create a
+    voice called Nova from clip.mp4", "make a voice from ~/Music/take two.wav called Orbit", "clone
+    my voice from rec.wav and call it Atlas".
+
+    The path is quoted, or starts at a path root (~, /, ./, a drive letter) and runs to its
+    extension, spaces and all, or else is the one word that ends in the extension. The name follows
+    called / named / call it / name it (or "as") and ends at the next joining word or the end, read
+    with the path taken out. A greedy pattern took the whole sentence before the clip as its path, and
+    "Nova from" as the voice's name."""
+    out: dict = {}
+    f = (re.search(r"[\"'“‘]([^\"'“”‘’]+?" + _VOICE_CLIP_EXT + r")[\"'”’]", raw, re.I)
+         or re.search(r"(?:(?<=\s)|^)((?:~|\.{1,2}[\\/]|[A-Za-z]:[\\/]|[\\/])[^\"'\n]*?" + _VOICE_CLIP_EXT + r")",
+                      raw, re.I)
+         or re.search(r"([^\s\"'“”‘’]+" + _VOICE_CLIP_EXT + r")", raw, re.I))
+    rest = raw
+    if f:
+        out["file"] = f.group(1).strip()
+        rest = raw[:f.start()] + " " + raw[f.end():]
+    _end = r"(?=\s+(?:from|using|with|out\s+of|based\s+on|via|and|then|please)\b|\s*[,.;:!?]|\s*$)"
+    m = (re.search(r"\b(?:called|named|call\s+it|name\s+it)\s+([A-Za-z0-9][\w'’ -]*?)" + _end, rest, re.I)
+         or re.search(r"\bas\s+([A-Za-z0-9][\w'’ -]*?)" + _end, rest, re.I))
+    if m and m.group(1).strip(" -'’"):
+        out["name"] = m.group(1).strip(" -'’")
+    return out
+
+
 def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(show me the resolved runtime paths|resolved runtime paths|runtime paths for every critical file|critical file you depend on)\b", low):
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_paths_to_chat")
@@ -100,13 +130,8 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
             re.search(r"\.(wav|mp3|mp4|m4a|ogg|flac|aac|webm)\b", low)
             or re.search(r"\b(from|using|out of|with)\b.*\b(recording|audio|clip|sample|file|voice)\b", low)
             or re.search(r"\b(my|this|the)\s+(recording|audio|clip|sample|voice)\b", low)):
-        _m = re.search(r"\b(?:called|named|name it|as)\s+([A-Za-z0-9_ -]{1,40})", raw)
-        _f = re.search(r"([~/\w. -]+\.(?:wav|mp3|mp4|m4a|ogg|flac|aac|webm))\b", raw, re.I)
-        _args = {"query": raw}
-        if _m:
-            _args["name"] = _m.group(1).strip()
-        if _f:
-            _args["file"] = _f.group(1).strip()
+        # read with its quotes on: a quoted name with a space ("my clip.mp4") is one file only while they are there
+        _args = {"query": raw, **_voice_clip_args(raw)}
         return _mk("CREATE_VOICE", _args, 0.9, matched_by="voice.create")
 
     # DESIGN_VOICE — build your own voice from a base + pitch/speed (no audio clip needed).
