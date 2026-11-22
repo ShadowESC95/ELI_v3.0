@@ -222,3 +222,13 @@ def test_the_clause_starts_at_any_sentence_end():
     assert out is not None and out["clause"] == "Fetching the newest copy now"
     out = d("Sure, I can do that. Checking the service now.")
     assert out is not None and out["clause"] == "Checking the service now", "a promise after an offer still counts"
+
+
+def test_a_promise_in_quotation_marks_is_reported_not_made():
+    """Live: ELI explaining an earlier promise ("So I generated a promise ("I'll update it") that had no
+    backend action attached to it") got the note that nothing ran for it."""
+    assert d('So I generated a promise ("I\'ll update it") that had no backend action attached to it.') is None
+    assert d("You said “let me check the news” yesterday.") is None
+    made = d('"Fine," I said. Let me check the news now.')
+    assert made and made["clause"].startswith("Let me check the news")
+

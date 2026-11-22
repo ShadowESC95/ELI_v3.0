@@ -307,6 +307,11 @@ def is_an_offer(clause: str, verb_start: int, verb_end: int) -> bool:
                 or _CAPABILITY_AHEAD.search(clause[:verb_start]))
 
 
+# Text in double quotation marks (straight, curly or guillemets). Single quotes are left out: the
+# apostrophe in "I'll" is the same character.
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|«[^»\n]*»')
+
+
 def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:
     """Return {clause, matched} if `text` promises/fakes an action, else None.
 
@@ -318,10 +323,17 @@ def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:
     if not s:
         return None
     _commit_re, _look_re, _doing_re = _commit_patterns()
-    looked = _look_re.search(s) if _look_re is not None else None
+    # A promise inside quotation marks is reported, not made: "So I generated a promise ("I'll update
+    # it") that had no backend action attached to it" got the note that nothing ran for it.
+    quoted = [(q.start(), q.end()) for q in _QUOTED.finditer(s)]
+
+    def _first(rx):
+        return next((hit for hit in rx.finditer(s) if not any(a <= hit.start() < b for a, b in quoted)), None)
+
+    looked = _first(_look_re) if _look_re is not None else None
     if looked and not _looks_at_something(s, looked.end()):
         looked = None
-    m = _commit_re.search(s) or looked or _doing_re.search(s) or _FAKE_THEATRE_RE.search(s)
+    m = _first(_commit_re) or looked or _first(_doing_re) or _first(_FAKE_THEATRE_RE)
     if not m:
         return None
     # Past or perfect-continuous narration ("I've been checking", "I was searching", "I checked

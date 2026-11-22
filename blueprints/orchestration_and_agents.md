@@ -125,7 +125,8 @@ answer; act on it").
 Three older rules still hold. *One routing per turn*: `engine._route_once` caches the router's
 answer, because routing has an effect (a "yes" spends the offer it confirms). *ELI's own
 sentence is not a command*: `_stream_with_followthrough` (`kernel/stages/generation.py`) runs a promise in a reply only when it is a read
-(`_FOLLOWTHROUGH_READS`) or something the user's message asked for. *A mention with a clock
+(`_FOLLOWTHROUGH_READS`) or something the user's message asked for; a promise inside quotation
+marks is reported, not made (`action_commitment.detect_action_commitment`). *A mention with a clock
 time* that is not on the calendar gets a fixed offer sentence (`_agenda_offer`); a part of the
 day ("tonight") is not offered back as a time.
 
