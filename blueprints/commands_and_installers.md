@@ -270,7 +270,8 @@ ELI.exe --license      # Windows (the Setup.exe also shows it during install)
 ```
 
 The files ship alongside the app too: `LICENSE`, `NOTICE`,
-`THIRD_PARTY_NOTICES.md` (dependency licences, incl. the PySide6 LGPL note) and
+`THIRD_PARTY_NOTICES.md` (dependency licences, incl. the LGPL and GPL notes and where each
+release puts their source: `ELI_v3-<version>-gpl-sources.tar.gz`) and
 `models/MODEL_LICENSES.md` (model and voice terms).
 
 ---

@@ -10,6 +10,7 @@
 #   WoA     : ELI_v3-<v>-windows-arm64-portable.zip (lean, experimental — cross-built on ubuntu)
 #   macOS   : ELI_v3-<v>-macos-arm64.dmg (drag-to-Applications, ad-hoc signed)
 #   Linux   : ELI_v3.0-<v>-x86_64.AppImage + ELI_v3.0-<v>-linux-portable.tar.gz
+#             + ELI_v3-<v>-gpl-sources.tar.gz (source of the GPL packages every build carries)
 #   Source  : eli_v3-<v>.whl + sdist .tar.gz + .deb + windows-portable.zip
 #             + windows-portable-full.zip + wheelhouse.tar.gz + WHEELHOUSE.txt
 # plus SHA256SUMS.txt + RELEASE_NOTES.md.
@@ -626,6 +627,28 @@ jobs:
           mv dist/app_packages/ELI_v3.0-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
+      # GPL-3.0 lets the bundles carry piper-tts (espeak-ng inside it) and the other GPL packages when
+      # their exact source goes with them. This environment installs the extras every build does (and
+      # chatterbox, Linux's own). A source that cannot be fetched fails the release. Beside it,
+      # LGPL_SOURCES.md says where the source of each LGPL package (Qt for Python and the Qt inside it
+      # among them) is, at the version the builds carry; one it cannot find fails it too.
+      - name: Source of the GPL packages the bundles carry (attached to the release)
+        run: |
+          python packaging/gpl_sources.py dist/gpl-sources
+          cat dist/gpl-sources/SOURCES.md
+          cat dist/gpl-sources/LGPL_SOURCES.md
+          # piper-tts compiles espeak-ng in: its source has to be here, fetched or inside piper's sdist
+          # (each listing is read into a variable first: a piped grep -q under pipefail fails when it matches)
+          if ls dist/gpl-sources/piper* >/dev/null 2>&1; then
+            fetched=$(ls dist/gpl-sources)
+            in_piper=$(tar -tzf dist/gpl-sources/piper*.tar.gz 2>/dev/null || true)
+            if ! grep -qi espeak <<<"$fetched" && ! grep -qi "espeak-ng/src/" <<<"$in_piper"; then
+              echo "::error::espeak-ng's source (compiled into piper-tts) is not in the GPL source archive"; exit 1
+            fi
+          fi
+          tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-gpl-sources.tar.gz" -C dist gpl-sources
+          rm -rf dist/gpl-sources
+
       - name: Checksums + GitHub 2 GiB asset-size guard
         run: |
           cd dist
@@ -733,6 +756,14 @@ jobs:
           \`ldd --version\`; docs/CROSS_PLATFORM.md lists which distributions that is).
           On an older system use the linux-portable package, which installs from source.
 
+          Third-party source: the builds carry packages under the GPL (piper-tts with espeak-ng
+          compiled into it, and PyAutoGUI's helpers; THIRD_PARTY_NOTICES.md names them). Their exact
+          source, at the versions these builds carry, is attached here as
+          \`ELI_v3-${V}-gpl-sources.tar.gz\`; the SOURCES.md inside lists each file and where it came from.
+          The packages under the LGPL (Qt for Python and the Qt libraries inside it, zeroconf,
+          python-xlib and the others it names) are not attached: LGPL_SOURCES.md, in the same archive,
+          gives each one's version and the address of that version's source.
+
           Verify: \`sha256sum -c SHA256SUMS.txt\`
           EOF
 
@@ -791,6 +822,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ELI v${{ needs.guard.outputs.version }}
+          # the notes above GitHub's list of changes: they say where the GPL sources are
+          body_path: dist/RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             dist/*.zip
