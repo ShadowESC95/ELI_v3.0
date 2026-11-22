@@ -26,10 +26,14 @@ def test_play_specific_types_into_spotify_when_the_top_result_is_not_it(monkeypa
                         lambda q, timeout=10.0, launch=True, accept=None: False)
     monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_search_type_and_play",
                         lambda q, launch=True: True)
+    # what the player then reports: the song asked for, by its title and artist
+    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_live_track", lambda player="spotify": {
+        "status": "playing", "artist": "Veridian", "title": "Silver Lanterns", "album": ""})
 
     result = ex.play_specific("silver lanterns by veridian", target="spotify")
 
     assert result["ok"] is True and result["played"] is True
+    assert result["response"] == "Playing “Veridian — Silver Lanterns” on Spotify."
 
 
 def test_play_specific_falls_back_to_search_when_no_track_uri_resolves(monkeypatch):

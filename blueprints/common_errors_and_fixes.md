@@ -278,7 +278,13 @@ runs there as a native Wayland window: xdotool/wmctrl cannot see it, so nothing 
 confirm focus, and ELI (rightly) refused to type blind.
 **Fix (in the code):** ELI asks Spotify over MPRIS to open `spotify:search:<song>`, which makes the
 desktop client play its top result with no window focus, then checks the song that started is the
-one asked for. If Spotify's top result is a different song, ELI says what is playing. Typing into
+one asked for. A song named with its artist is judged by both: every word of the title asked for is in
+the track's title, the track's own title (without "(feat. …)" or "- Remastered") says nothing more, and
+the artist is among its artists. When the words start another song (the artist's best-known one, say),
+it is turned down as soon as it starts and the search is made again held to the title and artist with
+Spotify's `track:` and `artist:` filters; if that does not start it either, ELI says which song was
+asked for and what is playing. Where the search plays, a results tab is no longer opened and play
+pressed after it: that only resumed whatever was there, a song paused meanwhile included. Typing into
 the search box is now only tried on X11 or for an XWayland window.
 
 **Albums the same way.** "play <artist>s album <name>" never played: ELI looked the album up on

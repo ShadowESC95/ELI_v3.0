@@ -177,3 +177,44 @@ def test_the_reply_names_what_is_playing_and_never_asks_the_user_to_press_play(m
     text = r["response"].lower()
     assert "coldplay" in text and "press play" not in text
 
+
+# ── the song asked for, by its title and artist ──────────────────────────────────────────────────────
+@pytest.mark.parametrize("title,artist,got_artist,got_title,ok", [
+    ("trouble", "orlo", "Orlo", "Trouble", True),
+    ("trouble", "orlo", "Orlo", "Crack the Bottle", False),      # the artist's best-known song
+    ("evil", "orlo", "Orlo", "Evil Deeds", False),               # a title that holds the words and more
+    ("evil", "orlo", "Orlo", "Evil - Remastered 2011", True),    # what a version adds is not more
+    ("soldiers logic", "orlo", "Orlo", "Soldier's Logic", True),
+    ("north and south", "veridian", "Veridian", "North & South (feat. Red tamsin)", True),
+    ("trouble", "orlo", "Coldplay", "Trouble", False),
+    ("music", "orlo", "Orlo", "Music", True),                    # a title that is a kind word
+])
+def test_a_song_is_judged_by_its_title_and_its_artist(title, artist, got_artist, got_title, ok):
+    assert cp.track_matches(title, artist, {"artist": got_artist, "title": got_title}) is ok
+
+
+_ITS_BEST_KNOWN = {"artist": "Orlo", "title": "Crack the Bottle", "album": "Hits"}
+_TROUBLE = {"artist": "Orlo", "title": "Trouble", "album": "Harbour Years"}
+
+
+def test_a_song_the_words_do_not_find_is_searched_for_by_its_title_and_artist(monkeypatch):
+    """"play trouble by <artist>" played the artist's best-known song: Spotify's top result for the
+    words. It is turned down when it starts and the search is held to the title and the artist."""
+    from eli.execution.effectors import media as ex
+    sp = _Spotify(monkeypatch, {"trouble orlo": _ITS_BEST_KNOWN, "track:trouble artist:orlo": _TROUBLE})
+    out = ex.play_specific("trouble by orlo", "spotify")
+    assert out["played"] is True and out["response"] == "Playing “Orlo — Trouble” on Spotify."
+    assert sp.opened == ["spotify:search:trouble orlo", "spotify:search:track:trouble artist:orlo"]
+
+
+def test_a_song_spotify_cannot_find_is_said_and_nothing_else_is_started(monkeypatch):
+    """When neither search starts it, the reply names the song asked for and what is playing, and the
+    track paused before is not resumed: play was pressed after a results tab, and it undid a pause."""
+    from eli.execution.effectors import media as ex
+    sp = _Spotify(monkeypatch, {"trouble orlo": _ITS_BEST_KNOWN})
+    pressed = []
+    monkeypatch.setattr(cp, "spotify_play", lambda: pressed.append(1) or True)
+    out = ex.play_specific("trouble by orlo", "spotify")
+    assert out["ok"] is False and out["mismatch"] is True
+    assert "Orlo — Crack the Bottle" in out["response"] and "“trouble” by orlo" in out["response"]
+    assert not pressed and all("/" not in u for u in sp.opened)
