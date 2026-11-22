@@ -167,3 +167,30 @@ def test_the_eli_commands_read_every_option_with_this_install_pinned_first(monke
         assert target() == 0 and started[-1] == "headless", (script, started)
     assert "window" not in started
     assert first_write and set(first_write) == {str(install / "artifacts")}, first_write
+
+
+def test_the_window_puts_no_folder_inside_eli_on_the_import_path():
+    """The window's executor bridge put eli/gui/main_window, eli/gui and eli on sys.path, and its common
+    module eli/ as well, so once the window had loaded `import tools` found ELI's own eli/tools and not the
+    project's tools/: the eval runner (tools.eval, which the eval review imports) could not be imported for
+    the rest of the process, and a test run after the bundle chooser's failed the same way."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    probe = subprocess.run([sys.executable, "-c", r"""
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import eli
+from eli.gui.main_window.adapters import ExecutorBridge
+ExecutorBridge(None)
+inside = Path(eli.__file__).resolve().parent
+print("INSIDE", [p for p in sys.path if p and (Path(p).resolve() == inside or inside in Path(p).resolve().parents)])
+import tools.eval.run_eval as run_eval
+print("EVAL", Path(run_eval.__file__).resolve().relative_to(Path(sys.argv[1]).resolve()))
+""", str(root)], cwd=str(root), env=dict(os.environ, QT_QPA_PLATFORM="offscreen"), capture_output=True, text=True,
+        timeout=300)
+    lines = [line for line in probe.stdout.splitlines() if line.startswith(("INSIDE", "EVAL"))]
+    assert lines == ["INSIDE []", f"EVAL {Path('tools', 'eval', 'run_eval.py')}"], (lines, probe.stderr[-1500:])
