@@ -295,6 +295,19 @@ class ConversationMixin:
 
         threading.Thread(target=_watch, daemon=True, name="eli-converse-speech").start()
 
+    def _heard_out(self, stream, cancelled) -> bool:
+        """At the end of a conversation's visible reply, the turn waits until the reply has been
+        heard: the user may still cut it off, and a turn cut off is closed unstored and kept as far
+        as it was heard (_write_cut_off). True when it was cut off or stopped; False with no stream
+        (outside conversation mode)."""
+        if stream is None:
+            return False
+        self._finish_speech(stream)
+        while not stream.wait(timeout=0.1):
+            if cancelled() or stream.stopped:
+                break
+        return bool(cancelled() or stream.stopped)
+
     def _write_cut_off(self) -> None:
         """A reply the user spoke over is kept as far as they heard it, so the next turn knows where
         ELI stopped. Only when its stream was closed early: an ended stream was stored whole by the
@@ -1221,18 +1234,9 @@ class ConversationMixin:
                                 self.is_generating = False
                                 self.status_signal.emit('Send enabled')
                                 self.status_signal.emit('🟢 Ready')
-                                if _speech is not None:
-                                    # The turn ends once the reply has been heard: the user may still
-                                    # cut it off, and a turn cut off is closed here, unstored, and
-                                    # kept as far as it was heard (_write_cut_off).
-                                    self._finish_speech(_speech)
-                                    while not _speech.wait(timeout=0.1):
-                                        if _generation_cancelled() or _speech.stopped:
-                                            break
-                                    if _generation_cancelled() or _speech.stopped:
-                                        _was_cancelled = True
-                                        break
-                                    _speech = None
+                                _was_cancelled, _speech = self._heard_out(_speech, _generation_cancelled), None
+                                if _was_cancelled:
+                                    break
                                 continue
                             full_tokens.append(token)
                             if _conversing and (_speech is None or _speech.stopped) and _conv.active \
