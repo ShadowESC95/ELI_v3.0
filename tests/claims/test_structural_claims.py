@@ -1,11 +1,9 @@
 """CLAIM: the headline structural facts hold — the 14-agent bus, 5 reasoning
-modes, 13 main GUI tabs, 4 SQLite stores, and the load-bearing callables the
-blueprints describe (netguard, evidence-planner, report-pipeline, autonomy ticks,
-grounding gate, etc.) all actually exist and are wired.
+modes, 13 main GUI tabs, 4 SQLite stores — and a few behavioural claims (offline is
+fail-closed, the bootstrap seeds ELI's own databases). The load-bearing functions the
+blueprints describe are tested by what they do, in their own test files.
 """
 from __future__ import annotations
-
-import importlib
 
 import pytest
 
@@ -68,9 +66,6 @@ def test_sqlite_store_present(db):
     source tree, the sandbox under the suite), seeded by the claims bootstrap."""
     from eli.core.paths import db_dir
     assert (db_dir() / db).exists(), f"{db} missing from {db_dir()}"
-
-
-# ── load-bearing callables the blueprints describe ───────────────────────────
 
 
 # ── a few behavioural claims ─────────────────────────────────────────────────
