@@ -358,7 +358,8 @@ def test_what_the_conversation_itself_is_asked(said, kind, value):
 
 
 @pytest.mark.parametrize("said", ["what time is it", "wait until tomorrow to remind me", "talk about cats",
-                                  "use a calculator", "continue the story about the dragon", "be honest"])
+                                  "use a calculator", "continue the story about the dragon", "be honest",
+                                  "let's talk", "talk to me", "switch to firefox"])
 def test_turns_for_eli_are_not_taken_for_controls(said):
     assert conversation.read_control(said, active=True) is None
 
@@ -434,6 +435,7 @@ def test_wait_go_on_and_speaking_over_eli(settings):
     assert out.kind == "turn" and stream.stopped and out.cut_off == "Right, so the short answer"
     assert conv.state == "thinking" and states[:3] == ["listening", "speaking", "paused"]
     assert conversation.cut_off_record(out.cut_off).startswith("Right, so the short answer")
+    assert conv.heard("pause").kind == "turn", "with nothing of ELI's playing, pause is for the music"
     assert conv.heard("stop the conversation").kind == "control" and conv.state == "off"
 
 

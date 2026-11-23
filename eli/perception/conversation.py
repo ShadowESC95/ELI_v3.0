@@ -45,9 +45,11 @@ def _whole(pattern: str) -> re.Pattern:
     return re.compile(_LEAD + pattern + _TAIL, re.I)
 
 
-_START = _whole(r"(?:(?:let'?s|lets)\s+(?:have\s+a\s+)?(?:chat|talk|conversation)|"
+# The start names the conversation itself: "let's talk" or "talk to me" typed into the chat is a
+# message, and turning the microphone on for it would be a surprise.
+_START = _whole(r"(?:(?:let'?s|lets)\s+have\s+a\s+conversation|"
                 r"(?:start|begin|enter|turn\s+on|switch\s+on)\s+(?:a\s+|the\s+)?conversation(?:\s+mode)?|"
-                r"conversation\s+mode(?:\s+on)?|talk\s+with\s+me|talk\s+to\s+me)")
+                r"conversation\s+mode(?:\s+on)?)")
 _STOP = _whole(r"(?:(?:stop|end|exit|leave|quit|turn\s+off|switch\s+off|close)\s+(?:the\s+)?conversation(?:\s+mode)?|"
                r"conversation\s+mode\s+off|that'?s\s+all(?:\s+for\s+now)?|goodbye|bye(?:\s+for\s+now)?)")
 _PAUSE = _whole(r"(?:wait|hold\s+on|hang\s+on|pause|one\s+(?:sec|second|moment|minute)|"
@@ -366,6 +368,8 @@ class Conversation:
         """What a thing said (or typed) comes to."""
         with self._lock:
             control = read_control(text, active=self.active)
+            if control is not None and control.kind in ("pause", "resume", "hush") and self.stream is None:
+                control = None          # nothing of ELI's to pause: "pause", "stop" are for the music
             barged, self._barged = getattr(self, "_barged", False), False
             if control is None:
                 if not self.active:
