@@ -8,7 +8,7 @@
 
 ## What the wizard installs (core)
 
-Env + llama-cpp (CPU/CUDA/Vulkan/Metal by hardware) + databases + **nomic** + **Piper/Whisper** + starter **chat GGUF**. Those stages **hard-fail** until present. Desktop shortcuts where supported. OS extras (mpv, OCR, …) are best-effort.
+Env + llama-cpp (CPU/CUDA/Vulkan/Metal by hardware) + databases + **nomic** + **Kokoro/Whisper** + starter **chat GGUF**. Those stages **hard-fail** until present. Desktop shortcuts where supported. OS extras (mpv, OCR, …) are best-effort.
 
 ## Pick a package
 

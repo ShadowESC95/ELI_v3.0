@@ -18,11 +18,11 @@ produces on the Release page:
 | `ELI_v3-<v>-macos-arm64.dmg` | macOS Apple Silicon — drag ELI.app to Applications |
 | `ELI_v3-<v>-x86_64.AppImage` | Linux — `chmod +x` and run (needs glibc 2.39 or newer; needs libfuse2, or `--appimage-extract-and-run`) |
 | `ELI_v3.0-<v>-linux-portable.tar.gz` | classic source tarball incl. voices (previous-release format) |
-| `ELI_v3-<v>-gpl-sources.tar.gz` | the exact source of the GPL packages the builds carry (piper-tts with espeak-ng, PyAutoGUI's helpers), listed in its `SOURCES.md`, and `LGPL_SOURCES.md` beside it: each LGPL package the builds carry (Qt for Python and the Qt inside it, zeroconf, python-xlib, ...), its version and the address of that version's source (`packaging/gpl_sources.py`) |
+| `ELI_v3-<v>-gpl-sources.tar.gz` | the exact source of the GPL packages the builds carry (PyAutoGUI's helpers; `SOURCES.md` says so when there is none), listed in its `SOURCES.md`, and `LGPL_SOURCES.md` beside it: each LGPL package the builds carry (Qt for Python and the Qt inside it, zeroconf, python-xlib, ...), its version and the address of that version's source (`packaging/gpl_sources.py`) |
 | `SHA256SUMS.txt` | checksums for all of the above |
 
-All frozen bundles include the full Piper voice set (pulled at build time from
-the project's `local-assets-v2.1` release) and a second `ELI-Server`
+All frozen bundles include the Kokoro voice (fetched at build time, pinned and
+checksum-checked, by `python -m eli.runtime.voice_assets --kokoro-to tts_kokoro`) and a second `ELI-Server`
 executable (console) for the phone/web server. GGUF chat/vision/image model
 weights remain first-run downloads into the per-user `ELI_v3` root.
 
@@ -72,8 +72,8 @@ system.
 
 * **GGUF models, embeddings, diffusion weights** — up to 100 GB; the app
   downloads what the user picks on first run.
-* **Piper voices** — flagged `license_review_required` in
-  `packaging/runtime_asset_manifest.json`; downloaded at runtime.
+* **The GPU voice (Qwen3-TTS)** — GPU-bound (PyTorch with CUDA, 2.5-4.5 GB of weights);
+  installed with the `voice-gpu` extra on a GPU machine, weights fetched on first use.
 * **PyQt** — GPL; the frozen bundle is PySide6-only (excluded in `ELI.spec`).
 * **Everything ELI needs to run its features is bundled.** Voice input and output, the
   window, the server, documents, vision, web search, wake words, the device drivers and

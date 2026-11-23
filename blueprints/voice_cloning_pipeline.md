@@ -2,6 +2,13 @@
 
 > **Updated for 3.0.128.** Character presets (ffmpeg) vs XTTS zero-shot cloning;
 > see also `blueprints/perception.md` for mic auto-detect (v2.3.44+).
+>
+> **Since 3.0.172 (the Kokoro voice):** the presets are a Kokoro base voice plus the effect chain,
+> and a cloned voice (`clone:<name>`) is spoken first by **Qwen3-TTS** (Apache-2.0, Base model, from
+> the reference clip and, when given, its transcript) on a GPU with room for it beside the language
+> model (`eli/perception/tts_qwen3.py`, the `voice-gpu` extra), then Chatterbox, then XTTS-v2. When
+> none can speak it the Kokoro default voice speaks, visibly. The dated sections below record the
+> XTTS work as it was done; "Piper" there is the earlier default voice.
 
 How ELI turns a short audio/video clip of *any* voice — a character, an actor, a
 friend — into a usable ELI voice. Covers the full path from a dropped-in file to
@@ -16,7 +23,7 @@ trade off very differently:
 | | Character presets (`voice_fx.py`) | Voice cloning (`tts_xtts.py`) |
 |---|---|---|
 | Built-in styles | calm, robotic, energetic, synthetic, refined | none — always from *your* clip |
-| How it works | base Piper voice + an ffmpeg `-af` effect chain (pitch/speed/filters) | Coqui XTTS-v2 zero-shot cloning from a ~6–20s reference clip |
+| How it works | base Kokoro voice + an ffmpeg `-af` effect chain (pitch/speed/filters) | Qwen3-TTS (GPU) zero-shot cloning from a ~6–20s reference clip; Chatterbox, then XTTS-v2, without it |
 | Fidelity | an approximation / vibe | reproduces the actual voice characteristics |
 | Cost | free, instant, always available | opt-in ~1.8GB neural model, GPU preferred |
 | Covers characters with no preset (Cartman, Vader, …) | no | yes |

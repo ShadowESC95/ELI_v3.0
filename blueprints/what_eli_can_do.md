@@ -153,18 +153,15 @@ accessibility capability.
 Always-listening with a wake word; it **ducks your media volume** to hear you,
 **waits for incomplete commands** to finish, **ignores its own spoken output**,
 and learns a **per-user voice profile**. Dictation, transcription, and a spoken
-voice (Piper TTS) that never voices garbled fragments.
+voice (Kokoro TTS; Qwen3-TTS on a GPU) that never voices garbled fragments.
 
 ### 🔊 Voices — accents, characters & your own *(new, 2.1.23)*
-ELI ships with a set of voices and can fetch more from the upstream Piper library (about 166 voices across some 45
-languages at the time of writing, including US, British, Scottish, Northern and Southern
-English). The list is read from upstream, so the exact number changes.
-Do it by voice or text — *"what voices do you have"*, *"download a British voice"*,
-*"use the alan voice"* — or open **Settings ▸ Runtime ▸ "VOICE / TTS" > "Get more voices /
-accents..."**; either way it downloads (checksum-verified) and becomes selectable
-straight away. A handful of voices carry non-commercial licences, so ELI doesn't
-bundle them — the list says so plainly and still lets you fetch them for personal use.
-**Character voices** — calm, robotic, energetic, synthetic, and refined — are **generic style presets** built as a redistributable Piper base voice plus a real-time ffmpeg effect chain (no extra model). They are **not** impersonations of movie or TV characters (HAL, JARVIS, Rick, TARS, etc.) — those cannot be bundled in a public release. Pick a style from the voice selector (`Style: Robotic assistant`, …), or **create your own** (`char:<name>`) by choosing a base voice and tuning pitch / speed / effects. For a close match to a specific timbre you already have rights to use, **voice cloning** (`clone:<name>`) reproduces from **your** short audio sample via Coqui XTTS-v2 — an opt-in extra (`pip install "eli-v2.0[clone]"`, ~1.8 GB model downloaded on first use); without it, a cloned voice falls back to a normal Piper voice rather than going silent. Persona tone (*"be funnier"*, *"respond as a terse engineer"*) changes **wording**, not the speaker timbre.
+ELI's voice is Kokoro: 28 voices, American and British English, female and male, all Apache-2.0
+and all fetched (checksum-verified) with the voice. On a GPU with room for it, Qwen3-TTS adds a
+more human voice in ten languages and voice cloning.
+Do it by voice or text — *"what voices do you have"*, *"use a British voice"*,
+*"use the emma voice"* — or open **Settings ▸ Runtime ▸ "VOICE / TTS" > "Voice library..."**.
+**Character voices** — calm, robotic, energetic, synthetic, and refined — are **generic style presets** built as a Kokoro base voice plus a real-time ffmpeg effect chain (no extra model). They are **not** impersonations of movie or TV characters (HAL, JARVIS, Rick, TARS, etc.) — those cannot be bundled in a public release. Pick a style from the voice selector (`Style: Robotic assistant`, …), or **create your own** (`char:<name>`) by choosing a base voice and tuning pitch / speed / effects. For a close match to a specific timbre you already have rights to use, **voice cloning** (`clone:<name>`) reproduces from **your** short audio sample via Qwen3-TTS on a GPU (the `voice-gpu` extra, `pip install -e ".[voice-gpu]"`; its weights download on first use); without it, a cloned voice falls back to ELI's normal voice, and says so, rather than going silent. Persona tone (*"be funnier"*, *"respond as a terse engineer"*) changes **wording**, not the speaker timbre.
 
 ### 👁️ See & understand
 Local vision-language models describe any image or your live screen; OCR pulls

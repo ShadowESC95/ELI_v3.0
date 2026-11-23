@@ -242,8 +242,10 @@ text, and moves and clicks the mouse.
 ### Voice, hands-free
 Always-listening with a wake word **you can train** — and that hears you over background music. It
 ducks your media to listen, waits for an unfinished command to complete, ignores its own spoken
-output, and builds a per-user voice profile. Includes dictation, audio transcription, and a Piper
-text-to-speech voice that never voices garbled fragments. A separate "train my voice" session learns
+output, and builds a per-user voice profile. Includes dictation, audio transcription, and a Kokoro
+text-to-speech voice (28 voices, American and British English, on the CPU of any machine; on a GPU
+with room for it, the more human Qwen3-TTS, which also clones a voice from your recording) that never
+voices garbled fragments. A separate "train my voice" session learns
 your pitch, energy, and tone so its delivery adapts to how you sound.
 
 ### Vision and screen understanding
@@ -365,8 +367,8 @@ python -m eli.core.model_download --auto      # one best-fit for your VRAM
 You can also drop **any `.gguf`** into `models/`, or point ELI at your own catalog
 (`ELI_MODEL_CATALOG`). The tiny **embedder** (memory/RAG) installs automatically to
 `models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf` (~80 MiB); vision is an optional extra.
-Default TTS is **`en_US-amy-medium`** (Piper + whisper STT, auto-fetched on install).
-Asset restore skips `en_US-ryan-*`, `en_US-lessac-*`, and `en_GB-cori-high` — see
+Default TTS is Kokoro's **`af_heart`** (Kokoro-82M + whisper STT, fetched pinned and checksum-checked
+on install or first use; the release builds carry the voice) — see
 **[models/MODEL_LICENSES.md](models/MODEL_LICENSES.md)**. Want ELI to *speak in its own voice*
 out of the box? Fine-tune your own model — see **[`docs/TRAINING_YOUR_OWN_MODEL.md`](docs/TRAINING_YOUR_OWN_MODEL.md)**.
 
@@ -391,7 +393,7 @@ sidebar, and lets you recolour the chat to taste.
   renders **markdown + code** (with copy), keeps **multiple sessions/history**, and has **stop** and
   **regenerate**. Plus **"Talk to ELI"** voice: tap the mic to speak (your phone's audio is transcribed
   by ELI's *local* whisper model), and tick **Speak replies** to have answers read back in ELI's *local*
-  Piper voice — no cloud STT/TTS, the audio never leaves your machine.
+  voice — no cloud STT/TTS, the audio never leaves your machine.
 - **Commands** — a searchable catalogue of every documented action (with descriptions and example
   phrases). Tap a phrase to drop it into the chat box.
 - **Home** — ELI's **own** device server (see below): **find** devices on your network, group them into

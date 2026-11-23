@@ -161,16 +161,15 @@ again.
 
 ---
 
-## Voice is silent although a `piper` program is installed
+## Voice is silent: the Kokoro voice did not load
 
-**Symptom:** no speech, and the log shows `piper failed rc=1` or a traceback from a `piper`
-outside ELI's folder.
-**Cause:** more than one program is called `piper`. Some Linux distributions ship an unrelated
-one that configures gaming mice, and a `piper` installed for a Python that has since been
-removed still sits on PATH. ELI used to take the first one it found by name.
-**Fix (this version):** ELI uses the Piper that was installed with it, and tries any other only
-if it starts and is the speech engine. Nothing to do. `ELI_PIPER_BINARY=/path/to/piper` still
-forces a particular one.
+**Symptom:** no speech; the log says `the Kokoro voice did not load: ... its files are not on this
+machine` or a download error, and the speech diagnostics show `Kokoro files: not fetched yet`.
+**Cause:** a source install fetches the voice's files (about 340 MB, pinned and checksum-checked)
+the first time ELI speaks, and the machine was offline or the Net switch was off. (The release
+builds carry them.)
+**Fix:** fetch them once while online: `.venv/bin/python -m eli.runtime.voice_assets`. After that
+ELI speaks offline. A file that does not match its checksum is refused and fetched again.
 
 ---
 
@@ -204,7 +203,7 @@ Close the extra window; upgrade to the current release.
 
 ---
 
-## Setup wizard: nomic / Piper “won’t download”
+## Setup wizard: nomic / the voice “won’t download”
 
 **Symptom:** Chat model downloads, but embedder/voice stay missing.
 **Cause:** Older wizard called `download_aux(required_only=False)` and ignored failures; offline-by-default blocked FirstBoot prefetch.
@@ -956,7 +955,7 @@ device's own rate and played there.
 
 ## The voice reported usage to Microsoft
 
-**Cause:** Piper, which speaks ELI's replies, runs on onnxruntime 1.30, and onnxruntime sends usage
+**Cause:** the voice (Piper then, Kokoro now) runs on onnxruntime, and onnxruntime 1.30 sends usage
 telemetry to Microsoft from native code that the network guard cannot see. Every time ELI spoke,
 it queued events in `~/.cache/Microsoft/DeveloperTools/.onnxruntime`.
 

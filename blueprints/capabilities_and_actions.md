@@ -118,17 +118,17 @@ evidence-planner first (real code/web/memory analysis) before synthesising.
 | `DICTATE` | Start/stop dictation into the active field | “start dictation” · “stop dictating” | Core |
 | `TRANSCRIBE` | Transcribe an audio file | “transcribe audio.wav” | Core |
 | `SPEAK` | Speak text aloud (TTS) | “say good morning” | Plugin |
-| `LIST_VOICES` | List installed voices and what's downloadable (166 across 45 languages) | “what voices do you have” · “list voices” · “which accents can I get” | Core |
-| `DOWNLOAD_VOICE` | Download a voice/accent from the Piper library and switch to it | “download a British voice” · “get me a Scottish accent” · “install en_US-amy-medium” | Core |
+| `LIST_VOICES` | List ELI's voices (28 Kokoro voices, American and British English) and which are on this machine | “what voices do you have” · “list voices” · “which accents can I get” | Core |
+| `DOWNLOAD_VOICE` | Fetch one of ELI's Kokoro voices (American or British English) and switch to it | “download a British voice” · “get me a female British voice” · “install bf_emma” | Core |
 | `SET_VOICE` | Switch the active TTS voice/accent (distinct from persona tone) | “use the alan voice” · “switch your voice to amy” · “use the robotic style voice” · “use the natural voice” | Core |
 | `CREATE_VOICE` | Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone) | “create a voice called Nova from clip.mp4” · “make an ELI voice from recording.wav” | Core |
 | `LISTEN_FOR_COMMAND` | Start listening for a voice command | “listen” / the wake word “computer” | Core |
 | `DESIGN_VOICE` | Build a custom style voice from a base voice with pitch, speed and effects | “design a voice called Nova, deep and slow” · “make a custom voice named Nova” | Core |
 | `WAKE_SET` | Set your own wake word (any phrase); ELI persists it and trains the detector on it | “change the wake word to athena” · “set my wake word to atlas” | Core |
-| `WAKE_TRAIN` | Train the local, self-supervised wake-word model (Piper-synth + noise/music augmentation; robust over background music) | “train the wake word” | Core |
+| `WAKE_TRAIN` | Train the local, self-supervised wake-word model (ELI's own voices + noise/music augmentation; robust over background music) | “train the wake word” | Core |
 | `WAKE_ENROLL` | Record your voice saying the wake word and retrain (personalisation, over music) | “enroll my wake word” | Core |
 | `TRAIN_VOICE` | Learn your voice + tone — pitch/energy/rate, happy/angry/excited, and question-vs-statement; ELI then adapts its delivery to how you sound | “train my voice” · “learn how I speak” | Core |
-| `STT_DIAGNOSTICS` | Mic/STT/TTS diagnostics (Whisper, wake word, ducking, Piper) | “run voice diagnostics” · “voice diagnostics” · “check the microphone” · “stt diagnostics” | Core |
+| `STT_DIAGNOSTICS` | Mic/STT/TTS diagnostics (Whisper, wake word, ducking, the voice engine) | “run voice diagnostics” · “voice diagnostics” · “check the microphone” · “stt diagnostics” | Core |
 
 ## Files & notes
 

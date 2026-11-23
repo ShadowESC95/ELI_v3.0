@@ -62,7 +62,7 @@ inspected.
   injection guard, SQL identifier validation, agent trust registry, vetted-script
   approach.
 - **[perception.md](perception.md)** — local vision (hot-swap + co-resident),
-  STT (+ output ducking), TTS (Piper/espeak), cross-platform OS control.
+  STT (+ output ducking), TTS (Kokoro; Qwen3-TTS on a GPU), cross-platform OS control.
 - **[inference_and_hardware.md](inference_and_hardware.md)** — model-agnostic
   GGUF inference + broker + lock, free-VRAM-aware hardware profiling, adaptive
   boot, settings, paths.

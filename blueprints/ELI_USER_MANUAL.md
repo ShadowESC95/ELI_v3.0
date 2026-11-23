@@ -172,7 +172,7 @@ flowchart TD
 ### What arrives on first launch
 | Asset | When | Size |
 |---|---|---|
-| **Piper voices** (speech out) | already inside the installer | — |
+| **The Kokoro voice** (speech out) | already inside the installer (a source install fetches it on first use) | ~340 MiB |
 | **Nomic embedder** (memory/recall) | fetched automatically | ~80 MiB |
 | **Whisper** (speech in) | fetched on first voice use | ~460 MiB |
 | **GPU engine** (optional) | if you accept the GPU offer | ~90 MiB (AMD) · ~1–2 GiB (NVIDIA) |
@@ -575,19 +575,18 @@ flowchart LR
 - **Dictation:** "start dictation" / "stop dictating" — speak and ELI types into the active field.
 - **Transcribe a recording:** "transcribe audio.wav"
 - **ELI speaking back:** "say good morning"
-- **A human-like voice:** at the **startup model picker** (before ELI loads its model) pick
-  **Voice engine → "Natural neural (XTTS-v2)"** for an expressive, human-sounding voice — or say
-  *"use the natural voice"* any time. It needs a one-time `pip install "eli-v3[natural]"`
-  (downloads ~1.8 GB on first use) and a reasonable GPU; on a lighter machine leave it on **Piper**,
-  which is fast and now noticeably more natural (it pauses on full stops and lifts on questions).
+- **A more human voice:** ELI's voice is Kokoro on every machine. On a computer with an NVIDIA GPU,
+  `pip install -e ".[voice-gpu]"` adds **Qwen3-TTS**: at the **startup model picker** (before ELI
+  loads its model) leave **Voice engine** on **Automatic** and ELI uses it wherever the GPU has room
+  for it beside the model (it fetches 2.5 to 4.5 GB on first use), or pick **"Natural neural
+  (Qwen3-TTS)"**; or say *"use the natural voice"* any time. Pick **Kokoro** to keep all of the GPU
+  for the model. When the GPU voice cannot run, ELI speaks with Kokoro and Settings says so.
 - **Change ELI's voice:** the voice dropdown next to the chat box, **Settings ▸ Runtime ▸ "VOICE / TTS"**, or
   just ask — *"use the alan voice"*, *"switch your voice to amy"*, *"use a natural male voice"*.
-- **Get more voices and accents:** ask ELI directly — *"what voices do you have"*, *"download a
-  British voice"*, *"get me a Scottish accent"* — or use **Settings ▸ Runtime ▸ "VOICE / TTS" > "Get more
-  voices / accents..."**. Either way, ELI can download from a library of **166 voices across 45
-  languages** — 38 of them English (US, British, Scottish, Northern and Southern English). Each is
-  verified, installed, and selectable immediately. A few voices are marked *personal use only*:
-  their licences don't allow ELI to bundle them, but you can still download them yourself.
+- **ELI's voices:** ask ELI directly — *"what voices do you have"*, *"use a British male voice"*,
+  *"use the emma voice"* — or use **Settings ▸ Runtime ▸ "VOICE / TTS" > "Voice library..."**. ELI has
+  **28 voices, American and British English**, female and male, each graded by its makers; all come with
+  the voice and are selectable immediately. (Other languages are spoken by the GPU voice.)
 - **Character voices:** choose `char:calm`, `char:robotic`, `char:energetic`, `char:synthetic`, or `char:refined`
   from the same dropdown — each is a real voice plus a live effect chain. You can make your own,
   and downloading a character's "ideal base" voice (flagged in the voice library) sharpens it.

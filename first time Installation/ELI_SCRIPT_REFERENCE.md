@@ -17,7 +17,7 @@
 | Frozen Windows | `ELI-Setup-*.exe` or zip `ELI.exe` |
 | Aliases | `install_eli.sh`, `eli_one_click_setup.sh` → redirect only |
 
-**Wizard core (hard-fail):** env, llama, DB, nomic, Piper/Whisper, chat GGUF.  
+**Wizard core (hard-fail):** env, llama, DB, nomic, Kokoro/Whisper, chat GGUF.  
 **Best-effort:** OS tools (mpv, tesseract, …).  
 **Policy:** `eli.setup.hardware_policy` — GPU on NVIDIA/AMD/Arc/Metal; CPU on Iris Xe / ≤8 GB / no dGPU.
 - **Shell env fix** (`scripts/fix_eli_shell_env.sh`): clears stale `alias eli=` / `ELI_PROJECT_ROOT` when multiple checkouts coexist; wired from `install.sh` post-install.
@@ -580,7 +580,7 @@ Install-time GGUF catalog downloader. `--list`, `--auto`, `--choose`, `--aux` (e
 
 ### `python -m eli.runtime.voice_assets`
 
-Fetches faster-whisper + Piper voice weights; idempotent; netguard-gated.
+Fetches faster-whisper + the Kokoro voice's files (pinned, checksum-checked); `--kokoro-to DIR` fetches only Kokoro's into DIR (the release workflow's bundle step); idempotent; netguard-gated.
 
 ### Windows companion flow
 
@@ -782,7 +782,7 @@ The `eli/` package contains **452 Python modules** across **26 subpackages** (ex
 - `gui/widgets/__init__.py` — ELI v3.0 package marker.
 - `gui/widgets/eli_face.py` — ELI's animated face — a procedural 2D face that shows the tone_adaptor's emotion.
 - `gui/widgets/ollama_model_selector.py` — Ollama model selector widget for ELI GUI.
-- `gui/widgets/voice_downloader.py` — Voice library browser — acquire additional Piper voices, accents and tones.
+- `gui/widgets/voice_downloader.py` — Voice library browser — ELI's Kokoro voices, by accent, gender and grade.
 
 ### `integrations/` (18 modules)
 
@@ -1273,7 +1273,7 @@ Symptoms gathered from installer logic, startup repair paths, and field reports.
 
 ### Voice / phone mic not working on web server
 
-**Cause:** Missing whisper/piper weights; HTTP without HTTPS on LAN.  
+**Cause:** Missing whisper or Kokoro files; HTTP without HTTPS on LAN.  
 **Fix:** `python -m eli.runtime.voice_assets`; launch with `./scripts/eli_serve.sh --lan --https`.
 
 ### AppImage first launch fails

@@ -281,7 +281,7 @@ A good 60-second clip is worth more than everything else in this document combin
 > **What it actually does — not just chat:**
 > - Operates the desktop — opens/closes/focuses apps, tiles windows, types, clicks, controls media (Spotify/YouTube), clipboard, screenshots
 > - Sees your screen — local vision model + OCR: "what's on my screen?", describe images, summarize PDFs/CSVs
-> - Voice — your own wake word, dictation (faster-whisper), TTS (Piper)
+> - Voice — your own wake word, dictation (faster-whisper), TTS (Kokoro; Qwen3-TTS on a GPU)
 > - Optional webcam gaze control — click where your eyes rest
 > - Persistent memory — SQLite + a FAISS vector index + a knowledge graph; builds a private profile of you across sessions; learns routines and offers to automate them
 > - Coding agent — plan -> verify -> repair, fixes bugs in files, examines a codebase
@@ -323,7 +323,7 @@ A good 60-second clip is worth more than everything else in this document combin
 > VRAM (runs on 8 GB, scales to multi-GPU). I run it on [YOUR MODEL].
 >
 > Beyond chat it acts on the machine: desktop control (apps, windows, input, media, clipboard,
-> screenshots), screen reading via a local vision model + OCR, voice in/out (faster-whisper + Piper)
+> screenshots), screen reading via a local vision model + OCR, voice in/out (faster-whisper + Kokoro)
 > with a configurable wake word, optional webcam gaze control, persistent memory (SQLite + FAISS + a
 > knowledge graph) that builds a profile of you across sessions, a coding agent (plan -> verify ->
 > repair), self-patching of its own source with rollback, LoRA fine-tuning on your own conversation

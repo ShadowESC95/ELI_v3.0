@@ -55,7 +55,7 @@ Every release ships the platform assets below plus `SHA256SUMS.txt`.
   `eli-mkxi`; apt removes that one and installs `eli-v3` in its place (`dpkg -i` alone stops at it).
   Your data in `~/.local/share/ELI_v3` stays as it is.
 - **Linux: the AppImage needs glibc 2.39 or newer** (`ldd --version`). That is Ubuntu 24.04+, Debian 13+, Fedora 40+, Linux Mint 22+, Pop!_OS 24.04+, RHEL / AlmaLinux / Rocky 10+, openSUSE Leap 16+ and Tumbleweed, Arch. On Ubuntu 22.04, Debian 12, Mint 21 or RHEL 9 it does not start and says so; use **linux-portable.tar.gz** there, which installs from source against the system's own libraries.
-- Frozen builds bundle **nomic** + **Piper voice weights**; Windows TTS still needs a Piper **CLI** on PATH or under `tts_piper/` (weights alone are not enough).
+- Frozen builds bundle **nomic** + **the Kokoro voice** (`tts_kokoro/`, fetched pinned and checksum-checked at build time); it speaks on every OS with nothing else installed.
 - **No download bundles a chat model.** First launch / wizard fetches one.
 - Windows: desktop shortcut is **ELI only** (Server is Start Menu). A second start exits: the packaged app keeps one window at a time with a lock the system holds, released when the app ends, a crash included.
 
@@ -161,7 +161,8 @@ only matters when those don't match the user's CUDA or a source build is require
    An install that ends with errors exits non-zero.
 8. Fetches **`nomic-embed-text-v1.5.Q4_K_M.gguf`** → `models/embeddings/` (~80 MiB,
    required for memory/RAG) via `python -m eli.core.model_download --aux`.
-9. Fetches **voice weights**: Piper `en_US-amy-medium` + faster-whisper `small.en` via
+9. Fetches **voice weights**: the Kokoro voice's files (model, 28 English voices, spaCy's tagger,
+   the unknown-word model; pinned, checksum-checked) + faster-whisper `small.en` via
    `python -m eli.runtime.voice_assets` (idempotent; skipped if already present).
 10. Optionally downloads a **chat GGUF** (wizard / `--model=` / `--auto`).
 11. Prints how to launch + how to add more models.
@@ -172,11 +173,11 @@ only matters when those don't match the user's CUDA or a source build is require
 |---|---|---|---|
 | **Embedder** (required) | `models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf` | ~80 MiB | `install.sh` / wizard / `--aux` |
 | **Chat model** (pick one+) | `models/*.gguf` | 0.6–8+ GiB | Wizard / `model_download` / asset pack |
-| **Voice** (default amy) | `models/tts/piper/` + `tts_piper/piper/` | ~60 MiB Piper + ~464 MiB whisper | `voice_assets` / asset pack |
+| **Voice** (default af_heart) | `models/tts/kokoro/` (release builds: `tts_kokoro/` in the bundle) | ~340 MiB Kokoro + ~464 MiB whisper | `voice_assets` (install, first use) |
 
-GitHub Release tag **`local-assets-v3.0`** mirrors embedder + starter chat GGUFs +
-cleared Piper voices. Restore: `./RUN_ELI.sh --with-github-assets`. Voices excluded
-from auto-restore: ryan, lessac, cori — see `models/MODEL_LICENSES.md`.
+GitHub Release tag **`local-assets-v3.0`** mirrors embedder + starter chat GGUFs.
+Restore: `./RUN_ELI.sh --with-github-assets`. The voice comes from its own pinned upstream,
+never from that release — see `models/MODEL_LICENSES.md`.
 
 ## Flags
 - `--cpu-only` — no CUDA (CPU torch + CPU llama-cpp).

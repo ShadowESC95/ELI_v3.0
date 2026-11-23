@@ -181,8 +181,8 @@ families are grouped below so the real surface is visible.
 | `DICTATE`, `TRANSCRIBE` | Dictation / transcribe audio (faster-whisper). |
 | `LISTEN_FOR_COMMAND` | One-shot listen. |
 | `STT_DIAGNOSTICS`, `VOICE_DIAGNOSTICS` | Diagnose the STT/voice pipeline (mic, ducking, wake gate). |
-| `SAY` / `SPEAK` *(plugin: tts)* | Speak text (Piper TTS). |
-| `LIST_VOICES`, `SET_VOICE`, `DOWNLOAD_VOICE` | List installed and downloadable voices / switch the TTS voice / download one from the Piper library. |
+| `SAY` / `SPEAK` *(plugin: tts)* | Speak text (Kokoro; Qwen3-TTS on a GPU). |
+| `LIST_VOICES`, `SET_VOICE`, `DOWNLOAD_VOICE` | List ELI's voices / switch the TTS voice / fetch one of the Kokoro voices. |
 | `CREATE_VOICE`, `DESIGN_VOICE` | Make a voice from a recording (XTTS-v2 clone) / build a style voice from a base voice with pitch, speed and effects. |
 | `WAKE_SET`, `WAKE_TRAIN`, `WAKE_ENROLL`, `TRAIN_VOICE` | Set the wake word / train the local wake-word model / record the user saying it and retrain / learn the user's voice and tone. |
 | `SPEAKER_ENROLL`, `SPEAKER_STATUS`, `LIST_SPEAKERS` | Speaker identification for shared machines (`perception/speaker_id.py`): enrol a speaker, status, list. |
@@ -431,7 +431,10 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | `audio_stt.py` | 2869 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking (also at the onset of speech over ELI's media), the mic read without a break, per-user voice profile bias learnt from accepted utterances. |
 | `near_speech.py` | 310 | Speech at the mic that the machine's own output does not explain: the default sink's monitor as reference, the music's share learnt per band, onsets of the owner's speech over ELI's music. |
 | `vision.py` | 726 | Local GGUF VL (Moondream fast / primary), hot-swap with text model, CPU-pinned CLIP, OCR. |
-| `tts_router.py` | 1498 | Piper/espeak TTS, voice selection, unspeakable-fragment guard; plays through the sound server (never a card it holds), at the device's own rate when it refuses the voice's. |
+| `tts_router.py` | 1234 | Voice router (Kokoro / Qwen3-TTS / system voice), voice selection, sentence-ahead rendering, unspeakable-fragment guard; plays through the sound server (never a card it holds), at the device's own rate when it refuses the voice's. |
+| `tts_kokoro.py` | 444 | Kokoro-82M on the CPU: misaki phonemes without espeak-ng, the unknown-word guess, the 28 English voices. |
+| `tts_qwen3.py` | 294 | Qwen3-TTS natural voices and cloning, on a GPU with room for it. |
+| `gpu_room.py` | 86 | Room on a GPU for a support model beside the language model. |
 | `audio_samples.py` | 74 | A sound file as one channel of float32 samples at the rate a consumer needs (speech input, playback, the wake word, the voice profile): PCM WAV read with the standard library, other formats with soundfile. |
 | `os_controller.py` | 1110 | Screenshot/volume/keys/mouse/clipboard + `gaze_click`. |
 | `screen_locator.py` | 497 | OCR (tesseract) → locate a named UI element on screen. |
@@ -834,7 +837,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `tabs/training_tab.py` | 841 | ELI v3.0 — Labs ▸ Training. The GUI half of the LoRA pipeline. |
 | `widgets/eli_face.py` | 230 | ELI's animated face — a procedural 2D face that shows the tone_adaptor's emotion. |
 | `widgets/ollama_model_selector.py` | 509 | Ollama model selector widget for ELI GUI. |
-| `widgets/voice_downloader.py` | 282 | Voice library browser — acquire additional Piper voices, accents and tones. |
+| `widgets/voice_downloader.py` | 283 | Voice library browser — ELI's Kokoro voices, by accent, gender and grade. |
 | `labs/_common.py` | 235 | Shared imports and helpers of the Labs tabs. |
 | `labs/bg_worker.py` | 37 | Background worker thread (test review). |
 | `labs/calculator_tab.py` | 171 | Calculator tab. |

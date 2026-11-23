@@ -98,9 +98,9 @@ in a window so the phone URL + token are visible).
 | GET/POST | `/v1/home/*` | **token** | Home AI: `state`, `suggestions` (+`accept`), `automations/*` (+`create`), `scenes/*` (+`activate`), `location`, `sun` |
 | GET/POST | `/v1/research/*` | **token** | Shared, collaborative corpora: `corpora`, `ingest`, `note`, `documents`, `activity`, `remove`, `query` (grounded, cited, attributed) |
 | GET/POST/WS | `/v1/world/*` | **token** | The world protocol for a body such as ELI VR ([EMBODIMENT.md](EMBODIMENT.md)). The owner's message carries ELI's records; a member's carries the house, the models and their own thoughts, and the owner's pictures and books are not found for them. |
-| GET  | `/v1/voice/voices` | **token** | List local Piper voices + the active one |
+| GET  | `/v1/voice/voices` | **token** | List local voices (Kokoro, styles, clones, natural) + the active one |
 | POST | `/v1/voice/stt` | **token** | Transcribe an audio clip (raw body) with the local whisper model |
-| POST | `/v1/voice/tts` | **token** | Render text to WAV with the local Piper voice (returned, not played on host) |
+| POST | `/v1/voice/tts` | **token** | Render text to WAV with the local voice (returned, not played on host) |
 
 **Chat request:**
 ```bash

@@ -232,7 +232,7 @@ commands/files/apps stay fail-closed). The web surface adds:
   carries is switched off when the `eli` package loads (`ORT_DISABLE_TELEMETRY`,
   `HF_HUB_DISABLE_TELEMETRY`, `GRADIO_ANALYTICS_ENABLED`, `DO_NOT_TRACK`, `OTEL_SDK_DISABLED`,
   `ANONYMIZED_TELEMETRY`, `SCARF_NO_ANALYTICS`), and programs ELI starts inherit the switches.
-  onnxruntime 1.30+ sends from native code, which the socket guard cannot see; Piper, the voice,
+  onnxruntime 1.30+ sends from native code, which the socket guard cannot see; the voice (Piper then, Kokoro now),
   carries its own onnxruntime and queued Microsoft events every time ELI spoke. Hosts that exist
   only to collect telemetry or crash reports (`netguard.REPORTING_HOSTS`) never resolve, even with
   the Net switch on (`tests/test_netguard_socket_guard.py`).

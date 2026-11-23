@@ -95,7 +95,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 
            OUTPUT  ◄── output_governor / sanitiser ◄── inference ◄── (any path)
                          │
-                         └─► TTS (Piper)  /  GUI render
+                         └─► TTS (Kokoro)  /  GUI render
 ```
 
 ---
@@ -240,7 +240,7 @@ artifacts/
 │
 config/   settings.json (gitignored) · templates/settings.template.json ·
           settings.example.json · plugins_state.json
-models/   <your>.gguf · embeddings/ · whisper/ · image/     tts_piper/  Piper voices
+models/   <your>.gguf · embeddings/ · whisper/ · image/     tts/kokoro/  the voice
 ```
 
 ---

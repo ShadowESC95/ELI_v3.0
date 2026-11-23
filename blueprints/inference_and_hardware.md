@@ -258,11 +258,13 @@ its load plan gives it. What whisper needs is its measured footprint on that car
 weights until measured; unknown either way, it runs on the CPU. `ELI_WHISPER_DEVICE`
 overrides. See `perception.md`.
 
-## Piper and LoRA device selection
+## Voice and LoRA device selection
 
-Piper is a subprocess binary (`tts_piper/piper`), not onnxruntime-in-Python,
-and the shipped build is CPU-only for every vendor — no NVIDIA advantage to
-close there.
+The default voice, Kokoro, runs on the CPU through onnxruntime for every vendor
+(the shipped onnxruntime is the CPU build). The GPU voice, Qwen3-TTS, goes on an
+NVIDIA card only when the card has room for it after the language model's plan
+(`eli/perception/gpu_room.py`, the rule Whisper's placement uses too: the model's
+measured footprint once known, its weights until then); otherwise it is not loaded.
 
 `eli/learning/lora_trainer._accelerator()` is the model for cross-vendor
 device selection generally: torch routes ROCm through the `torch.cuda` API (a

@@ -179,7 +179,7 @@ wrapper:
   probes** (plugin manager, memory, agent bus, data-integrity, recent failures).
 
 - **Perception & control.** faster-whisper STT with a wake-word voice gate and
-  output ducking; Piper TTS; local vision-language models (a fast Moondream + a
+  output ducking; Kokoro TTS (Qwen3-TTS on a GPU); local vision-language models (a fast Moondream + a
   primary VL, hot-swapped with the text model); webcam gaze (MediaPipe + a
   calibration mapper + One-Euro smoothing at 10 Hz); OCR-based screen-element
   location; cross-platform OS control.

@@ -435,7 +435,7 @@ recent conversation, merged and reranked (§7).
   `audio_stt.py`, `voice_worker_streaming.py`. Default wake phrases: "computer",
   "hey computer", "eli", "hey eli" (`wakeword.py`); a music-bleed filter and an echo gate
   sit in front of the transcript.
-- **TTS**: `tts_router.py` (Piper voices), `tts_xtts.py` (optional neural voices).
+- **TTS**: `tts_router.py` (voice routing), `tts_kokoro.py` (Kokoro, the default voice), `tts_qwen3.py` (Qwen3-TTS on a GPU), `tts_xtts.py` (the clone registry).
 - **OS**: `os_controller.py` (app, window, keyboard, mouse), `ui_tree.py`,
   `desktop_capabilities.py`.
 
@@ -545,7 +545,7 @@ artifacts/
 └── analyze_image_*/               # vision outputs
 config/  settings.json (gitignored) · templates/ · plugins_state.json · voices/ …
 models/  <your>.gguf · embeddings/ · whisper/ · image/
-tts_piper/  Piper voice files shipped with the repo
+tts_kokoro/ the Kokoro voice's files a release build carries (not in git)
 ```
 
 ---

@@ -13,9 +13,12 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `near_speech.py` | ~310 | **speech the machine's own output does not explain** — the default sink's monitor as reference, the music's share at the mic learnt band by band; lowers ELI's media at the onset of the owner's speech |
 | `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 1498 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `tts_router.py` | ~1230 | voice router: Kokoro / Qwen3-TTS / pyttsx3 + `char:`/`clone:`/`natural:` voice resolution, sentence-ahead rendering, playback; `neural_fallback_state()` makes a neural fallback observable |
+| `tts_kokoro.py` | ~440 | **Kokoro-82M** on the CPU (onnxruntime): misaki phonemes without espeak-ng, the unknown-word guess, the 28 English voices |
+| `tts_qwen3.py` | ~290 | **Qwen3-TTS** natural voices and cloning, on a GPU with room for it (`voice-gpu` extra) |
+| `gpu_room.py` | ~90 | room on a GPU for a support model beside the language model (Whisper, Qwen3-TTS) |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
-| `tts_xtts.py` | 396 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
+| `tts_xtts.py` | ~410 | the **cloned-voice registry** (`add_clone()` keeps a reference clip) and the legacy Coqui XTTS-v2 backend (non-commercial model, never bundled); when no clone engine can speak, the default voice speaks — **loudly**, not silently, which was a live fault |
 | `vision.py` | 726 |
 | `os_controller.py` | 1110 |
 | `screen_locator.py` | 497 | locate UI elements on screen (AT-SPI → local VL-ground → OCR) |
@@ -172,8 +175,8 @@ A large, feature-dense STT module:
 
 Transcription-based wake matching can't hear "computer" over loud music (whisper
 transcribes the music). Instead ELI **trains its own** detector, 100% locally:
-- **Positives**: the wake phrase synthesised by ELI's OWN **Piper TTS** across several
-  voices and speeds.
+- **Positives**: the wake phrase synthesised by ELI's OWN voice (**Kokoro**) across several
+  voices (spread over accents and genders) and speeds.
 - **Augmentation (the robustness)**: each positive is mixed with noise/music at random
   SNRs, so the classifier learns to spot the wake word *through* a music bed.
 - **Features**: openWakeWord's open, bundled melspectrogram→embedding extractor (no
@@ -225,12 +228,12 @@ Decides the emotion ELI **expresses** and drives three output channels at once.
   playful → `playful`. An explicit override (`set_tone("be comedic"/"talk street")` via
   `SET_TONE`/`CLEAR_TONE`) wins outright and persists.
 - **Extensible palette** (`emotion_palette.py`): 20 built-in tones (comedic, professional,
-  deadpan, street_smart, gremlin, tender, …), each carrying a persona directive, Piper
+  deadpan, street_smart, gremlin, tender, …), each carrying a persona directive, a voice
   prosody profile, and avatar expression; users add their own in `config/voices/tones.json`.
 - **Three output channels**: text (a directive folded into `_build_enhanced_system`), voice
-  (`tts_router._piper_prosody_args` overlays the tone's pace/expressiveness/pauses **and
+  (`tts_router._prosody` overlays the tone's pace and sentence pauses on Kokoro **and
   `_apply_tone_pitch` shifts the actual audio pitch** so sad sounds lower, ecstatic higher —
-  applied on the Piper, natural-neural and clone paths), and face
+  applied on the Kokoro and clone paths; Qwen3-TTS takes the tone as its instruction), and face
   (`world/avatar/persona_mapper` + the animated `gui/widgets/eli_face.py` take the expression).
   ELI's world gets the tone too (`sync_world`, a `social_context` event): each turn it changes, from
   `build_situation_brief`, and at once on `set_tone`/`clear_tone`. Nothing sent it before, so ELI's
@@ -283,27 +286,60 @@ in `expression_state` (priority: thinking > speaking > tone):
   *Tone of voice* dropdown in the same tab pins the register ELI answers in (Auto + the 20
   palette tones) via `tone_adaptor.set_tone`. Kill switch: `ELI_EMOTION_MEMORY=0`.
 
-## Text-to-speech (`tts_router.py`)
+## Text-to-speech (`tts_router.py`, `tts_kokoro.py`, `tts_qwen3.py`)
 
-Multi-backend router with graceful fallback: **XTTS-v2 natural neural** (opt-in) →
-**Piper** (packaged binary under `tts_piper/` or `models/tts/piper`) → **pyttsx3** →
-**espeak-ng / espeak**. Resolves voices from several candidate dirs so a packaged build
-or a source checkout both work.
+The active voice decides the engine, and no fallback is silent:
+- **Kokoro-82M** (`tts_kokoro.py`, Apache-2.0 weights) speaks every plain voice id, on the CPU
+  through onnxruntime, on every machine. 28 voices, American (`af_*`, `am_*`) and British
+  (`bf_*`, `bm_*`) English; the default is `af_heart`, the one its authors grade A. A voice saved
+  for the earlier engine (a Piper id such as `en_GB-alan-medium`) maps to its nearest Kokoro voice
+  (`tts_kokoro.voice_for_legacy`), and spoken names of those voices ("the alan voice") still resolve.
+- **Qwen3-TTS** (`tts_qwen3.py`, Apache-2.0) speaks the `natural:<speaker>` voices (CustomVoice: nine
+  built-in speakers, steered by the tone as a plain-language instruction) and the `clone:<name>`
+  voices (Base: from the user's recording), on a GPU with room for it beside the language model
+  (`gpu_room.room_mb`, the same rule Whisper uses: the card's free memory less the reserve and the
+  language model's plan; the model's measured footprint once known, its weights until then; unknown
+  means no). The 1.7B model where it fits, else the 0.6B, else none. It needs the `voice-gpu` extra
+  (qwen-tts, PyTorch); its weights (2.5-4.5 GB) are fetched at a pinned revision on first use and each
+  weight file is checked against its SHA-256. The voice engine setting (`tts_engine`) is `auto` (Qwen3
+  where the GPU has room, Kokoro elsewhere), `kokoro` or `natural`, chosen at the start-up picker or the
+  first-run wizard. Where it cannot speak, Chatterbox (MIT) and XTTS-v2 (legacy, non-commercial model,
+  never bundled) are tried for clones, then the Kokoro default voice speaks and
+  `neural_fallback_state()` says the chosen voice is not what is heard.
+- **pyttsx3** speaks a `sys:` voice (the operating system's own), only when one is chosen; these are
+  hidden from the list unless `ELI_TTS_ALLOW_ROBOTIC=1` or nothing else can speak.
 
-*Natural neural voice (`natural:<id>`, `tts_xtts.py`).* XTTS-v2 driven by its **built-in
-studio speakers — no clone/reference needed** — is the human-like, expressive,
-punctuation-aware path. `list_natural_voices()`/`synthesize_natural_wav()` are cheap to
-probe (never load the ~1.8GB model just to enumerate) and **fall back to Piper** when the
-neural extra isn't installed, so a `natural:` voice never goes silent. It is selectable at
-the **startup model picker / first-boot wizard** ("Voice engine: Piper vs Natural") — the
-choice is persisted *before* hardware tuning so its VRAM is a deliberate up-front decision
-(`ELI_XTTS_DEVICE` pins the device); low-VRAM boxes keep fast Piper. Enable with
-`pip install -e ".[natural]"` (from the ELI project root).
+*Text to phonemes, without espeak-ng.* misaki (Kokoro's own G2P, Apache-2.0) reads the text with
+spaCy's small English tagger and its gold/silver dictionaries. Its usual fallback for a word they lack is
+espeak-ng (GPL), which ELI does not use; `tts_kokoro._OovFallback` guesses instead: an all-capitals word
+letter by letter, a word made of two dictionary words as those words, any other with gruut's CRF model
+trained on the CMU dictionary (MIT), its IPA mapped onto Kokoro's phoneme letters (non-rhotic forms for
+the British voices). On misaki's gold words the CRF never saw, that made 19.5% phoneme errors (the CRF
+alone 21.0%; OpenPhonemizer 18.0%, but it needs PyTorch and a pickled checkpoint; letter by letter
+126.6%). ELI builds misaki's G2P itself (`_misaki_g2p`) because misaki's constructor installs a missing
+spaCy model with pip at run time. Kokoro's other languages are left out: misaki reads them through
+espeak-ng.
 
-*Expressive Piper prosody.* Piper at bare defaults sounds flat and clips full stops. The
-router now passes tuned `--sentence_silence` / `--length_scale` / `--noise_scale` /
-`--noise_w` (`_piper_prosody_args()`, env-overridable, `ELI_TTS_PROSODY=0` to disable) so
-`?`/`!`/`.` land as intonation and pauses — the "Amy sounds flat" fix.
+*Files.* `eli/runtime/voice_assets.py` pins every file Kokoro uses to a revision and a SHA-256
+(`kokoro_manifest()`): the fp32 ONNX export and its tokenizer (onnx-community/Kokoro-82M-v1.0-ONNX),
+the 28 voices, spaCy's en_core_web_sm 3.8.0 (unpacked from its wheel) and gruut's `g2p/model.crf`. A
+source install fetches them into `models/tts/kokoro` the first time ELI speaks (or in the installer's
+voice step); the release builds carry them (`python -m eli.runtime.voice_assets --kokoro-to tts_kokoro`
+in the release workflow, bundled by `ELI.spec`, read in place from the bundle). A download that does not
+match its checksum is refused, and a refused one makes no folder. Once fetched, ELI speaks offline.
+The fp32 export was kept: on a CPU it ran as fast as the fp16 and uint8 exports and four times faster
+than the int8 one, and each reduced export changed the sound.
+
+*Speaking.* `_run_tts` holds the speaking lock (the microphone's echo guard) and the avatar's speaking
+state for the whole reply. The Kokoro path renders the reply sentence by sentence on a thread of its own
+and plays each sentence as soon as it is ready, the next one rendering meanwhile; the tone's pause
+(`sentence_silence`) follows each sentence and the player's tail only the last. The tone palette's pace
+(`length_scale`) is Kokoro's speed inverted; its pitch is shifted afterwards with ffmpeg
+(`_apply_tone_pitch`); its `noise_scale`/`noise_w` have no Kokoro counterpart (they still shape a clone's
+exaggeration). Measured on an i7-8700 under load, against the earlier Piper voice on the same machine:
+Kokoro renders at about 0.42-0.45 of real time (Piper 0.04); the first audio of a one-sentence reply
+comes after 1.2 s (Piper 0.13 s), of a three-sentence one after 3.8 s, its first sentence (Piper 0.75 s
+for the whole reply); after that playback never waits for rendering.
 
 *Where speech plays.* Through the desktop's sound server wherever one runs
 (`platform_compat.sound_server()`: PipeWire or PulseAudio found by the socket a client would
@@ -311,38 +347,17 @@ reach; the system mixer on Windows and macOS). `tts_router._play_wav_blocking` o
 stream only on the server's own ALSA device (`pipewire`, `pulse`; on Windows anything but
 WDM-KS), never a raw card the server holds; with none listed (a bundle whose PortAudio sees only
 the cards) the system player plays (`pw-play`, `paplay`, then `aplay`), and lip-sync takes the
-voice's loudness from the samples on a timer. Each part logs where it played or `NOT played`
+voice's loudness from the samples on a timer. Each sentence logs where it played or `NOT played`
 with the reason; `last_playback()`, the `SPEAK` reply, the voice test and the speech diagnostics
 say the same.
 
-*No robotic voices.* `list_voices()` hides the espeak `sys:` voices and Piper `low`/`x_low`
-tiers by default (they sound synthetic), surfacing them only as a genuine last resort when
-the box has nothing better, or when `ELI_TTS_ALLOW_ROBOTIC=1`.
+**Voice library** (`runtime/voice_assets.py`, Settings > VOICE / TTS > *Voice library…*,
+`gui/widgets/voice_downloader.py`): every Kokoro voice with its accent, gender, grade and whether its
+file is here; `download_voice()` fetches one (and the engine's files when missing); `resolve_voice_query()`
+turns "a British male voice", "use the emma voice" or a voice id into a voice for `SET_VOICE` /
+`DOWNLOAD_VOICE`, without hard-coded ids.
 
-**Voice library** (`runtime/voice_assets.py`) — the shipped pack is a starting point,
-not the limit. The module fetches the upstream Piper index (**166 voices across 45
-languages, 38 of them English** — US/GB, Scottish, Northern and Southern English) and
-exposes it through `list_available_voices()` with per-voice presence, download size and
-licence, cached on disk so the picker still works offline. `download_voice()` streams
-from the index's exact paths and **verifies the published md5** before the file is put
-in place, so a truncated or proxy-mangled download is rejected rather than surfacing
-later as a corrupt-model crash. The GUI path is Settings > VOICE / TTS > *Get more
-voices / accents…* (`gui/widgets/voice_downloader.py`); every voice dropdown repopulates
-on install.
-
-*Redistribution policy.* `RESTRICTED_VOICE_NAMES` (ryan — CC-BY-NC-SA; lessac —
-Blizzard/Lessac, not cleared; cori — pending) are never put in a release asset. The rule
-is keyed on the **voice name, so every quality variant is covered**, and
-`scripts/asset_release_policy.py` imports it so the build and the runtime cannot drift.
-The user may still download them for personal use; the dialog states this rather than
-hiding the voice.
-
-*Config integrity.* A `.onnx` without its `.onnx.json` cannot be loaded by Piper, so it
-is invisible to `list_voices()` while still occupying ~60 MB. `incomplete_voices()` finds
-these and `repair_voice_configs()` fetches just the missing ~5 KB config.
-`tests/test_voice_library.py` guards against shipping the broken state again.
-
-**Style presets** (`voice_fx.py`, `char:calm`, `char:robotic`, …) are a redistributable Piper base voice plus an ffmpeg effect chain (pitch / speed / filters). They are **generic sound styles**, not bundled impersonations of copyrighted characters. Ideal Piper bases for some historical presets (lessac, joe, ryan) are excluded from the public bundle over dataset licensing; each preset carries an **ordered, gender-matched `fallback` chain** against installed voices only. **Voice cloning** (`tts_xtts.py`, `clone:<name>`) reproduces a voice from a short reference clip via Coqui XTTS-v2 — an opt-in extra (`eli-v2.0[clone]`) that falls back to a normal voice when the model isn't installed rather than going silent. Both `char:` and `clone:` resolve through `synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI voice picker.
+**Style presets** (`voice_fx.py`, `char:calm`, `char:robotic`, …) are a Kokoro base voice plus an ffmpeg effect chain (pitch / speed / filters). They are **generic sound styles**, not bundled impersonations of copyrighted characters; each preset carries an **ordered, gender-matched `fallback` chain** of Kokoro voices, and a preset saved with a Piper base reads as that base's Kokoro voice. **Voice cloning** (`CREATE_VOICE`, `clone:<name>`): `tts_xtts.add_clone()` keeps the reference recording (and its transcript when given, which lets Qwen3-TTS clone more closely); Qwen3-TTS speaks it on a GPU with room, else Chatterbox, else XTTS. Both `char:` and `clone:` resolve through `synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI voice picker.
 
 ## OS control (`os_controller.py`)
 
@@ -367,7 +382,7 @@ analysed.
 ## Honest assessment
 
 - **Strong:** this is the layer that makes ELI genuinely multimodal and local —
-  eyes (VL + OCR + ambient), ears (Whisper + ducking), mouth (Piper/espeak),
+  eyes (VL + OCR + ambient), ears (Whisper + ducking), mouth (Kokoro; Qwen3-TTS on a GPU),
   hands (cross-platform OS control). The vision co-residence + hot-swap + CPU-clip
   workaround is real engineering against hard 8GB-GPU constraints.
 - **Weak / watch:**
@@ -381,7 +396,7 @@ analysed.
   4. `gaze_engine.py` is experimental and off by default — fine, but it's carried
      weight.
   5. Platform tools are detected at call time; a machine missing
-     `gnome-screenshot`/`wpctl`/`piper` degrades silently to fallbacks (good) but
+     `gnome-screenshot`/`wpctl` degrades silently to fallbacks (good) but
      there's no single "what perception capabilities do I actually have here?"
      probe surfaced to the user.
 

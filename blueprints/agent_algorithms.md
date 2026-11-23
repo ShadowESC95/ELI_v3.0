@@ -95,7 +95,7 @@ scores as highly as an on-topic one. Env `ELI_AGENT_BUS_RELEVANCE_GATE` disables
 
 ### 9. `voice` — config reporter  · 5.0s
 - **Gate:** voice/tts/stt/mic keywords.
-- **Algorithm:** reads `ELI_TTS_ENGINE`/`ELI_PIPER_MODEL`/`ELI_MUTE` + probes
+- **Algorithm:** reads `ELI_TTS_ENGINE`/`ELI_MUTE` + probes
   `faster_whisper` import. Reports, never emits audio (that's the TTS router).
 
 ### 10. `orchestrator` (bus-level) — descriptive planner  · 3.0s

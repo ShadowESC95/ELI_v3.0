@@ -8,7 +8,7 @@ models/
   lora/
     adapters/       Adapter checkpoints and adapter directories
     merged/         Fully merged model outputs
-  tts/piper/        Piper TTS models
+  tts/kokoro/       the Kokoro voice (model, voices, tagger, unknown-word model)
   tokenizers/       Extra tokenizer assets if required
 
 training/

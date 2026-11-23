@@ -1,13 +1,13 @@
-# Model & Voice License Manifest — ELI v2.0
+# Model & Voice License Manifest — ELI v3
 
-ELI distributes **third-party** GGUF, embedding, vision, and Piper voice files
-separately from source (GitHub Release assets — tag `local-assets-v2.1`)
-because they exceed git size limits. **You are responsible for complying with
+ELI distributes **third-party** GGUF, embedding and vision files separately from source
+(GitHub Release assets — tag `local-assets-v2.1`) because they exceed git size limits, and
+fetches its voice's files from their upstream. **You are responsible for complying with
 each upstream license** when you download or use these files.
 
-This manifest covers the installer catalog (`eli/core/model_download.py`),
-the **`local-assets-v2.1` GitHub Release pack**, default voice assets, and
-restore exclusions enforced by `scripts/asset_release_policy.py`.
+This manifest covers the installer catalog (`eli/core/model_download.py`), the
+**`local-assets-v2.1` GitHub Release pack**, and the voice's files
+(`eli/runtime/voice_assets.py`, `eli/perception/tts_qwen3.py`).
 
 ---
 
@@ -39,29 +39,12 @@ from Hugging Face when network is allowed.
 7B+ chat models are **not** on this tag (GitHub 2 GB/file limit). Use `install.sh` or
 copy your own `.gguf` into `models/`.
 
-### Piper voices on the release (auto-restore)
+### Voices
 
-| Voice | Upstream | License | Auto-restore |
-|---|---|---|---|
-| `en_US-amy-medium` | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) | Per voice card (typically CC BY 4.0) | **Yes** (ELI default TTS) |
-| `en_GB-alan-medium` | rhasspy/piper-voices | Per voice card | Yes |
-| `en_GB-northern_english_male-medium` | rhasspy/piper-voices | Per voice card | Yes |
-| `de_DE-thorsten-medium`, `fr_FR-siwis-medium`, `es_ES-carlfm-x_low`, `it_IT-riccardo-x_low`, `cs_CZ-jirka-medium`, `nl_NL-mls-medium`, `pl_PL-gosia-medium`, `ru_RU-ruslan-medium`, `zh_CN-huayan-x_low` | rhasspy/piper-voices | Per voice card | Yes |
-
-### Voices excluded from auto-restore (`--with-github-assets`)
-
-These are **not published** in the `local-assets-v2.1` asset release at all, and ELI
-**also** skips them during restore if they are ever present — `EXCLUDED_VOICE_BASENAMES`
-in `scripts/asset_release_policy.py` enforces it in code, so the exclusion holds even
-for a hand-placed file:
-
-| Voice | Reason |
-|---|---|
-| `en_US-ryan-high`, `en_US-ryan-medium` | CC BY-NC-SA 4.0 upstream — non-commercial |
-| `en_US-lessac-high`, `en_US-lessac-medium` | Blizzard/Lessac dataset — not cleared for public bundle |
-| `en_GB-cori-high` | LibriVox-derived — excluded; use `en_US-amy-medium` out of the box |
-
-Install cleared voices only, or fetch alternatives from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) directly.
+No voice is published on this release any more. ELI's voice is Kokoro-82M (see *Speech
+models* below): its files are fetched from their own upstream at pinned revisions, each checked
+against its SHA-256 (`eli/runtime/voice_assets.py`), and the release builds carry them. The Piper
+voices this pack held (and the ones it excluded: ryan, lessac, cori) are no longer used by v3.
 
 ---
 
@@ -94,9 +77,17 @@ Install cleared voices only, or fetch alternatives from [rhasspy/piper-voices](h
 | Asset | Upstream | License |
 |---|---|---|
 | **faster-whisper** `small.en` (STT weights) | [Systran/faster-whisper-small.en](https://huggingface.co/Systran/faster-whisper-small.en) | MIT |
-| **Piper** `en_US-amy-medium` (default TTS) | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) | Per voice card (typically CC BY 4.0) |
+| **Kokoro-82M v1.0**, ONNX export `onnx/model.onnx` + `tokenizer.json` + the 28 English voices `voices/{af,am,bf,bm}_*.bin` (ELI's voice; revision `1939ad2a8e416c0acfeecc08a694d14ef25f2231`) | [onnx-community/Kokoro-82M-v1.0-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX), from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | **Apache-2.0** (weights) |
+| **en_core_web_sm 3.8.0** (spaCy's English tagger misaki reads words with) | [explosion/spacy-models](https://github.com/explosion/spacy-models/releases/tag/en_core_web_sm-3.8.0) | **MIT** (trained on OntoNotes 5, licensed commercially by Explosion; WordNet 3.0 licence) |
+| **gruut English G2P model** `g2p/model.crf` (guesses words misaki's dictionaries lack; trained on the CMU Pronouncing Dictionary) | [rhasspy/gruut](https://github.com/rhasspy/gruut/tree/a2187f9dfe472e4aafffcf043bd1a220c057ee9d/gruut-lang-en) @ `a2187f9d` | **MIT** (© 2020 Michael Hansen); CMUdict: BSD-2-Clause-style |
+| **misaki's dictionaries** (`misaki/data/*_gold.json`, `*_silver.json`, inside the package) | [hexgrad/misaki](https://github.com/hexgrad/misaki) | **Apache-2.0** |
+| **Qwen3-TTS** 12Hz 1.7B / 0.6B, CustomVoice (built-in speakers) and Base (voice cloning) — only on a GPU with room, with the `voice-gpu` extra | [Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice), [-0.6B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice), [-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base), [-0.6B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) (pinned revisions in `eli/perception/tts_qwen3.py`) | **Apache-2.0** |
 
-See `packaging/VOICE_LICENSE_REVIEW.md` for maintainer voice classifications.
+Every Kokoro file is pinned (revision and SHA-256) in `eli/runtime/voice_assets.py`; Qwen3-TTS's
+weight files are checked against their SHA-256 before first use. Kokoro's own notice: *"Kokoro is an
+open-weight TTS model with 82 million parameters ... With Apache-licensed weights, Kokoro can be
+deployed anywhere"* (hexgrad/Kokoro-82M model card). Copies of the Apache-2.0 and MIT licence texts
+are at <https://www.apache.org/licenses/LICENSE-2.0> and <https://opensource.org/license/mit>.
 
 ---
 
@@ -120,11 +111,11 @@ Weight files for Phi-3 are **not** committed; download separately under Microsof
 
 ## Style presets vs character impersonation (public releases)
 
-ELI ships **five built-in style presets** (`char:calm`, `char:robotic`, `char:energetic`, `char:synthetic`, `char:refined`): redistributable Piper voices + ffmpeg effects. We **do not** bundle neural clones or marketing labels for copyrighted characters (HAL 9000, JARVIS, Rick Sanchez, TARS, GLaDOS, etc.) in GitHub releases or installers — that would be legally unsafe and technically misleading (the old named presets used unshippable base voices and sounded identical anyway).
+ELI ships **five built-in style presets** (`char:calm`, `char:robotic`, `char:energetic`, `char:synthetic`, `char:refined`): Kokoro voices (Apache-2.0) + ffmpeg effects. We **do not** bundle neural clones or marketing labels for copyrighted characters (HAL 9000, JARVIS, Rick Sanchez, TARS, GLaDOS, etc.) in GitHub releases or installers — that would be legally unsafe and technically misleading (the old named presets used unshippable base voices and sounded identical anyway).
 
 Users who want a specific timbre may:
 - tune or add their own `char:<name>` preset in `config/voices/characters.json`, or
-- use **local voice cloning** (XTTS-v2 opt-in) from **reference audio they have rights to use**.
+- use **local voice cloning** (Qwen3-TTS on a GPU, `CREATE_VOICE`) from **reference audio they have rights to use**.
 
 Persona / communication-style commands change **wording**, not the TTS timbre.
 
@@ -132,9 +123,9 @@ Persona / communication-style commands change **wording**, not the TTS timbre.
 
 ## Maintainer release checklist
 
-1. Attach **this file** to every model/voice GitHub Release (`MODEL_LICENSES.md`).
+1. Attach **this file** to every model GitHub Release (`MODEL_LICENSES.md`).
 2. Do not upload `--include-runtime` or `--include-venv` private data.
-3. Do not auto-restore voices in `EXCLUDED_VOICE_BASENAMES` (ryan, lessac, cori).
-4. Default TTS remains `en_US-amy-medium` (install + GitHub pack).
+3. The default voice is Kokoro's `af_heart`; the voice's files come from their pinned upstream,
+   never from an asset release.
 
 Questions: **jaybridgeman0095@gmail.com**

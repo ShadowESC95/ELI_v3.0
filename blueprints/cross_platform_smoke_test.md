@@ -21,7 +21,7 @@ scratch:
   groups, `[full]` meta-extra (`eli-mkxi[gui,tts,asr,llm,image,docs,server,vision,web,…]`), 3
   console scripts (`eli`/`eli-v3`/`eli-cli` → `eli.__main__:console_main`), setuptools backend.
 - **Dependencies covered across 4 sources:** core deps + `.[full]` extras (PySide6, faster-
-  whisper, piper, fastapi, transformers, opencv…) + `requirements.lock.txt` (160 pinned) +
+  whisper, misaki/spaCy (the voice), fastapi, transformers, opencv…) + `requirements.lock.txt` (160 pinned) +
   **explicit torch & llama-cpp** (GPU-variant, installed by the OS installer).
 - **Installers exist per-OS:** `install.sh` (Linux/macOS), `install.ps1` + `install.bat`
   (Windows), `install_android.sh`; per-OS `requirements-{windows,macos}.txt`.
@@ -101,7 +101,7 @@ The **embodiment layer** is developed on Linux; it has cross-platform code but e
 | 6.1 | Screenshot | PIL ImageGrab path | `screencapture` — may need Screen-Recording permission | ☐ |
 | 6.2 | Mouse/keyboard control | pyautogui | pyautogui — needs Accessibility permission | ☐ |
 | 6.3 | Window control (open/focus/tile) | pyautogui/pygetwindow | limited; note what works | ☐ |
-| 6.4 | Voice out (TTS) | Piper voice loads | Piper voice loads | ☐ |
+| 6.4 | Voice out (TTS) | Kokoro voice speaks | Kokoro voice speaks | ☐ |
 | 6.5 | Wake word ("computer") | mic access | mic access | ☐ |
 | 6.6 | Media (`play X on spotify/youtube`) | player detection | player detection | ☐ |
 

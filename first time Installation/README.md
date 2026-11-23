@@ -19,4 +19,4 @@
 | macOS | **`.dmg`** |
 | Android Termux | **`bash scripts/install_android.sh`** |
 
-**Wizard core:** env + llama + DB + nomic + Piper/Whisper + chat GGUF (hard-fail until present). OS extras (mpv, tesseract, …) are best-effort. Windows desktop = one ELI icon; GUI singleton.
+**Wizard core:** env + llama + DB + nomic + Kokoro/Whisper + chat GGUF (hard-fail until present). OS extras (mpv, tesseract, …) are best-effort. Windows desktop = one ELI icon; GUI singleton.

@@ -19,7 +19,7 @@ GitHub Releases → pick OS asset
         ↓
   GUI wizard → hardware_policy → install.sh | install.ps1  (once)
         ↓
-  databases + nomic + Piper/Whisper + chat GGUF (+ desktop icons)
+  databases + nomic + the Kokoro voice/Whisper + chat GGUF (+ desktop icons)
         ↓
   Launch
 ```
@@ -37,7 +37,7 @@ Legacy names (`INSTALL_ELI.sh`, `install_eli.sh`, `eli_one_click_setup.sh`) only
 | Core env | `.venv`, PySide6 (GUI), torch, **llama-cpp** matched to hardware, Python deps |
 | Databases | Blank local SQLite stores |
 | Memory | **nomic** embedder (`model_download --aux`) |
-| Voice | **Piper** TTS weights + **Whisper** STT cache |
+| Voice | **Kokoro** TTS files (pinned, checksum-checked) + **Whisper** STT cache |
 | Chat | Starter **GGUF** sized by hardware (`--auto-model`) — any compatible GGUF later |
 | Shortcuts | App menu / Start Menu where the OS supports it |
 
@@ -61,7 +61,7 @@ OS tools such as `mpv`, `ffmpeg`, `tesseract`, `yt-dlp` (pip), clipboard/screens
 - Optional extras (XTTS “natural” voice, large vision models, CUDA *toolkit* via `--install-cuda`) are opt-in.
 - Frozen **AppImage** GPU packs are separate from portable `.venv` Vulkan builds.
 - Phones/tablets are **clients** of the PC/laptop web server — not native tablet apps.
-- Windows TTS needs a Piper **CLI** (`piper.exe`) on PATH or under `tts_piper/` in addition to voice weights (weights alone are not enough).
+- The voice speaks American and British English (Kokoro). On a machine with an NVIDIA GPU, `pip install -e ".[voice-gpu]"` adds Qwen3-TTS (ten languages, voice cloning), used where the GPU has room for it beside the model.
 
 So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware. It does **not** magically install every optional OS package or every optional model on every board.
 
@@ -129,7 +129,7 @@ ELI_INSTALL_CPU_ONLY=0 ./ELI_Setup.sh
 |---------|-----|
 | Two Windows GUIs | Use 3.0.114+ Setup; close extra; singleton blocks seconds |
 | Portable dies mid-scan | Use 3.0.114+ (`_gpu_pipeline`); prefer `./ELI_Setup.sh` |
-| Nomic / Piper missing | Wizard hard-fails until fixed — Retry / Fetch |
+| Nomic / voice files missing | Wizard hard-fails until fixed — Retry / Fetch |
 | Iris Xe OOM on install | Wizard CPU policy, or AppImage — not interactive Vulkan `install.sh` |
 | Wrong `eli` / stale menu icon | 3.0.127+ auto-refreshes `.desktop` on version bump; or AppImage `--integrate` |
 | “Yes” to install mpv does nothing | 3.0.119+ Phase-45 remediation confirm (first yes runs apt) |
