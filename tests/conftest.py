@@ -371,27 +371,41 @@ def _own_state() -> dict:
 
 def _written_since(before: dict, asked=()) -> list:
     """What in this checkout was written, made or deleted since `before` (_own_state), each a path
-    relative to the checkout, with the test that did it where the audit hook saw it. `asked`: paths
+    relative to the checkout, with the test that did it where the audit hook saw it; and what the hook
+    saw written that is as it was by now (written and removed again, opened for writing). `asked`: paths
     the run was asked to write, with what is under them."""
     asked = tuple(Path(a).resolve() for a in ((asked,) if isinstance(asked, (str, Path)) else asked))
+
+    def _not_watched(path: Path) -> bool:
+        resolved = path.resolve()
+        return any(resolved == a or a in resolved.parents for a in asked) or any(
+            (d / "pyvenv.cfg").is_file() or d.name == ".git" for d in path.parents if ROOT in d.parents)
+
     now = _own_state()
-    out = []
+    out, named = [], set()
     for path in sorted(set(before) | set(now)):
         was, is_ = before.get(path), now.get(path)
-        if was == is_:
-            continue
-        resolved = path.resolve()
-        if any(resolved == a or a in resolved.parents for a in asked):
+        if was == is_ or _not_watched(path):
             continue
         rel = str(path.relative_to(ROOT)) + ("/" if FOLDER in (was, is_) else "")
         by = _WRITTEN_BY.get(os.path.realpath(path)) or _WRITTEN_BY.get(os.path.abspath(path))
+        named |= {os.path.realpath(path), os.path.abspath(path)}
         what = "deleted" if is_ is None else ("made" if FOLDER in (was, is_) else "written")
         out.append(f"{rel} ({what} by {by})" if by else (f"{rel} (deleted)" if is_ is None else rel))
-    return out
+    root = ROOT.resolve()                              # the hook notes real paths
+    for written, by in _WRITTEN_BY.items():
+        path = Path(written)
+        if written in named or root not in path.parents or _not_watched(path):
+            continue
+        what = "opened for writing" if os.path.lexists(path) else "written and removed again"
+        out.append(f"{path.relative_to(root)} ({what} by {by})")
+    return sorted(out)
 
 
 # Which test first wrote, made, moved or deleted each path in this checkout outside the sandbox (an
-# audit hook), so the report names it.
+# audit hook), so the report names it, and so a write undone before the run ended (a probe module
+# written into eli/ and removed again) is named too: comparing the checkout before and after cannot
+# see one. The hook sees this process only; what a program a test starts leaves is in the comparison.
 _WRITTEN_BY: dict = {}
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _WATCHED = str(ROOT.resolve())
@@ -413,6 +427,16 @@ def _note_written(event, args) -> None:
         targets = [(args[0], args[-1] if len(args) > 1 else None)]
     elif event == "os.rename":                         # os.replace too: (src, dst, src_dir_fd, dst_dir_fd)
         targets = [(args[0], args[2] if len(args) > 2 else None), (args[1], args[3] if len(args) > 3 else None)]
+    elif event == "sqlite3.connect" and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        # a writable connection can write the file and its journal; a read-only one cannot
+        database = os.fsdecode(args[0])
+        if database.startswith("file:"):
+            database, _, query = database[5:].partition("?")
+            if "mode=ro" in query or "immutable=1" in query:
+                return
+        if database in ("", ":memory:"):
+            return
+        targets = [(database, None)]
     else:
         return
     for target, dir_fd in targets:
@@ -430,6 +454,10 @@ def _note_written(event, args) -> None:
         sandbox = str(SANDBOX.resolve())
         if path == sandbox or path.startswith(sandbox + os.sep) or (os.sep + "__pycache__") in path:
             continue
+        if event == "os.mkdir" and os.path.isdir(path):
+            continue                                   # asking for a folder that is there changes nothing
+        if event in ("os.remove", "os.rmdir", "shutil.rmtree") and not os.path.lexists(path):
+            continue                                   # nor removing what is not there
         _WRITTEN_BY.setdefault(path, os.environ.get("PYTEST_CURRENT_TEST", "collection").split(" ")[0])
 
 

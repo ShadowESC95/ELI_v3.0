@@ -151,9 +151,10 @@ def _write(db: Path) -> None:
 
 
 def test_templates_ship_without_wal_sidecars():
-    """No template may ship in WAL mode — that is what created the sidecars."""
+    """No template may ship in WAL mode — that is what created the sidecars. Read only: a writable
+    connection to a WAL template would make the sidecars in the checkout while it looked."""
     for template in sorted(TEMPLATES.glob("*.sqlite3")):
-        conn = sqlite3.connect(str(template))
+        conn = sqlite3.connect(f"file:{template}?mode=ro", uri=True)
         try:
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         finally:

@@ -110,10 +110,12 @@ and none skips because one of ELI's own modules failed to import. About 210 test
 some 85 the installers, release workflow and packaging scripts (no single system can run them all), some 115 ELI's
 own source, for engine internals that have no test of their behaviour yet. Every run keeps ELI's state in one sandbox
 (`artifacts/_pytest`: data, config, training, the GPU pack log, downloaded plugins, the capability manifest the claims
-read, the eval's throwaway copies, the coding tests' workspaces), and anything written, made or deleted anywhere in
-the checkout outside it is named at the end, with the test that did it (a failure in CI and with
-`ELI_TEST_STRICT_ISOLATION=1`). Still written in the checkout while they run, and removed again: the code-examiner
-and self-repair tests' probe modules in `eli/` and `tests/` (the examiner takes only ELI's own modules).
+read, the eval's throwaway copies, the coding tests' workspaces, and a throwaway source tree made the source root,
+`ELI_SOURCE_ROOT`, for the code examiner, self-improvement, the autopilot debugger and the test generator, which read
+`paths.source_root()` when used). Anything written, made or deleted anywhere in the checkout outside it is named at
+the end with the test that did it, a write undone before the end too (seen by an audit hook in the test process;
+what a program a test starts leaves is seen by comparing the checkout before and after): a failure in CI and with
+`ELI_TEST_STRICT_ISOLATION=1`.
 
 **Layer 2 — behavioural eval:** `tools/eval/` (see `tools/eval/README.md`) drives the
 **real pipeline** and asserts on telemetry (action / grounding / response_mode /

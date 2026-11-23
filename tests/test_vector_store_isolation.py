@@ -216,7 +216,8 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     Every folder made, file written and file deleted anywhere in the checkout is named now, with the
     test that did it, the eval's throwaway folder among them (a run with its data folder outside the
     project left an empty artifacts/_eval_sandbox). Not the run's own sandbox, bytecode or a Python
-    environment kept in the checkout, nor what the run was asked to write."""
+    environment kept in the checkout, nor what the run was asked to write. A write undone before the
+    end (a probe module written into eli/ and removed again) is named too."""
     import sys
     conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
     (tmp_path / "artifacts" / "db").mkdir(parents=True)
@@ -240,6 +241,12 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / ".venv" / "lib").mkdir()
     (tmp_path / "report.xml").write_text("asked for")
+    # written and removed again before the end: the comparison alone cannot see it
+    (tmp_path / "eli").mkdir()
+    (tmp_path / "eli" / "_probe.py").write_text("X = 1\n")
+    (tmp_path / "eli" / "_probe.py").unlink()
+    (tmp_path / "eli").rmdir()
+    (tmp_path / "artifacts").mkdir(exist_ok=True)                  # there already: nothing made
     # a folder removed elsewhere is not this checkout's, though rmtree names its files relative to it
     import shutil
     import tempfile
@@ -255,6 +262,8 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
         f"blueprints/a.md (written by {this_test})",
         f"capability_manifest.json (written by {this_test})",
         f"docs.md (deleted by {this_test})",
+        f"eli (written and removed again by {this_test})",
+        f"eli/_probe.py (written and removed again by {this_test})",
     ]
 
 
