@@ -413,7 +413,7 @@ echo "[finalise] Computing SHA-256 checksums…"
                           ELI_v3-*.dmg 2>/dev/null \
                           ELI_v3-*.AppImage 2>/dev/null \
                           ELI_v3-*-Setup.exe 2>/dev/null \
-                          eli-mkxi_*_amd64.deb 2>/dev/null \
+                          eli-v3_*_amd64.deb 2>/dev/null \
                           ELI_v3-*-windows-portable*.zip 2>/dev/null \
                           ELI_v3-*-windows-arm64-portable*.zip 2>/dev/null \
                           ELI_v3-*-linux-portable.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
@@ -434,7 +434,7 @@ $(cat "$DIST/SHA256SUMS.txt" 2>/dev/null || echo "(checksum file missing)")
 
 ## Install quick reference
 - **pip / wheel**: \`pip install dist/eli_v3-${VERSION}-py3-none-any.whl[full]\`
-- **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-mkxi_${VERSION}_amd64.deb && sudo apt -f install\`
+- **Debian/Ubuntu**: \`sudo apt install ./dist/eli-v3_${VERSION}_amd64.deb\` (also replaces the \`eli-mkxi\` package of 3.0.171 and earlier)
 - **Linux portable**: extract \`dist/ELI_v3-${VERSION}-linux-portable.tar.gz\`, run \`./INSTALL_ELI.sh\`
 - **Windows x64 lean**: extract \`dist/ELI_v3-${VERSION}-windows-portable.zip\`, run \`install.bat\`
 - **Windows x64 full offline**: extract \`dist/ELI_v3-${VERSION}-windows-portable-full.zip\`, run \`install.bat\`
