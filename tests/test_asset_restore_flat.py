@@ -27,23 +27,19 @@ def restore_mod():
     return _load_restore()
 
 
-def test_flat_restore_places_gguf_and_skips_excluded_voices(tmp_path, restore_mod, monkeypatch):
+def test_flat_restore_places_the_models_and_leaves_voice_files_alone(tmp_path, restore_mod, monkeypatch):
+    """The voice is fetched from its own pinned upstream, never from these releases: a voice file
+    left in an old release is not restored."""
     monkeypatch.setattr(restore_mod, "ROOT", tmp_path)
     download = tmp_path / "dl"
     download.mkdir()
     (download / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf").write_bytes(b"gguf")
     (download / "nomic-embed-text-v1.5.Q4_K_M.gguf").write_bytes(b"embed")
     (download / "en_US-amy-medium.onnx").write_bytes(b"onnx")
-    (download / "en_US-ryan-high.onnx").write_bytes(b"skip")
-    (download / "en_US-lessac-high.onnx").write_bytes(b"skip")
-    (download / "en_GB-cori-high.onnx").write_bytes(b"skip")
 
     count = restore_mod._restore_flat(download)
 
-    assert count == 3
+    assert count == 2
     assert (tmp_path / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf").exists()
     assert (tmp_path / "models" / "embeddings" / "nomic-embed-text-v1.5.Q4_K_M.gguf").exists()
-    assert (tmp_path / "tts_piper" / "piper" / "en_US-amy-medium.onnx").exists()
-    assert not (tmp_path / "tts_piper" / "piper" / "en_US-ryan-high.onnx").exists()
-    assert not (tmp_path / "tts_piper" / "piper" / "en_US-lessac-high.onnx").exists()
-    assert not (tmp_path / "tts_piper" / "piper" / "en_GB-cori-high.onnx").exists()
+    assert [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.onnx")] == ["dl/en_US-amy-medium.onnx"]

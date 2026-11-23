@@ -9,11 +9,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-# The release policy is required: without it every voice and every file under models/ was marked
-# for upload, restricted voices and the person's own recordings included.
+# The release policy is required: without it every file under models/ was marked for upload, the
+# person's own recordings included.
 from asset_release_policy import (
     catalog_model_filenames,
-    is_excluded_voice_filename,
     is_private_user_asset,
 )
 
@@ -79,12 +78,6 @@ def _classify(rel: str) -> Dict[str, Any]:
         }
     if rel.startswith("models/"):
         name = Path(rel).name
-        if name.endswith((".onnx", ".onnx.json")) and is_excluded_voice_filename(name):
-            return {
-                "category": "voice_asset_excluded",
-                "upload_recommended": False,
-                "reason": "excluded from public bundles (NC-SA / license review — see models/MODEL_LICENSES.md)",
-            }
         if name in catalog_model_filenames():
             return {
                 "category": "model_asset",
@@ -95,18 +88,6 @@ def _classify(rel: str) -> Dict[str, Any]:
             "category": "model_unlisted",
             "upload_recommended": False,
             "reason": "not a model ELI's catalog names (eli/core/model_download.py); add it there to publish it",
-        }
-    if rel.startswith("tts_piper/"):
-        if is_excluded_voice_filename(Path(rel).name):
-            return {
-                "category": "voice_asset_excluded",
-                "upload_recommended": False,
-                "reason": "excluded from public bundles (NC-SA / license review — see models/MODEL_LICENSES.md)",
-            }
-        return {
-            "category": "voice_asset",
-            "upload_recommended": True,
-            "reason": "required for bundled offline TTS voices",
         }
     if rel.startswith("artifacts/"):
         return {

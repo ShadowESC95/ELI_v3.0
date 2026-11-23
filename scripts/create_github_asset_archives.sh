@@ -23,8 +23,7 @@ Options:
   -h, --help          Show help.
 
 Default archive set (what dist/github_assets/asset_manifest.json marks for upload):
-  models/     the models ELI's catalog names
-  tts_piper/  voices, without the restricted ones
+  models/     the models ELI's catalog names (the voice is fetched from its own pinned upstream)
   dist/github_assets/asset_manifest.json
 EOF
 }
@@ -85,9 +84,9 @@ make_split_tar() {
   done | make_split_tar_from_list "$name"
 }
 
-# The model and voice archives hold what the manifest marks for upload, and nothing else: the same
-# rule as the direct-file upload (scripts/asset_release_policy.py), so restricted voices and the
-# person's own recordings, wake words and adapters under models/ are never packed.
+# The model archive holds what the manifest marks for upload, and nothing else: the same rule as the
+# direct-file upload (scripts/asset_release_policy.py), so the person's own recordings, wake words
+# and adapters under models/ are never packed.
 manifest_files() {
   python3 - "$ROOT/dist/github_assets/asset_manifest.json" "$1" <<'PY'
 import json, sys
@@ -99,7 +98,6 @@ PY
 }
 
 manifest_files model_asset | make_split_tar_from_list "eli-model-assets"
-manifest_files voice_asset | make_split_tar_from_list "eli-voice-assets"
 
 if [ "$INCLUDE_RUNTIME" -eq 1 ]; then
   make_split_tar "eli-runtime-private-state" "artifacts"

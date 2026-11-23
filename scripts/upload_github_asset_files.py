@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
-from asset_release_policy import DEFAULT_ASSET_REPO, DEFAULT_ASSET_TAG, is_excluded_voice_filename
+from asset_release_policy import DEFAULT_ASSET_REPO, DEFAULT_ASSET_TAG
 from github_asset_manifest import ROOT, build_manifest
 
 
@@ -65,9 +65,6 @@ def _split_file(src: Path, prefix: Path, chunk_bytes: int) -> List[Path]:
 def _selected_rows(manifest: Dict[str, Any], include_runtime: bool, include_venv: bool) -> List[Dict[str, Any]]:
     rows = []
     for row in manifest.get("files") or []:
-        rel = str(row.get("path") or "")
-        if is_excluded_voice_filename(Path(rel).name):
-            continue
         category = row.get("category")
         if row.get("upload_recommended"):
             rows.append(row)

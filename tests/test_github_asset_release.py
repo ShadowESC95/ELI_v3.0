@@ -4,7 +4,7 @@ scripts/create_github_asset_archives.sh, scripts/asset_release_policy.py).
 Every git-ignored file under models/ was marked for upload, so a cloned voice's reference
 recording, the speaker profile, wake-word models trained on the owner's voice and adapters
 fine-tuned on their conversations were published with the models. The archive path tarred
-models/ and tts_piper/ whole, restricted voices included.
+models/ whole. (Voices are no longer published here: the voice is fetched from its own pinned upstream.)
 """
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ _EMBEDDER = model_download.AUX_MODELS[0]["filename"]
     "models/training_data/conversations.jsonl",
     "models/_download.log",
     "models/some_model.gguf.part",
-    "tts_piper/piper/recording.wav",
 ])
 def test_the_persons_own_files_beside_the_models_are_never_published(rel):
     row = manifest._classify(rel)
@@ -62,13 +61,12 @@ def test_the_archives_hold_only_what_the_manifest_publishes(tmp_path):
     (tree / "scripts").mkdir(parents=True)
     for name in ("create_github_asset_archives.sh", "github_asset_manifest.py", "asset_release_policy.py"):
         shutil.copy(ROOT / "scripts" / name, tree / "scripts" / name)
-    (tree / ".gitignore").write_text("models/\ntts_piper/\ndist/\n", encoding="utf-8")
+    (tree / ".gitignore").write_text("models/\ntts_kokoro/\ndist/\n", encoding="utf-8")
     files = {
         f"models/{_CATALOG_MODEL}": True,
         "models/voice_profiles/my_voice.wav": False,
         "models/wakeword/hey_there.pt": False,
-        "tts_piper/piper/en_US-amy-medium.onnx": True,
-        "tts_piper/piper/en_US-ryan-medium.onnx": False,
+        "tts_kokoro/model.onnx": False,
     }
     for rel in files:
         (tree / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +82,7 @@ def test_the_archives_hold_only_what_the_manifest_publishes(tmp_path):
     assert out.returncode == 0, out.stdout + out.stderr
     packed = set()
     upload = tree / "dist" / "github_assets" / "upload"
-    for name in ("eli-model-assets", "eli-voice-assets"):
+    for name in ("eli-model-assets",):
         parts = sorted(upload.glob(f"{name}.tar.gz.part-*"))
         joined = tmp_path / f"{name}.tar.gz"
         joined.write_bytes(b"".join(p.read_bytes() for p in parts))

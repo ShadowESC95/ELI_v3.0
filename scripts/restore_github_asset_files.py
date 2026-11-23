@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore model/voice assets from a GitHub Release.
+"""Restore model assets from a GitHub Release (the voice is fetched from its own pinned upstream).
 
 Supports two release layouts:
   1. Manifest + chunked files (``direct_asset_manifest.json`` from upload_github_asset_files.py)
@@ -18,7 +18,6 @@ from asset_release_policy import (
     DEFAULT_ASSET_REPO,
     DEFAULT_ASSET_TAG,
     flat_restore_destination,
-    is_excluded_voice_filename,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,9 +46,6 @@ def _restore_manifest(download_dir: Path, manifest_path: Path) -> int:
     files = manifest.get("files") or []
     for idx, row in enumerate(files, 1):
         rel = row.get("path")
-        if rel and is_excluded_voice_filename(Path(str(rel)).name):
-            print(f"[restore {idx}/{len(files)}] skip excluded voice: {rel}", flush=True)
-            continue
         assets = [download_dir / name for name in (row.get("assets") or [])]
         missing = [str(p) for p in assets if not p.exists()]
         if missing:
@@ -61,9 +57,8 @@ def _restore_manifest(download_dir: Path, manifest_path: Path) -> int:
 
 
 def _restore_flat(download_dir: Path) -> int:
-    """Place loose .gguf / .onnx release files into models/ and tts_piper/piper/."""
+    """Place loose .gguf release files into models/."""
     restored = 0
-    skipped = 0
     for path in sorted(download_dir.iterdir()):
         if not path.is_file():
             continue
@@ -72,11 +67,7 @@ def _restore_flat(download_dir: Path) -> int:
             continue
         if name.endswith(".part-0000") or ".tar.gz.part-" in name:
             continue
-        if is_excluded_voice_filename(name):
-            print(f"[restore flat] skip excluded voice (license): {name}", flush=True)
-            skipped += 1
-            continue
-        if not (name.endswith(".gguf") or name.endswith(".onnx") or name.endswith(".onnx.json")):
+        if not name.endswith(".gguf"):
             print(f"[restore flat] skip unknown asset type: {name}", flush=True)
             continue
         dst = flat_restore_destination(ROOT, name)
@@ -87,13 +78,11 @@ def _restore_flat(download_dir: Path) -> int:
         shutil.copy2(path, dst)
         print(f"[restore flat] {name} → {dst.relative_to(ROOT)}", flush=True)
         restored += 1
-    if restored == 0 and skipped == 0:
+    if restored == 0:
         raise SystemExit(
             f"No restorable assets found in {download_dir}. "
-            "Expected .gguf / .onnx files or direct_asset_manifest.json."
+            "Expected .gguf files or direct_asset_manifest.json."
         )
-    if skipped:
-        print(f"[restore flat] Skipped {skipped} excluded voice file(s).", flush=True)
     return restored
 
 
@@ -112,16 +101,6 @@ def restore(args: argparse.Namespace) -> int:
     else:
         print("[restore] No manifest — using flat-file layout", flush=True)
         count = _restore_flat(download_dir)
-
-    # Mirror voices into models/tts/piper for voice_assets / tts_router fallback paths.
-    piper_src = ROOT / "tts_piper" / "piper"
-    piper_dst = ROOT / "models" / "tts" / "piper"
-    if piper_src.is_dir():
-        piper_dst.mkdir(parents=True, exist_ok=True)
-        for onnx in piper_src.glob("*.onnx*"):
-            target = piper_dst / onnx.name
-            if not target.exists():
-                shutil.copy2(onnx, target)
 
     print(f"[restore] Complete ({count} item(s) processed)", flush=True)
     return 0
