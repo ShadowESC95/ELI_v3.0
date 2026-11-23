@@ -534,7 +534,8 @@ def test_every_build_leaves_them_out_and_stops_on_a_gpl_package():
     spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
     before = spec[:spec.index("a = Analysis(")]
     for needed in ('ROOT / "packaging" / "gpl_sources.py"', "_gpl = gpl_sources.gpl_distributions()",
-                   "gpl_sources.stand_in_problems()", "excludes += gpl_sources.left_out_modules()"):
+                   "gpl_sources.stand_in_problems()", "gpl_sources.left_out_files()",
+                   "excludes += gpl_sources.left_out_modules()"):
         assert needed in before, needed
     assert re.search(r"if _gpl:\s*\n\s*_fail\(", before)
 
@@ -544,13 +545,14 @@ def test_every_build_leaves_them_out_and_stops_on_a_gpl_package():
     build = joined("build_packages.sh")
     wheelhouse = build.split("build_windows_wheelhouse_for() {", 1)[1].split("\n}\n", 1)[0]
     assert '--check-wheels "$OUT_DIR"' in wheelhouse and "--kept-dependencies" in wheelhouse
+    assert wheelhouse.index('--leave-out "$OUT_DIR"') < wheelhouse.index('--check-wheels "$OUT_DIR"')
     commands = [c for line in build.splitlines() if not line.lstrip().startswith("#") for c in line.split("&&")]
     pyautogui = [c for c in commands if re.search(r"pip (?:wheel|download)\b.*PyAutoGUI", c)]
     assert pyautogui and all("--no-deps" in c for c in pyautogui), pyautogui
     stage = build.split("_stage_windows_common() {", 1)[1].split("\n}\n", 1)[0]
-    assert '--check-wheels "$STAGING/wheelhouse"' in stage
+    assert stage.index('--leave-out "$STAGING/wheelhouse"') < stage.index('--check-wheels "$STAGING/wheelhouse"')
     portable = joined("scripts/package_desktop_app.sh")
-    assert '--check-wheels "$STAGING/wheelhouse"' in portable
+    assert portable.index('--leave-out "$STAGING/wheelhouse"') < portable.index('--check-wheels "$STAGING/wheelhouse"')
     lock = [line for line in portable.splitlines()
             if not line.lstrip().startswith("#") and re.search(r"pip download\b.*requirements\.lock\.txt", line)]
     assert lock and all("--no-deps" in line for line in lock), lock
@@ -677,6 +679,107 @@ def test_a_wheelhouse_holding_a_gpl_package_is_refused_and_pyautogui_goes_in_wit
     assert gs.kept_dependencies(gui, "win_amd64", ["3.11", "3.12"]) == ["example-tween>=1.0"]
     assert gs.kept_dependencies(gui, "macosx_11_0_arm64", ["3.12"]) == ["example-tween>=1.0", "example-objc"]
     assert gs.kept_dependencies(gui, "manylinux2014_x86_64", ["3.12"]) == ["example-tween>=1.0"]
+
+
+def test_the_frozen_builds_carry_only_the_wake_word_files_eli_loads():
+    """ELI.spec collected all of openwakeword's data, so its pre-trained wake-word models (CC BY-NC-SA
+    4.0, non-commercial) went into every bundle, though ELI runs only the feature extractor. What every
+    build and installer leaves out of the installed package is all of its models but those."""
+    import inspect
+    import re
+    from eli.perception import wakeword
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    named = [line for line in spec.splitlines() if '"openwakeword"' in line and not line.lstrip().startswith("#")]
+    assert named and all("_wake_feature_files(" in line for line in named), named
+    gs = _gpl_sources()
+    assert gs.LEFT_OUT_FILES["openwakeword"].keep == wakeword.FEATURE_MODELS
+
+    oww = pytest.importorskip("openwakeword")
+    from openwakeword.utils import AudioFeatures
+    loaded = set(re.findall(r'"(\w+)\.(?:onnx|tflite)"', inspect.getsource(AudioFeatures.__init__)))
+    assert loaded and set(wakeword.FEATURE_MODELS) == loaded, "FEATURE_MODELS is not what ELI's extractor loads"
+    pretrained = {Path(p).stem for p in oww.get_pretrained_model_paths()}
+    entry = gs.LEFT_OUT_FILES["openwakeword"]
+    assert pretrained and not loaded & pretrained
+    assert all(entry.matches(f"openwakeword/resources/models/{stem}.onnx") for stem in pretrained)
+    assert not any(entry.matches(f"openwakeword/resources/models/{stem}.onnx") for stem in loaded)
+    hooks = pytest.importorskip("PyInstaller.utils.hooks")
+    kept = {Path(src).stem for src, _dest in wakeword.feature_model_files(hooks.collect_data_files("openwakeword"))}
+    assert kept <= loaded and not kept & pretrained
+
+
+def test_what_a_kept_package_holds_under_such_a_licence_eli_never_uses():
+    """SpeechRecognition's FLAC programs (GPL-2.0) run only for AudioData.get_flac_data(), which only its
+    online recognisers call; ELI calls none of them and records and transcribes locally."""
+    import ast
+    gs = _gpl_sources()
+    flac = gs.LEFT_OUT_FILES["speechrecognition"]
+    for name in ("flac-linux-x86", "flac-linux-x86_64", "flac-mac", "flac-win32.exe"):
+        assert flac.matches(f"speech_recognition/{name}")
+    assert not flac.matches("speech_recognition/audio.py") and not flac.matches("speech_recognition/__init__.py")
+    used = []
+    for root in ("eli", "api"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Attribute) and (node.attr == "get_flac_data" or node.attr.startswith("recognize_")):
+                    used.append(f"{H.rel(path)}:{node.lineno} .{node.attr}")
+    assert not used, "ELI uses what needs SpeechRecognition's FLAC programs:\n  " + "\n  ".join(used)
+    sr = gs.installed_distributions().get("speechrecognition")
+    if sr is not None:
+        held = [f for f, _ in gs._record(sr) if flac.matches(f)]
+        assert all(Path(f).name.startswith("flac-") for f in held), held
+
+
+def test_the_files_left_out_go_from_the_environment_and_the_wheels(tmp_path, monkeypatch, capsys):
+    """openWakeWord's wheel holds its non-commercial wake-word models beside the two models ELI loads.
+    --leave-out deletes such files from the installed package and their rows from its RECORD (it stays
+    whole as installed), rewrites a wheelhouse's wheels without them, and --check-wheels refuses a wheel
+    or sdist that still holds them. Invented packages."""
+    import io
+    import tarfile
+    import zipfile
+    gs = _gpl_sources()
+    entry = gs.LeftOutFiles(r"^examplewake/models/[^/]+$", ("features",), "CC-BY-NC-SA-4.0", "the head is ELI's own")
+    monkeypatch.setattr(gs, "LEFT_OUT_FILES", {"example-wake": entry})
+    monkeypatch.setattr(gs, "LEFT_OUT", {})
+    site = tmp_path / "site"
+    files = {"examplewake/__init__.py": b"", "examplewake/models/features.onnx": b"kept",
+             "examplewake/models/hey_example.onnx": b"non-commercial", "examplewake/models/other.tflite": b"nc"}
+    _invented_dist(site, "example-wake", "0.4", files, "License: Apache-2.0\n")
+    path = [str(site)]
+    assert [sorted(f) for _d, f in gs.left_out_files(path)] == \
+        [["examplewake/models/hey_example.onnx", "examplewake/models/other.tflite"]]
+    assert gs.leave_out(path) == 0
+    assert gs.left_out_files(path) == [] and (site / "examplewake/models/features.onnx").is_file()
+    assert not (site / "examplewake/models/hey_example.onnx").exists()
+    dist = gs.installed_distributions(path)["example-wake"]
+    assert gs.intact(dist) and not [f for f, _ in gs._record(dist) if "hey_example" in f]
+    assert "leaving out 2 file(s) of example-wake 0.4" in capsys.readouterr().out
+    assert gs.leave_out(path) == 0                                   # nothing left to do
+
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+    wheel = house / "example_wake-0.4-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        for rel, body in files.items():
+            z.writestr(rel, body)
+        z.writestr("example_wake-0.4.dist-info/METADATA", "Metadata-Version: 2.1\nName: example-wake\nVersion: 0.4\n")
+        z.writestr("example_wake-0.4.dist-info/RECORD", "".join(f"{rel},,\n" for rel in files))
+    assert gs.main(["--check-wheels", str(house)]) == 1
+    assert "holds 2 file(s) under CC-BY-NC-SA-4.0" in capsys.readouterr().err
+    assert gs.main(["--leave-out", str(house)]) == 0
+    with zipfile.ZipFile(wheel) as z:
+        assert sorted(n for n in z.namelist() if "/models/" in n) == ["examplewake/models/features.onnx"]
+        assert "hey_example" not in z.read("example_wake-0.4.dist-info/RECORD").decode()
+    assert gs.main(["--check-wheels", str(house)]) == 0
+    body = b"Metadata-Version: 1.1\nName: example-wake\nVersion: 0.4\n"
+    with tarfile.open(house / "example-wake-0.4.tar.gz", "w:gz") as tar:
+        for name, data in (("example-wake-0.4/PKG-INFO", body), ("example-wake-0.4/examplewake/models/x.onnx", b"nc")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    assert gs.main(["--check-wheels", str(house)]) == 1               # an sdist is refused, not rewritten
 
 
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):

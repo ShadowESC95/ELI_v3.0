@@ -72,6 +72,7 @@ package whose source it cannot find is not released.
 | **llama-cpp-python** | MIT | GGUF inference; built with llama.cpp (MIT) v0.8.0 by `packaging/llama_source.py` |
 | **faiss-cpu** | MIT | Vector memory index |
 | **faster-whisper** | MIT | Local speech-to-text |
+| **SpeechRecognition** | BSD-3-Clause; its package also holds **FLAC encoder programs (GPL-2.0)** and CMU Sphinx's English model (BSD-style) | The microphone and the end of a phrase. The FLAC programs run only for its online recognisers, which ELI never calls; every build, wheelhouse and installer leaves them out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |
 | **onnxruntime** | MIT | Runs the Kokoro voice (text to speech) |
 | **misaki** | Apache-2.0 | Kokoro's text to phonemes; installed **without** its `[en]` extra (espeakng-loader, phonemizer-fork: GPL) |
 | **spaCy** (+ thinc, srsly, cymem, preshed, murmurhash, blis, wasabi, weasel, confection, catalogue) | MIT / BSD | misaki's English tagger |
@@ -85,7 +86,7 @@ package whose source it cannot find is not released.
 | **opencv-python** | Apache-2.0 | Vision / gaze |
 | **playwright** | Apache-2.0 | Browser automation plugin |
 | **bleak** | MIT | Bluetooth discovery |
-| **openwakeword** | Apache-2.0 | Wake word |
+| **openwakeword** | Apache-2.0 code; the **pre-trained wake-word models in its package are CC BY-NC-SA 4.0** (non-commercial), per its own licence note | Wake word. ELI uses only its feature extractor (the melspectrogram and speech-embedding models) and trains its own detector head (`eli/perception/wakeword.py`); every build, wheelhouse and installer leaves the pre-trained models out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |
 | **pychromecast**, **androidtv**, **pyatv** | MIT | Device drivers (Chromecast, Fire TV / Android TV, Apple TV / AirPlay) |
 | **adb-shell** | Apache-2.0 | Fire TV / Android TV pairing |
 | **PyAutoGUI** | BSD-3-Clause | Keyboard and mouse where no native tool does; its GPL dependencies are left out (see the GPL note above) |

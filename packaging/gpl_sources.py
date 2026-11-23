@@ -1,26 +1,33 @@
-"""What a release must not carry under the GPL, how every build leaves out the GPL packages a package
-ELI uses declares, and where the source of every LGPL package a release carries is.
+"""What a release must not carry under the GPL or a non-commercial licence, how every build leaves out
+what a package ELI uses declares or holds under one, and where the source of every LGPL package a
+release carries is.
 
 ELI v3 is sold under its own licence (LICENSE) and passes on no package under the GPL, which lets a
 program be passed on as a binary only with its Corresponding Source and under the GPL's own terms.
 PyAutoGUI (BSD-3-Clause), which drives the keyboard and mouse where no native tool does, declares three
 that are: MouseInfo, PyMsgBox and, on Linux, python3-xlib. ELI runs the same without them (LEFT_OUT says
-why), but pip installs whatever a package declares, so each build that bundles packages takes them out:
+why), but pip installs whatever a package declares, so each build that bundles packages takes them out.
+Two packages ELI keeps hold files it never uses under such a licence (LEFT_OUT_FILES): openWakeWord's
+pre-trained wake-word models (CC BY-NC-SA 4.0) and SpeechRecognition's FLAC programs (GPL-2.0); those
+files are taken out the same way:
 
-    python packaging/gpl_sources.py --leave-out           # uninstall them from this environment, and
-                                                          # reinstall what shared files with them
-    python packaging/gpl_sources.py --check-wheels DIR    # fail when a wheel or sdist in DIR is under the GPL
+    python packaging/gpl_sources.py --leave-out           # uninstall them from this environment,
+                                                          # reinstall what shared files with them, and
+                                                          # delete the files left out of the others
+    python packaging/gpl_sources.py --leave-out DIR       # rewrite the wheels in DIR without those files
+    python packaging/gpl_sources.py --check-wheels DIR    # fail when a wheel or sdist in DIR is under the
+                                                          # GPL or holds a file left out
     python packaging/gpl_sources.py --kept-dependencies WHEEL PLATFORM PYTHON...
                                                           # what WHEEL needs on that platform, less them
     python packaging/gpl_sources.py --list                # the GPL and LGPL packages a release built
                                                           # here would carry (no network)
 
 The frozen builds run --leave-out after their last install, and ELI.spec stops a build whose environment
-still holds a package under the GPL (gpl_distributions) or whose stand-in for a left-out one is not
-intact. The build's own tools are not counted: what requirements-build.txt brings and ELI does not
+still holds a package under the GPL (gpl_distributions) or a file left out (left_out_files), or whose
+stand-in for a left-out package is not intact. The build's own tools are not counted: what requirements-build.txt brings and ELI does not
 (PyInstaller, whose bootloader every frozen app starts through, is under the GPL with an exception that
 lets the bootloader go with any program; pyinstaller-hooks-contrib only runs during the build). The
-wheelhouses pass --check-wheels. A user's own `pip install` from PyPI still fetches PyAutoGUI's
+wheelhouses pass --leave-out DIR, then --check-wheels. A user's own `pip install` from PyPI still fetches PyAutoGUI's
 dependencies onto that user's machine; ELI passes none of them on.
 
 The release workflow runs this in the Linux build's environment, which holds every package the Windows
@@ -116,6 +123,42 @@ LEFT_OUT: Dict[str, LeftOut] = {
     "mouseinfo": LeftOut("pyautogui", ("mouseinfo",), ("mouseInfo",), ""),
     "pymsgbox": LeftOut("pyautogui", ("pymsgbox",), ("alert", "confirm", "prompt", "password"), ""),
     "python3-xlib": LeftOut("pyautogui", (), (), "python-xlib"),
+}
+
+
+class LeftOutFiles(NamedTuple):
+    """Files inside a distribution ELI keeps that no release carries and no install keeps."""
+    pattern: str                  # what is left out: a regular expression over its RECORD paths
+    keep: Tuple[str, ...]         # the file stems matching it that stay (what ELI loads)
+    licence: str                  # what they are under
+    why: str                      # why ELI runs the same without them
+
+    def matches(self, rel: str) -> bool:
+        rel = str(rel).replace("\\", "/")
+        return bool(re.search(self.pattern, rel)) and Path(rel).stem not in self.keep
+
+
+def _wake_feature_models() -> Tuple[str, ...]:
+    """FEATURE_MODELS in eli/perception/wakeword.py, the openWakeWord models ELI loads, read from the
+    source (this runs before ELI's own packages are known to be installed)."""
+    import ast
+    tree = ast.parse((ROOT / "eli" / "perception" / "wakeword.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "FEATURE_MODELS" for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    raise ValueError("eli/perception/wakeword.py names no FEATURE_MODELS")
+
+
+# openWakeWord's wheel carries its pre-trained wake-word models, which its licence note puts under CC
+# BY-NC-SA 4.0 (non-commercial), and a copy of Silero's VAD; ELI loads only the feature extractor's two
+# models (FEATURE_MODELS) and trains its own head. SpeechRecognition's carries FLAC encoder programs
+# (GPL-2.0), which only AudioData.get_flac_data() runs, for the online recognisers ELI never calls.
+# tests/claims/test_license_reachable.py holds both to the code.
+LEFT_OUT_FILES: Dict[str, LeftOutFiles] = {
+    "openwakeword": LeftOutFiles(r"^openwakeword/resources/models/[^/]+$", _wake_feature_models(),
+                                 "CC-BY-NC-SA-4.0", "ELI runs only the feature extractor (FEATURE_MODELS)"),
+    "speechrecognition": LeftOutFiles(r"^speech_recognition/flac-[^/]+$", (), "GPL-2.0-or-later",
+                                      "only get_flac_data() runs them, for online recognisers ELI never calls"),
 }
 
 
@@ -284,6 +327,56 @@ def stand_in_problems(path: Optional[List[str]] = None) -> List[str]:
 
 
 def leave_out(path: Optional[List[str]] = None, run: Callable = subprocess.run) -> int:
+    """Leave out of this environment what no release carries: the distributions LEFT_OUT names and the
+    files LEFT_OUT_FILES names in those ELI keeps."""
+    status = _leave_out_distributions(path, run)
+    return leave_out_files(path) or status
+
+
+def left_out_files(path: Optional[List[str]] = None) -> List[Tuple[metadata.Distribution, List[str]]]:
+    """Each installed distribution LEFT_OUT_FILES names, with the files it leaves out that are on disk."""
+    installed = installed_distributions(path)
+    found = []
+    for key, entry in sorted(LEFT_OUT_FILES.items()):
+        dist = installed.get(key)
+        if dist is None:
+            continue
+        files = [f for f, _ in _record(dist) if entry.matches(f) and Path(_path_of(dist, f)).is_file()]
+        if files:
+            found.append((dist, files))
+    return found
+
+
+def _drop_record_rows(text: str, gone: Iterable[str]) -> str:
+    import csv
+    gone = {str(g) for g in gone}
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    for row in csv.reader(text.splitlines()):
+        if row and row[0] not in gone:
+            writer.writerow(row)
+    return out.getvalue()
+
+
+def leave_out_files(path: Optional[List[str]] = None) -> int:
+    """Delete the files LEFT_OUT_FILES names from the distributions installed here, and their rows from
+    each one's RECORD, so the distribution stays whole as installed (and uninstalls cleanly)."""
+    for dist, files in left_out_files(path):
+        name, entry = str(dist.metadata["Name"]), LEFT_OUT_FILES[_key(str(dist.metadata["Name"]))]
+        print(f"[gpl] leaving out {len(files)} file(s) of {name} {dist.version} ({entry.licence}; {entry.why}): "
+              + ", ".join(Path(f).name for f in files), flush=True)
+        for f in files:
+            Path(_path_of(dist, f)).unlink()
+        record = next(f for f, _ in _record(dist) if f.replace("\\", "/").endswith(".dist-info/RECORD"))
+        record_path = Path(_path_of(dist, record))
+        record_path.write_text(_drop_record_rows(record_path.read_text(encoding="utf-8"), files), encoding="utf-8")
+    still = left_out_files(path)
+    for dist, files in still:
+        print(f"::error::{dist.metadata['Name']} still holds {', '.join(files)}", file=sys.stderr)
+    return 1 if still else 0
+
+
+def _leave_out_distributions(path: Optional[List[str]] = None, run: Callable = subprocess.run) -> int:
     """Uninstall what LEFT_OUT names from this environment, then reinstall, without its dependencies, each
     distribution that shared a file with them (python-xlib and python3-xlib are the same Xlib package),
     and check that each of those is intact again."""
@@ -335,13 +428,62 @@ def archive_metadata(path: Path):
     return email.parser.Parser().parsestr(text) if text else None
 
 
+def _archive_names(path: Path) -> List[str]:
+    """The members of a wheel, or of an sdist less its top folder (name-version/)."""
+    name = path.name.lower()
+    if name.endswith((".whl", ".zip")):
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+        return names if name.endswith(".whl") else [n.split("/", 1)[-1] for n in names]
+    if name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(path) as t:
+            return [m.name.split("/", 1)[-1] for m in t.getmembers() if m.isfile()]
+    return []
+
+
+def archive_left_out(path: Path, meta=None) -> List[str]:
+    """The members of a wheel or sdist that LEFT_OUT_FILES leaves out of its distribution."""
+    meta = archive_metadata(path) if meta is None else meta
+    entry = LEFT_OUT_FILES.get(_key(str(meta.get("Name") or ""))) if meta is not None else None
+    return [n for n in _archive_names(path) if entry.matches(n)] if entry else []
+
+
+def leave_out_of_wheels(directory: Path) -> int:
+    """Rewrite each wheel in `directory` without the files LEFT_OUT_FILES names, and without their rows in
+    its RECORD, as every install leaves them out of the environment. An sdist holding them is not
+    rewritten: --check-wheels refuses it."""
+    for path in sorted(Path(directory).glob("*.whl")):
+        gone = set(archive_left_out(path))
+        if not gone:
+            continue
+        name = str(archive_metadata(path).get("Name"))
+        print(f"[gpl] {path.name}: leaving out {len(gone)} file(s) ({LEFT_OUT_FILES[_key(name)].licence}): "
+              + ", ".join(sorted(Path(g).name for g in gone)), flush=True)
+        part = path.with_name(path.name + ".part")
+        with zipfile.ZipFile(path) as src, zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as dst:
+            for info in src.infolist():
+                if info.filename in gone:
+                    continue
+                body = src.read(info)
+                if re.match(r"^[^/]+\.dist-info/RECORD$", info.filename):
+                    body = _drop_record_rows(body.decode("utf-8"), gone).encode("utf-8")
+                dst.writestr(info, body)
+        part.replace(path)
+    return 0
+
+
 def gpl_archives(directory: Path) -> List[str]:
-    """Each wheel or sdist in `directory` whose metadata puts it under the GPL, with what it says."""
+    """Each wheel or sdist in `directory` whose metadata puts it under the GPL, or that holds files no
+    release carries (LEFT_OUT_FILES), with what it says."""
     found = []
     for path in sorted(p for p in Path(directory).iterdir() if p.is_file()):
         meta = archive_metadata(path)
         if meta is not None and is_gpl(licence_facts(meta)):
             found.append(f"{path.name} ({'; '.join(licence_facts(meta))})")
+        elif meta is not None and archive_left_out(path, meta):
+            entry = LEFT_OUT_FILES[_key(str(meta.get("Name")))]
+            found.append(f"{path.name} (holds {len(archive_left_out(path, meta))} file(s) under {entry.licence}, "
+                         f"which no release carries: run `python packaging/gpl_sources.py --leave-out {directory}`)")
     return found
 
 
@@ -661,13 +803,14 @@ def fetch_all(out_dir: Path) -> int:
 def main(argv: List[str]) -> int:
     if argv == ["--leave-out"]:
         return leave_out()
+    if argv[:1] == ["--leave-out"] and len(argv) == 2:
+        return leave_out_of_wheels(Path(argv[1]))
     if argv[:1] == ["--check-wheels"] and len(argv) == 2:
         found = gpl_archives(Path(argv[1]))
         for line in found:
-            print(f"::error::{argv[1]} holds a package under the GPL, which ELI v3 does not pass on: {line}",
-                  file=sys.stderr)
+            print(f"::error::{argv[1]} holds what ELI v3 does not pass on: {line}", file=sys.stderr)
         if not found:
-            print(f"[gpl] {argv[1]}: no package under the GPL")
+            print(f"[gpl] {argv[1]}: no package under the GPL, nothing left out")
         return 1 if found else 0
     if argv[:1] == ["--kept-dependencies"] and len(argv) >= 4:
         print("\n".join(kept_dependencies(Path(argv[1]), argv[2], argv[3:])))
@@ -680,6 +823,8 @@ def main(argv: List[str]) -> int:
             print("no package under the GPL")
         for problem in stand_in_problems():
             print(f"stand-in: {problem}")
+        for dist, files in left_out_files():
+            print(f"left out but installed: {dist.metadata['Name']} {', '.join(files)}")
         for pkg in lgpl_distributions():
             qt = "  carries Qt libraries" if pkg["qt_libraries"] else ""
             print(f"{pkg['name']}=={pkg['version']}  ({pkg['licence']}, source not attached: {LGPL_LISTING}){qt}")

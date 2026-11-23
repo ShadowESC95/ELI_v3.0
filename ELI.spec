@@ -81,6 +81,13 @@ if _gpl:
 _stand_in_problems = gpl_sources.stand_in_problems()
 if _stand_in_problems:
     _fail("; ".join(_stand_in_problems))
+# Files of a package ELI keeps that no release carries (openWakeWord's non-commercial wake-word models,
+# SpeechRecognition's GPL FLAC programs), which the same --leave-out step deletes.
+_left_out_files = gpl_sources.left_out_files()
+if _left_out_files:
+    _fail("files no release carries are installed: " + "; ".join(
+        f"{d.metadata['Name']}: {', '.join(f)}" for d, f in _left_out_files)
+        + ". Run `python packaging/gpl_sources.py --leave-out`.")
 
 ICON_ICO = ROOT / "packaging" / "desktop" / "Eli_Icon.ico"
 ICON_PNG = ROOT / "packaging" / "desktop" / "eli-256.png"  # 256px master; Eli_Icon.png is only 175px and renders fuzzy
@@ -379,8 +386,13 @@ if sys.platform.startswith("linux"):
         binaries.append((str(_path), _qt_lib_dest))
         print(f"[ELI.spec] bundling Qt xcb dependency: {_path} -> {_qt_lib_dest}")
 
-for pkg in ("llama_cpp", "faster_whisper", "openwakeword"):
+for pkg in ("llama_cpp", "faster_whisper"):
     datas += _optional_collect(pkg, data=True)
+# openWakeWord: only its feature extractor's models, the files ELI loads (FEATURE_MODELS in
+# eli/perception/wakeword.py). The package's pre-trained wake-word models are CC BY-NC-SA 4.0
+# (non-commercial) and ELI never loads them, so they stay out of the bundle.
+from eli.perception.wakeword import feature_model_files as _wake_feature_files  # noqa: E402
+datas += _wake_feature_files(_optional_collect("openwakeword", data=True))
 # The Kokoro voice's text side: misaki reads its dictionaries (misaki/data/*.json) as package data,
 # spaCy and thinc register their parts through entry points read from the dist-info metadata, and
 # load the tagger's components by name, so all of it is collected whole.

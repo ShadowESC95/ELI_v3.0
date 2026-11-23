@@ -77,6 +77,7 @@ voices this pack held (and the ones it excluded: ryan, lessac, cori) are no long
 | Asset | Upstream | License |
 |---|---|---|
 | **faster-whisper** `small.en` (STT weights) | [Systran/faster-whisper-small.en](https://huggingface.co/Systran/faster-whisper-small.en) | MIT |
+| **openWakeWord feature models** `melspectrogram.onnx` (an ONNX export of torchaudio's MelSpectrogram with fixed parameters) and `embedding_model.onnx` (Google's `speech_embedding/1`, re-implemented by openWakeWord), inside the `openwakeword` 0.4.0 package; ELI trains its own detector head on them | [dscripka/openWakeWord](https://github.com/dscripka/openWakeWord), [google/speech_embedding/1](https://tfhub.dev/google/speech_embedding/1) | Code **Apache-2.0**; Google's speech_embedding model Apache-2.0, per openWakeWord's README. openWakeWord's licence note also puts "all of the included pre-trained models" under CC BY-NC-SA 4.0: its pre-trained wake-word models (alexa, hey_jarvis, ...) are left out of every build, wheelhouse and install (`packaging/gpl_sources.py`, LEFT_OUT_FILES), and whether that note reaches `embedding_model.onnx` is open (see *Open question* below) |
 | **Kokoro-82M v1.0**, ONNX export `onnx/model.onnx` + `tokenizer.json` + the 28 English and 8 Mandarin voices `voices/{af,am,bf,bm,zf,zm}_*.bin` (ELI's voice; revision `1939ad2a8e416c0acfeecc08a694d14ef25f2231`) | [onnx-community/Kokoro-82M-v1.0-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX), from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | **Apache-2.0** (weights) |
 | **en_core_web_sm 3.8.0** (spaCy's English tagger misaki reads words with) | [explosion/spacy-models](https://github.com/explosion/spacy-models/releases/tag/en_core_web_sm-3.8.0) | **MIT** (trained on OntoNotes 5, licensed commercially by Explosion; WordNet 3.0 licence) |
 | **gruut English G2P model** `g2p/model.crf` (guesses words misaki's dictionaries lack; trained on the CMU Pronouncing Dictionary) | [rhasspy/gruut](https://github.com/rhasspy/gruut/tree/a2187f9dfe472e4aafffcf043bd1a220c057ee9d/gruut-lang-en) @ `a2187f9d` | **MIT** (© 2020 Michael Hansen); CMUdict: BSD-2-Clause-style |
@@ -88,6 +89,22 @@ weight files are checked against their SHA-256 before first use. Kokoro's own no
 open-weight TTS model with 82 million parameters ... With Apache-licensed weights, Kokoro can be
 deployed anywhere"* (hexgrad/Kokoro-82M model card). Copies of the Apache-2.0 and MIT licence texts
 are at <https://www.apache.org/licenses/LICENSE-2.0> and <https://opensource.org/license/mit>.
+
+---
+
+## Open question: openWakeWord's speech-embedding model
+
+`embedding_model.onnx` is, by openWakeWord's README, Google's `speech_embedding/1` model, "provided by
+Google as a TFHub module under an Apache-2.0 license", which openWakeWord "manually re-implemented".
+The same README says "all of the included pre-trained models are licensed under the Creative Commons
+Attribution-NonCommercial-ShareAlike 4.0 International license due to the inclusion of datasets with
+unknown or restrictive licensing as part of the training data", and its official Hugging Face repository
+(`davidscripka/openwakeword`) carries that licence. The reason given (openWakeWord's own training data)
+does not apply to Google's model, which Google trained, but the note does not except it in words, and no
+statement from the author that it is Apache-2.0 was found in the package or on PyPI or Hugging Face.
+Until the owner decides (ask the author in writing, or convert Google's original Apache-2.0
+`speech_embedding/1` into ONNX for ELI), the release builds carry it as they did. `melspectrogram.onnx`
+is no trained model: a fixed signal transform, exported from torchaudio (BSD-2-Clause).
 
 ---
 

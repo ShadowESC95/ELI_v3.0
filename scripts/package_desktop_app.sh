@@ -159,7 +159,9 @@ if [ "${ELI_FULL_WHEELHOUSE:-0}" = "1" ] && [ -f "$ROOT/requirements.lock.txt" ]
       --prefer-binary -q 2>/dev/null || echo "[package]   (some wheels unavailable — install will fetch those)"
 fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
-  # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the package here
+  # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the package here; the files a
+  # kept package holds under such a licence (LEFT_OUT_FILES) are taken out of its wheel first
+  "$PYTHON" "$ROOT/packaging/gpl_sources.py" --leave-out "$STAGING/wheelhouse" || exit 1
   "$PYTHON" "$ROOT/packaging/gpl_sources.py" --check-wheels "$STAGING/wheelhouse" || exit 1
   _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l || true)"
   echo "[package] wheelhouse: ${_wh_count} wheel(s)"
