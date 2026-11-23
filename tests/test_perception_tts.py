@@ -218,6 +218,24 @@ def test_a_reply_kokoro_cannot_render_is_reported_not_played_with_the_reason(mon
     assert result["ok"] is False and "not on this machine" in result["error"] and not played
 
 
+def test_a_render_that_raises_ends_the_reply_instead_of_leaving_it_waiting(monkeypatch, tmp_path):
+    """The rendering thread hands each sentence to playback; one that raised left playback waiting
+    for a sentence that never came, holding the speaking lock."""
+    from eli.perception import tts_router as tr
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+
+    def _boom(*a, **k):
+        raise RuntimeError("the engine fell over")
+    monkeypatch.setattr(tr, "_render_piece", _boom)
+    _record_playback(monkeypatch)
+    done = []
+    worker = threading.Thread(target=lambda: done.append(tr._run_tts("One. Two.", voice_name="af_heart")))
+    worker.start()
+    worker.join(10)
+    assert done and not done[0], "the reply hung or claimed it was spoken"
+    assert not (tmp_path / "speaking.lock").exists()
+
+
 def test_the_browser_voice_gets_every_sentence_in_one_wav_with_the_pauses(kokoro_here, monkeypatch):
     from eli.perception import tts_router as tr
     from eli.cognition import tone_adaptor

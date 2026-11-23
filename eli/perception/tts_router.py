@@ -878,11 +878,18 @@ def _speak_kokoro(text: str, voice: str) -> Playback:
     stop = threading.Event()
 
     def _render_all() -> None:
-        for piece in pieces:
-            if stop.is_set():
-                break
-            ready.put(_render_piece(piece, voice, prosody))
-        ready.put(b"")                                   # the end
+        try:
+            for piece in pieces:
+                if stop.is_set():
+                    break
+                try:
+                    ready.put(_render_piece(piece, voice, prosody))
+                except Exception:
+                    log.warning("[TTS] a sentence could not be rendered", exc_info=True)
+                    ready.put(None)
+                    break
+        finally:
+            ready.put(b"")                               # the end, whatever happened: playback never waits forever
 
     threading.Thread(target=_render_all, daemon=True, name="eli-tts-render").start()
     played = Playback(False, detail="nothing was spoken")
