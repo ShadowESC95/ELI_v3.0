@@ -336,6 +336,100 @@ def test_a_profile_learnt_from_every_capture_starts_over(tmp_path, monkeypatch):
     assert stt._load_voice_profile()["count"] == 7
 
 
+# ── echo cancellation: what the default sink plays, out of the microphone ─────
+def _aec_world(monkeypatch, tmp_path, server):
+    from eli.utils import platform_compat
+    import eli.core.paths as paths
+    started, ran = [], []
+
+    class _Proc:
+        def __init__(self, argv, **kw):
+            started.append(argv)
+            self.ended = False
+
+        def poll(self):
+            return 0 if self.ended else None
+
+        def terminate(self):
+            self.ended = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    def _run(argv, **kw):
+        ran.append(argv)
+        listed = f"7\t{audio_stt.AEC_SOURCE}\tPipeWire\ts16le 1ch 48000Hz\tIDLE\n" if started else ""
+        return types.SimpleNamespace(stdout=listed, stderr="", returncode=0)
+
+    monkeypatch.setattr(platform_compat, "LINUX", True)
+    monkeypatch.setattr(platform_compat, "sound_server", lambda: server)
+    monkeypatch.setattr(audio_stt.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(audio_stt.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(audio_stt.subprocess, "run", _run)
+    monkeypatch.setattr(paths, "temp_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(audio_stt.atexit, "register", lambda fn: None)
+    monkeypatch.setitem(audio_stt._AEC, "proc", None)
+    monkeypatch.setenv("ELI_STT_ECHO_CANCEL", "1")
+    for name in ("ELI_MIC_PULSE_SOURCE", "PULSE_SOURCE"):
+        monkeypatch.delenv(name, raising=False)
+    return started, ran
+
+
+def test_echo_cancellation_takes_the_default_sinks_sound_out_without_changing_the_desktop(monkeypatch, tmp_path):
+    """PulseAudio's module-echo-cancel, loaded into the server, cancelled only what played into its
+    own sink, and nothing plays there: ELI's voice and music were never cancelled. PipeWire's
+    canceller runs in ELI's own client process in monitor mode, the default sink's monitor as what
+    it takes out; its source is ELI's alone and goes with it."""
+    import os
+    started, ran = _aec_world(monkeypatch, tmp_path, "pipewire")
+    monkeypatch.setenv("ELI_MIC_PULSE_SOURCE", "alsa_input.usb-headset")
+    assert audio_stt.ensure_echo_cancel() is True
+    assert started == [["pipewire", "-c", str(tmp_path / "echo_cancel.conf")]]
+    conf = (tmp_path / "echo_cancel.conf").read_text()
+    assert "monitor.mode = true" in conf and "priority.session = 0" in conf
+    assert 'target.object = "alsa_input.usb-headset"' in conf, "the microphone the owner chose is what is cleaned"
+    assert not any("load-module" in a for argv in ran for a in argv), "nothing is loaded into the server"
+    assert os.environ["PULSE_SOURCE"] == audio_stt.AEC_SOURCE and audio_stt.echo_cancel_state()["active"]
+    audio_stt._unload_echo_cancel()
+    assert not audio_stt.echo_cancel_state()["active"] and "PULSE_SOURCE" not in os.environ
+
+
+def test_on_pulseaudio_alone_echo_cancellation_is_not_done_and_says_why(monkeypatch, tmp_path):
+    started, ran = _aec_world(monkeypatch, tmp_path, "pulseaudio")
+    assert audio_stt.ensure_echo_cancel() is False and started == [] and ran == []
+    assert "routing" in audio_stt.echo_cancel_state()["reason"]
+    monkeypatch.setenv("ELI_STT_ECHO_CANCEL", "0")
+    assert audio_stt.ensure_echo_cancel() is False
+
+
+# ── the wake word learnt from the owner's use ─────────────────────────────────
+def _learning_listener(monkeypatch, tmp_path, said, **kw):
+    from eli.perception import wakeword as ww
+    monkeypatch.setattr(ww, "_model_dir", lambda: tmp_path / "wakeword")
+    monkeypatch.setattr(ww, "wake_segment", lambda pcm, sr=16000: np.full(ww.CLIP_N, 0.1, dtype=np.float32))
+    trained = []
+    monkeypatch.setattr(ww, "retrain_in_background", lambda train=None: trained.append(1) or True)
+    stt = _scripted_listener(monkeypatch, said, **kw)
+    stt.callback = lambda command: None
+    return stt, ww, trained
+
+
+def test_a_wake_word_whose_command_was_acted_on_is_kept_to_train_on(monkeypatch, tmp_path):
+    stt, ww, trained = _learning_listener(monkeypatch, tmp_path, [("computer", 2100), ("what time is it", 1900)])
+    stt._listen_loop()
+    assert ww.enrollment_count() == 1
+    stt, ww, _ = _learning_listener(monkeypatch, tmp_path / "2", [("computer", 2100)])
+    stt._listen_loop()
+    assert ww.enrollment_count() == 0, "no command followed: not confirmed"
+
+
+def test_a_wake_word_heard_over_elis_music_with_no_speech_of_the_owners_is_not_kept(monkeypatch, tmp_path):
+    stt, ww, _ = _learning_listener(monkeypatch, tmp_path, [("computer, what time is it", 2100)],
+                                    media_playing=True)
+    stt._listen_loop()
+    assert ww.enrollment_count() == 0, "music alone may have said it"
+
+
 # ── hearing the owner over ELI's own music ───────────────────────────────────
 _SR = fx.SR
 _voice, _music, _through_the_room, _feed = fx.voice, fx.music, fx.through_the_room, fx.feed

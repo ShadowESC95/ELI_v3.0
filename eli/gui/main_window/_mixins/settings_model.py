@@ -1413,6 +1413,36 @@ class SettingsModelMixin:
         )
         wake_card.addRow(self.allow_direct_chat_checkbox)
 
+        # The wake phrase, and what the detector has learnt from the owner's own use
+        _wake_row = QHBoxLayout()
+        self.wake_phrase_input = QLineEdit()
+        self.wake_phrase_input.setToolTip(
+            "What wakes ELI. Several phrases may be given, separated by commas.\n"
+            "Applying one trains the wake detector on it in the background.")
+        try:
+            from eli.perception.wakeword import get_wake_phrases as _gwp
+            self.wake_phrase_input.setText(", ".join(_gwp()))
+        except Exception:
+            log.debug("wake phrases unavailable", exc_info=True)
+        _wake_row.addWidget(self.wake_phrase_input, 1)
+        _wake_apply = QPushButton("Apply")
+        _wake_apply.clicked.connect(self._apply_wake_phrase)
+        _wake_row.addWidget(_wake_apply)
+        wake_card.addRow(self._field_label("Wake phrase"), _wake_row)
+        self.wake_status_label = QLabel("")
+        self.wake_status_label.setWordWrap(True)
+        self.wake_status_label.setStyleSheet("color:#8a93a6; font-size:10px;")
+        wake_card.addRow("", self.wake_status_label)
+        self.echo_cancel_checkbox = QCheckBox("Take ELI's own sound and music out of the microphone (echo cancellation)")
+        self.echo_cancel_checkbox.setToolTip(
+            "PipeWire's echo canceller, run by ELI for itself: what the speakers play is taken out of\n"
+            "what the microphone hears, so ELI hears you over its voice and its music. Nothing of the\n"
+            "desktop's sound settings is changed. Applies the next time the microphone is turned on.\n"
+            "Not available with PulseAudio alone (the status below says why).")
+        self.echo_cancel_checkbox.stateChanged.connect(lambda _: self._apply_echo_cancel())
+        wake_card.addRow(self.echo_cancel_checkbox)
+        self._refresh_wake_status()
+
         # ── STT diagnostic panel ─────────────────────────────────────────
         stt_card = self._section_card(vbox, "STT — VOICE PROFILE & CALIBRATION")
 
@@ -2661,6 +2691,14 @@ class SettingsModelMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # Echo cancellation
+        try:
+            self.echo_cancel_checkbox.blockSignals(True)
+            self.echo_cancel_checkbox.setChecked(bool(s.get("stt_echo_cancel", False)))
+            self.echo_cancel_checkbox.blockSignals(False)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         # STT behaviour flags
         try:
             _direct = bool(s.get("allow_direct_chat_without_wake", False))
@@ -2862,6 +2900,7 @@ class SettingsModelMixin:
             "allow_direct_chat_without_wake": bool(self.allow_direct_chat_checkbox.isChecked()),
             "mic_device": list(self.mic_device_combo.currentData()) if self.mic_device_combo.currentData() else None,
             "stt_sensitivity_auto": bool(self.dynamic_energy_checkbox.isChecked()),
+            "stt_echo_cancel": bool(self.echo_cancel_checkbox.isChecked()),
             "stt_energy_threshold": int(self.energy_threshold_input.value()),
             "gaze_engine_enabled": bool(getattr(self, "gaze_enabled_checkbox", None) and self.gaze_enabled_checkbox.isChecked()),
             "gaze_camera": str(self.gaze_camera_input.text().strip() if hasattr(self, "gaze_camera_input") else "auto"),

@@ -340,82 +340,151 @@ WAKE_WORDS = [
 ]
 
 
-_ECHO_CANCEL_MODULE_ID: Optional[str] = None
+# Echo cancellation: a private PipeWire client process running PipeWire's own echo canceller in
+# monitor mode, so what the default sink plays (ELI's voice, its music, anything) is taken out of the
+# microphone. It publishes one extra source for ELI alone; nothing of the desktop's is changed, and
+# it goes when ELI goes (it is ELI's child, told to end with it).
+AEC_SOURCE = "eli_echo_cancelled"
+_AEC = {"proc": None, "reason": "", "pinned": False}
+
+
+def _echo_cancel_wanted() -> bool:
+    env = os.environ.get("ELI_STT_ECHO_CANCEL", "").strip().lower()
+    if env:
+        return env in ("1", "true", "yes", "on")
+    try:
+        from eli.core.runtime_settings import load_settings
+        return bool((load_settings() or {}).get("stt_echo_cancel", False))
+    except Exception:
+        log.debug("[AUDIO_AEC] setting unreadable", exc_info=True)
+        return False
+
+
+def _aec_config(capture_target: str = "") -> str:
+    """The PipeWire client configuration: the echo canceller (webrtc) in monitor mode, the default
+    sink's monitor as what it takes out, the microphone (`capture_target`, else the default source)
+    as what it cleans, and the clean source for ELI, at the lowest priority so it never becomes the
+    desktop's default."""
+    target = f' target.object = "{capture_target}"' if capture_target else ""
+    return (
+        "context.properties = { log.level = 0 }\n"
+        "context.spa-libs = {\n"
+        "    audio.convert.* = audioconvert/libspa-audioconvert\n"
+        "    support.*       = support/libspa-support\n"
+        "}\n"
+        "context.modules = [\n"
+        "    { name = libpipewire-module-rt args = { } flags = [ ifexists nofail ] }\n"
+        "    { name = libpipewire-module-protocol-native }\n"
+        "    { name = libpipewire-module-client-node }\n"
+        "    { name = libpipewire-module-adapter }\n"
+        "    { name = libpipewire-module-echo-cancel\n"
+        "      args = {\n"
+        "        library.name = aec/libspa-aec-webrtc\n"
+        "        monitor.mode = true\n"
+        f"        capture.props = {{ node.name = \"eli_echo_capture\" node.passive = true{target} }}\n"
+        f"        source.props = {{ node.name = \"{AEC_SOURCE}\" node.description = \"ELI echo-cancelled microphone\"\n"
+        "                         priority.session = 0 priority.driver = 0 }\n"
+        "      }\n"
+        "    }\n"
+        "]\n")
+
+
+def _end_with_parent() -> None:
+    """In the child, before it runs: end when ELI ends, however it ends (Linux prctl
+    PR_SET_PDEATHSIG). Nothing is caught here: a failure fails the start, which says so."""
+    import ctypes
+    import signal
+    ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)
+
+
+def _aec_source_listed(timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True,
+                                 timeout=3).stdout
+            if AEC_SOURCE in (out or ""):
+                return True
+        except Exception:
+            log.debug("[AUDIO_AEC] source list unreadable", exc_info=True)
+        if _AEC["proc"] is not None and _AEC["proc"].poll() is not None:
+            return False
+        time.sleep(0.1)
+    return False
 
 
 def _unload_echo_cancel() -> None:
-    """Unload module-echo-cancel, but only if WE loaded it."""
-    from eli.utils import platform_compat as _pc
-    if not _pc.LINUX:
-        return
-    global _ECHO_CANCEL_MODULE_ID
-    mod = _ECHO_CANCEL_MODULE_ID
-    if not mod:
-        return
-    _ECHO_CANCEL_MODULE_ID = None
-    try:
-        subprocess.run(["pactl", "unload-module", mod], capture_output=True, timeout=5)
-        log.debug(f"[AUDIO_AEC] unloaded module-echo-cancel ({mod})")
-    except Exception:
-        log.debug("[AUDIO_AEC] unload failed", exc_info=True)
+    """Stop ELI's echo canceller, if it runs, and its source with it."""
+    proc, _AEC["proc"] = _AEC["proc"], None
+    if _AEC.get("pinned"):
+        for name in ("ELI_MIC_PULSE_SOURCE", "PULSE_SOURCE"):
+            if os.environ.get(name) == AEC_SOURCE:
+                os.environ.pop(name, None)
+        _AEC["pinned"] = False
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        log.debug("[AUDIO_AEC] echo cancellation stopped")
+
+
+def echo_cancel_state() -> dict:
+    """{active, reason} for the settings page and the diagnostics."""
+    proc = _AEC["proc"]
+    return {"active": bool(proc is not None and proc.poll() is None), "reason": _AEC["reason"]}
 
 
 def ensure_echo_cancel() -> bool:
-    """Load PulseAudio/PipeWire acoustic echo cancellation so speaker output is
-    subtracted from the mic signal.
+    """Take what the default sink plays out of the microphone, where the sound server allows it
+    without changing the desktop: PipeWire's echo canceller in monitor mode, in a client process of
+    ELI's own (pipewire -c), its clean source read by ELI alone (PULSE_SOURCE for this process).
 
-    This is the only real remedy for speaker bleed. Raising the energy threshold (see
-    _adapt_threshold_to_noise) stops the drowning loop and keeps ELI diagnosable, but
-    it cannot let you talk *over* loud music — AEC can, because it removes the known
-    playback signal instead of trying to out-shout it.
+    The earlier way loaded PulseAudio's module-echo-cancel into the server: it cancels only what is
+    played into its own sink, and every application plays to the default sink, so it cancelled
+    nothing of ELI's voice or music; making its sink the default would have changed the desktop
+    for every program, and left it so after a crash. On PulseAudio without PipeWire that is still the
+    only way, so it is not done there (echo_cancel_state says why).
 
-    OFF by default, despite a long-standing comment in this file asserting it was
-    "active via module-echo-cancel in the launcher" — no such launcher code has ever
-    existed, so every threshold decision here was tuned against noise cancellation
-    that was not running. It stays opt-in because loading the module rewires the
-    system's default source and sink: getting that wrong costs the user all audio,
-    which is a worse failure than the one being fixed. Set ELI_STT_ECHO_CANCEL=1.
-
-    Idempotent, reversible (unloaded at exit if we loaded it), and a no-op wherever
-    pactl is unavailable. Returns True when AEC is active.
-    """
-    global _ECHO_CANCEL_MODULE_ID
+    On with Settings ▸ Audio (stt_echo_cancel) or ELI_STT_ECHO_CANCEL=1. True when it runs."""
     from eli.utils import platform_compat as _pc
-    if not _pc.LINUX:
+    if not _pc.LINUX or not _echo_cancel_wanted():
+        _AEC["reason"] = "" if _pc.LINUX else "echo cancellation here is the system's own (Windows, macOS)"
         return False
-    if os.environ.get("ELI_STT_ECHO_CANCEL", "0").lower() not in ("1", "true", "yes", "on"):
+    if _AEC["proc"] is not None and _AEC["proc"].poll() is None:
+        return True
+    server = _pc.sound_server()
+    if server != "pipewire":
+        _AEC["reason"] = ("PulseAudio cancels only what plays into its own sink; cancelling the default "
+                          "sink would change the desktop's routing, so it is not done" if server
+                          else "no sound server runs")
+        log.info(f"[AUDIO_AEC] not started: {_AEC['reason']}")
         return False
-    if not shutil.which("pactl"):
-        log.debug("[AUDIO_AEC] pactl unavailable — echo cancellation not possible")
+    if not shutil.which("pipewire"):
+        _AEC["reason"] = "the pipewire program is not installed"
         return False
     try:
-        listed = subprocess.run(["pactl", "list", "short", "modules"],
-                                capture_output=True, text=True, timeout=5)
-        if "module-echo-cancel" in (listed.stdout or ""):
-            log.debug("[AUDIO_AEC] echo cancellation already active — leaving it alone")
-            return True
-        loaded = subprocess.run(
-            ["pactl", "load-module", "module-echo-cancel",
-             "aec_method=webrtc",
-             "source_name=eli_echo_cancelled",
-             "use_master_format=1"],
-            capture_output=True, text=True, timeout=10,
-        )
-        mod = (loaded.stdout or "").strip()
-        if loaded.returncode != 0 or not mod.isdigit():
-            log.warning(
-                f"[AUDIO_AEC] could not load module-echo-cancel: "
-                f"{(loaded.stderr or '').strip() or 'unknown error'}"
-            )
-            return False
-        _ECHO_CANCEL_MODULE_ID = mod
-        atexit.register(_unload_echo_cancel)
-        log.info(f"[AUDIO_AEC] echo cancellation active (module {mod}) — speaker bleed "
-                 f"is now subtracted from the mic")
-        return True
-    except Exception:
-        log.debug("[AUDIO_AEC] echo-cancel setup failed", exc_info=True)
+        from eli.core.paths import temp_path
+        conf = temp_path("echo_cancel.conf")
+        pinned = os.environ.get("ELI_MIC_PULSE_SOURCE", "").strip()
+        conf.write_text(_aec_config("" if pinned in ("", AEC_SOURCE) else pinned), encoding="utf-8")
+        _AEC["proc"] = subprocess.Popen(["pipewire", "-c", str(conf)], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, preexec_fn=_end_with_parent)
+    except Exception as exc:
+        _AEC["reason"] = f"the echo canceller did not start ({exc})"
+        log.warning(f"[AUDIO_AEC] {_AEC['reason']}", exc_info=True)
         return False
+    atexit.register(_unload_echo_cancel)
+    if not _aec_source_listed(timeout=5.0):
+        _AEC["reason"] = "the echo canceller started but published no source"
+        log.warning(f"[AUDIO_AEC] {_AEC['reason']}")
+        _unload_echo_cancel()
+        return False
+    os.environ["ELI_MIC_PULSE_SOURCE"] = os.environ["PULSE_SOURCE"] = AEC_SOURCE
+    _AEC["pinned"], _AEC["reason"] = True, ""
+    log.info("[AUDIO_AEC] echo cancellation on: the default sink's sound is taken out of the microphone")
+    return True
 
 
 def _merge_custom_wake_words() -> None:
@@ -1846,9 +1915,13 @@ class ELIAudioSTT:
         if rate and rate != 16000:
             from eli.perception.audio_samples import resample
             x = resample(x, rate, 16000)
+        if not own:
+            self._keep_room(x, t_end)
         if near is None and barge is None:
             return
         onsets = near.mic(x, t_end) if near is not None else []
+        if onsets:
+            self._near_onset_at = onsets[-1]
         if barge is not None and own:
             hit = self._barge.judge(x, t_end, near, onsets)
             if hit is not None and getattr(self, "_barge_at", None) is None:
@@ -1858,6 +1931,80 @@ class ELIAudioSTT:
             return
         if onsets:
             threading.Thread(target=self._duck_at_onset, daemon=True, name="eli-onset-duck").start()
+
+    # ── The wake word learnt from use (wakeword.learn: clips of confirmed wakes, the rooms they were
+    # said in, and training again once enough have gathered) ────────────────────────────────────
+    def _keep_room(self, x, t_end: float) -> None:
+        """The last _MIC_BACKLOG_S of what the mic heard, ELI's own voice left out: the room a wake
+        word was said in, for the wake detector's noise beds."""
+        ring = getattr(self, "_room_ring", None)
+        if ring is None:
+            ring = self._room_ring = deque()
+        ring.append((t_end, x))
+        while ring and ring[0][0] < t_end - _MIC_BACKLOG_S:
+            ring.popleft()
+
+    def _voice_of(self, pcm, sr: int) -> Optional[bool]:
+        """Whether a capture is the owner's (or an enrolled user's) voice: True, False for a voice
+        that is none of theirs, None when nobody is enrolled (the voice says nothing then)."""
+        try:
+            from eli.perception import speaker_id
+            if not speaker_id.enabled() or not speaker_id.list_speakers():
+                return None
+            return bool(speaker_id.identify(pcm, sr).get("identified"))
+        except Exception:
+            log.debug("[WAKE] speaker not identified", exc_info=True)
+            return None
+
+    def _wake_candidate(self, audio, span) -> Optional[tuple]:
+        """(clip, room) of a wake word just heard, to keep once the command after it is acted on;
+        None when it may not be the owner's own wake: ELI was speaking, ELI's media played and the
+        mic heard no speech it does not explain (music alone), or the voice is not an enrolled one."""
+        if os.environ.get("ELI_WAKE_LEARN", "1").strip().lower() in ("0", "false", "no", "off"):
+            return None
+        if audio is None or span is None or np is None:
+            return None
+        start, end = span
+        last = getattr(self, "_tts_mon_last", None)
+        if last and last[0] >= start - float(getattr(self, "_post_tts_drain_s", 0.0) or 0.0):
+            return None
+        if _eli_media_probably_audible():
+            onset = getattr(self, "_near_onset_at", None)
+            if onset is None or not (start - 1.0 <= onset <= end):
+                return None
+        try:
+            raw = audio.get_raw_data()
+            rate = int(getattr(audio, "sample_rate", 16000) or 16000)
+            pcm = np.frombuffer(raw, dtype=np.int16)
+        except Exception:
+            log.debug("[WAKE] capture unreadable for learning", exc_info=True)
+            return None
+        if self._voice_of(pcm, rate) is False:
+            return None
+        from eli.perception import wakeword as _ww
+        clip = _ww.wake_segment(pcm, rate)
+        if clip is None:
+            return None
+        before = [x for t, x in list(getattr(self, "_room_ring", None) or []) if t < start]
+        room = np.concatenate(before)[-2 * _ww.CLIP_N:] if before else None
+        return clip, room
+
+    def _confirm_wake(self) -> None:
+        """The command after a wake word was acted on: its clip and room are kept, and the detector
+        is trained again in the background once enough have gathered."""
+        pending, self._pending_wake = getattr(self, "_pending_wake", None), None
+        if not pending:
+            return
+        clip, room = pending
+        try:
+            from eli.perception import wakeword as _ww
+            _ww.save_enrollment_clip((clip * 32767).astype(np.int16), sr=_ww.SR)
+            if room is not None:
+                _ww.save_noise_bed(room, _ww.SR)
+            if _ww.retrain_due():
+                _ww.retrain_in_background()
+        except Exception:
+            log.warning("[WAKE] a confirmed wake was not kept", exc_info=True)
 
     def _duck_at_onset(self) -> None:
         """Speech began that ELI's output does not explain: ELI's media is lowered now, so the rest of
@@ -2221,6 +2368,7 @@ class ELIAudioSTT:
             print("   ↳ CALLBACK IS SET, invoking now")
             try:
                 self.callback(cmd)
+                self._confirm_wake()           # a wake word whose command was acted on is the owner's
             except Exception as e:
                 log.debug(f"[AUDIO] Callback error: {e}")
         else:
@@ -2305,6 +2453,8 @@ class ELIAudioSTT:
             room = getattr(self, "_floor", None)
             if span and room is not None:
                 room.mark_speech(*span)            # the owner's words, not the room
+            if wake and action in ("arm", "dispatch"):
+                self._pending_wake = self._wake_candidate(audio, span)
 
         # Lowered (at the wake word, or at the onset of this utterance) and nothing for ELI followed
         # (arm → arm_incomplete → the user went silent, or speech that was not to ELI): back up.
@@ -2560,6 +2710,7 @@ class ELIAudioSTT:
                         # for the user to speak (covers arm_incomplete → silence → timeout).
                         if not self._voice_gate.armed():
                             self._restore_duck("gate expired (no speech)")
+                            self._pending_wake = None    # no command followed the wake word
                         if _STT_VERBOSE and getattr(source, "stream", None) is not None:
                             try:
                                 import audioop as _aop
@@ -2650,7 +2801,9 @@ class ELIAudioSTT:
                                     _pcm = np.frombuffer(_raw, dtype=np.int16)
                                     if _asr != 16000 and len(_pcm) > 1:
                                         _pcm = (_ww._resample(_pcm.astype("float32") / 32768.0, _asr, 16000) * 32767).astype("int16")
-                                    if _wd.is_wake(_pcm):
+                                    # the voice as a second signal: the owner's wake at a lower
+                                    # score, a television's or a stranger's at a higher one
+                                    if _wd.is_wake(_pcm, self._voice_of(_pcm, 16000)):
                                         _low = (transcript or "").lower()
                                         if not any(_low.startswith(_w) for _w in WAKE_WORDS):
                                             transcript = (primary_wake_word() + " " + (transcript or "")).strip()

@@ -396,6 +396,60 @@ class ConversationMixin:
         if getattr(self, "_first_run_complete", False):
             self.save_settings(silent=True)
 
+    def _apply_wake_phrase(self):
+        """The wake phrase(s) typed in Settings ▸ Audio: kept, heard at once by the transcription
+        matcher, and the acoustic detector trained on them in the background."""
+        raw = self.wake_phrase_input.text()
+        phrases = [p.strip() for p in raw.split(",") if p.strip()]
+        try:
+            from eli.perception import wakeword as _ww
+            phrases = _ww.set_wake_phrases(phrases)
+            self.wake_phrase_input.setText(", ".join(phrases))
+            from eli.perception import audio_stt as _ast
+            _ast._merge_custom_wake_words()
+            _ww.retrain_in_background(train=lambda: _ww.train_model(phrases=phrases))
+            self.status_signal.emit(f"🎤 Wake phrase: {', '.join(phrases)} (training the detector on it)")
+        except Exception as exc:
+            log.warning("[WAKE] wake phrase not applied", exc_info=True)
+            self.status_signal.emit(f"🎤 Wake phrase not applied: {exc}")
+        self._refresh_wake_status()
+
+    def _apply_echo_cancel(self):
+        if getattr(self, "_first_run_complete", False):
+            self.save_settings(silent=True)
+        self._refresh_wake_status()
+
+    def _refresh_wake_status(self):
+        """What the wake detector has learnt from use, and whether echo cancellation runs."""
+        label = getattr(self, "wake_status_label", None)
+        if label is None:
+            return
+        lines = []
+        try:
+            from eli.perception.wakeword import training_status
+            st = training_status()
+            when = (datetime.fromtimestamp(float(st["last_trained"])).strftime("%Y-%m-%d %H:%M")
+                    if st.get("last_trained") else "")
+            lines.append(
+                ("Wake detector: training now… " if st.get("training") else
+                 f"Wake detector: trained {when}. " if st.get("trained") and when else
+                 "Wake detector: trained. " if st.get("trained") else
+                 "Wake detector: not trained yet (the wake word is read from what is transcribed). ")
+                + f"{st['clips']} clip(s) of your own wake word kept from use"
+                + (f", {st['new_since_training']} since the last training." if st.get("trained") else "."))
+        except Exception:
+            log.debug("[WAKE] status unavailable", exc_info=True)
+        try:
+            from eli.perception.audio_stt import echo_cancel_state
+            aec = echo_cancel_state()
+            if aec.get("active"):
+                lines.append("Echo cancellation: on.")
+            elif aec.get("reason"):
+                lines.append(f"Echo cancellation: off ({aec['reason']}).")
+        except Exception:
+            log.debug("[AUDIO_AEC] status unavailable", exc_info=True)
+        label.setText("\n".join(lines))
+
     def _refresh_mic_meter(self):
         """The live level meter: the mic's level now against the gate, and the room's level."""
         bar = getattr(self, "mic_level_bar", None)
@@ -481,6 +535,11 @@ class ConversationMixin:
     def _stt_toggle(self, checked: bool):
         if checked:
             self.stt_btn.setText("🔴 Mic: ON")
+            try:
+                from eli.perception.audio_stt import ensure_echo_cancel
+                ensure_echo_cancel()            # when chosen: before the microphone is opened
+            except Exception:
+                log.debug("[AUDIO_AEC] not started", exc_info=True)
             def _cb(text):
                 text = (text or "").strip()
                 if text:
@@ -690,6 +749,7 @@ class ConversationMixin:
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
+            self._refresh_wake_status()
             text = (
                 f"Voice profile file: {vp_path}\n"
                 f"Samples recorded:   {count}\n"
@@ -701,8 +761,8 @@ class ConversationMixin:
                 f"energy_threshold:   {live_threshold}\n"
                 f"pause_threshold:    {live_pause}\n"
                 f"dynamic_energy:     {live_dynamic}\n\n"
-                f"After ~5 confirmed utterances, the threshold biases\n"
-                f"toward your range (50%–90% of mean speech energy)."
+                f"The speech gate follows the room (Automatic sensitivity);\n"
+                f"the level meter above shows it live."
             )
             try:
                 from eli.perception.speaker_id import capabilities, list_speakers, get_active_speaker

@@ -382,13 +382,15 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.87, 
         train_rows = np.where(fold_of != k)[0]
         if len(test_rows) == 0 or len(train_rows) == 0:
             continue
+        fold_head = _fit(train_rows)            # trained with gradients: under no_grad nothing could learn
         with torch.no_grad():
-            held[test_rows] = torch.sigmoid(_fit(train_rows)(Xt[test_rows])).numpy().ravel()
+            held[test_rows] = torch.sigmoid(fold_head(Xt[test_rows])).numpy().ravel()
     head = _fit(np.arange(len(y)))
     scores = held
     # threshold = midpoint between the positive 5th-pct and negative 95th-pct of the held-out
     # scores, clamped — favours precision so music doesn't false-fire.
     p_lo = float(np.percentile(scores[y == 1], 5))
+    p_mid = float(np.percentile(scores[y == 1], 50))
     n_hi = float(np.percentile(scores[y == 0], 95))
     thr = float(min(0.9, max(0.5, (p_lo + n_hi) / 2)))
 
@@ -399,7 +401,9 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.87, 
         "phrases": phrases, "threshold": thr, "clip_s": CLIP_S, "sr": SR,
         "positives": len(pos), "negatives": len(neg),
         "emb_shape": list(emb.shape[1:]),
-        "pos_score_p5": p_lo, "neg_score_p95": n_hi,
+        "pos_score_p5": p_lo, "pos_score_p50": p_mid, "neg_score_p95": n_hi,
+        # what it learnt from the owner's own use (learn_from_use), for retrain_due and the status
+        "enrolled": len(enrolled), "trained_at": __import__("time").time(),
     }, indent=2))
     return {"ok": True, "positives": len(pos), "negatives": len(neg),
             "threshold": thr, "pos_p5": p_lo, "neg_p95": n_hi}
@@ -412,6 +416,8 @@ class WakeDetector:
         meta = json.loads(_meta_path().read_text())
         ckpt = torch.load(_head_path(), map_location="cpu")
         self.threshold = float(meta.get("threshold", 0.7))
+        self.neg_p95 = meta.get("neg_score_p95")
+        self.pos_p50 = meta.get("pos_score_p50")
         self.head = _build_head(int(ckpt["in_dim"]))
         self.head.load_state_dict(ckpt["state_dict"])
         self.head.eval()
@@ -421,7 +427,9 @@ class WakeDetector:
         """Max wake score over 1.5s windows sliding across the given int16 clip."""
         x = np.asarray(audio_int16, dtype=np.int16).ravel()
         if len(x) < CLIP_N:
-            x = np.pad(x, (0, CLIP_N - len(x)))
+            # centred, as every clip it was trained on is (_fix_len): padded at the end, a bare wake
+            # word sat where no training clip had one
+            x = _to_int16(_fix_len(x.astype(np.float32) / 32768.0))
         wins = []
         step = SR // 2
         for s in range(0, max(1, len(x) - CLIP_N + 1), step):
@@ -434,8 +442,126 @@ class WakeDetector:
             sc = self._torch.sigmoid(self.head(self._torch.tensor(flat, dtype=self._torch.float32))).numpy().ravel()
         return float(np.max(sc)) if len(sc) else 0.0
 
-    def is_wake(self, audio_int16: np.ndarray) -> bool:
-        return self.score_audio(audio_int16) >= self.threshold
+    def threshold_for(self, known_voice: Optional[bool]) -> float:
+        """The score a wake must reach, with the speaker as a second signal: the trained threshold
+        for a voice nobody has enrolled; for the owner's (or an enrolled user's) voice, halfway down
+        to what 95% of the held-out non-wake clips stayed under; for a voice that is not one of
+        theirs (a television, other people), halfway up to the median score of the held-out wake
+        clips. All three are the model's own scores, kept when it was trained."""
+        thr = float(self.threshold)
+        if known_voice is True and self.neg_p95 is not None:
+            return min(thr, (thr + float(self.neg_p95)) / 2.0)
+        if known_voice is False and self.pos_p50 is not None:
+            return max(thr, (thr + float(self.pos_p50)) / 2.0)
+        return thr
+
+    def is_wake(self, audio_int16: np.ndarray, known_voice: Optional[bool] = None) -> bool:
+        return self.score_audio(audio_int16) >= self.threshold_for(known_voice)
+
+
+# ── learning from use ────────────────────────────────────────────────────────
+# Each wake the owner confirmed (the wake word was heard and the command after it acted on) keeps
+# its clip, and the room it was said in as a noise bed; once the real clips have grown enough since
+# the last training, the detector is trained again in the background.
+_TRAINING = threading.Lock()
+
+
+def wake_segment(audio_int16: np.ndarray, sr: int = SR) -> Optional[np.ndarray]:
+    """The wake word out of a capture, as a 16 kHz clip: its first stretch of speech, up to the first
+    pause after it (a capture of "computer, what time is it" holds the command too), centred like
+    the trainer's clips. A pause is near_speech's own shortest run (NEED_FRAMES frames of HOP_S)
+    below the middle of the capture's own level range (in log terms). None when there is no speech."""
+    from eli.perception.near_speech import HOP, NEED_FRAMES
+    x = np.asarray(audio_int16).ravel().astype(np.float32) / 32768.0
+    if sr != SR:
+        x = _resample(x, sr, SR)
+    n = len(x) // HOP
+    if n < NEED_FRAMES * 2:
+        return None
+    lv = np.log(np.sqrt(np.mean(x[: n * HOP].reshape(n, HOP) ** 2, axis=1)) + 1e-9)
+    lo, hi = float(np.percentile(lv, 10)), float(lv.max())
+    if hi - lo < 1e-3:
+        return None
+    loud = lv > (lo + hi) / 2.0
+    on = int(np.argmax(loud))
+    end, quiet = n, 0
+    for i in range(on, n):
+        quiet = 0 if loud[i] else quiet + 1
+        if quiet >= NEED_FRAMES:
+            end = i - quiet + 1
+            break
+    seg = x[on * HOP: min(len(x), end * HOP, on * HOP + CLIP_N)]
+    return _fix_len(seg) if len(seg) else None
+
+
+def save_noise_bed(room: np.ndarray, sr: int = SR) -> Optional[Path]:
+    """The room a confirmed wake was said in (what the mic heard just before it, ELI's own voice
+    left out), kept as a noise bed for the next training: one per real clip, the oldest replaced."""
+    try:
+        import soundfile as sf
+        x = np.asarray(room, dtype=np.float32).ravel()
+        if sr != SR:
+            x = _resample(x, sr, SR)
+        if len(x) < CLIP_N:
+            return None
+        d = _model_dir() / "noise"
+        d.mkdir(parents=True, exist_ok=True)
+        heard = sorted(d.glob("heard_*.wav"), key=lambda f: f.stat().st_mtime)
+        keep = max(1, enrollment_count())
+        p = heard[0] if len(heard) >= keep else d / f"heard_{len(heard):03d}.wav"
+        sf.write(str(p), x, SR)
+        return p
+    except Exception:
+        log.debug("[WAKE] noise bed not saved", exc_info=True)
+        return None
+
+
+def _meta() -> dict:
+    try:
+        return json.loads(_meta_path().read_text()) if _meta_path().is_file() else {}
+    except Exception:
+        log.debug("[WAKE] meta unreadable", exc_info=True)
+        return {}
+
+
+def retrain_due() -> bool:
+    """Enough of the owner's real clips have gathered since the detector was trained: at least as
+    many new ones as it learnt from last time (each training at least doubles the real data), and
+    never fewer than the trainer's folds."""
+    meta = _meta()
+    before = int(meta.get("enrolled", 0) or 0)
+    return enrollment_count() - before >= max(FOLDS, before)
+
+
+def training_status() -> dict:
+    """{clips, new_since_training, last_trained, trained, training}: Settings ▸ Audio shows it."""
+    meta = _meta()
+    clips = enrollment_count()
+    return {"clips": clips, "new_since_training": clips - int(meta.get("enrolled", 0) or 0),
+            "last_trained": meta.get("trained_at"), "trained": is_trained(),
+            "training": _TRAINING.locked()}
+
+
+def retrain_in_background(train=None) -> bool:
+    """Train again on a thread of its own, one at a time; the new detector is used once it is done."""
+    if not _TRAINING.acquire(blocking=False):
+        return False
+
+    def _run():
+        global _detector
+        try:
+            res = (train or train_model)()
+            if res.get("ok"):
+                with _detector_lock:
+                    _detector = None                 # the next get_detector() loads the new one
+            log.info(f"[WAKE] trained again from use: {res}")
+        except Exception:
+            log.warning("[WAKE] training from use failed", exc_info=True)
+        finally:
+            _TRAINING.release()
+
+    threading.Thread(target=_run, daemon=True, name="eli-wake-train").start()
+    return True
 
 
 _detector_lock = threading.Lock()
