@@ -347,7 +347,7 @@ def test_eli_paths_all_attrs():
     ]
     for attr in attrs:
         val = getattr(p, attr)
-        assert val is not None, f"EliPaths.{attr} is None"
+        assert isinstance(val, Path), f"EliPaths.{attr} is {val!r}"
 
 def test_eli_paths_root_alias():
     p = EliPaths()

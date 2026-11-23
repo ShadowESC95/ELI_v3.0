@@ -33,6 +33,8 @@ ALL_MODULES = [
     "eli.cognition.reranker",
     "eli.cognition.user_info_builder",
     # eli.cognition.working_memory — deleted module, removed from list
+    # ── cli ───────────────────────────────────────────────────────────────────
+    "eli.cli.headless",          # the runtime with no window (eli/__main__.py --headless)
     # ── core ──────────────────────────────────────────────────────────────────
     "eli.core",
     # eli.core.architecture_contracts — deleted module (no consumer), removed 2026-09-29

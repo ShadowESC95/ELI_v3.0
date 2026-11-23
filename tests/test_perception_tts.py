@@ -155,10 +155,14 @@ def test_speak_if_enabled_false_does_not_speak():
         mock_tts.assert_not_called()
 
 def test_speak_if_enabled_true_calls_tts():
-    with patch("eli.perception.tts_router._run_tts", return_value=True) as mock_tts:
-        speak_if_enabled("hello", enabled=True)
-        # Thread is async, but the function should return True
-        # (thread is daemon so it won't block test)
+    """It asserted nothing: the reply is spoken on a thread of its own and the call says it started."""
+    import threading
+    spoken = threading.Event()
+    with patch("eli.perception.tts_router._run_tts",
+               side_effect=lambda text, voice_name=None: spoken.set() or True) as mock_tts:
+        assert speak_if_enabled("hello", enabled=True, voice_name="any-voice") is True
+        assert spoken.wait(5), "nothing was spoken"
+    mock_tts.assert_called_once_with("hello", voice_name="any-voice")
 
 
 def test_run_tts_speaks_more_than_three_chunks(monkeypatch):

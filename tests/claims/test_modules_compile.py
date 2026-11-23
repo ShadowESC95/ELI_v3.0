@@ -18,12 +18,7 @@ _PY = H.eli_py_files()
 def test_module_compiles(path):
     src = path.read_text(encoding="utf-8", errors="strict")
     ast.parse(src)  # raises SyntaxError if the file isn't valid Python
-
-
-@pytest.mark.parametrize("path", _PY, ids=[H.rel(p) for p in _PY])
-def test_module_has_no_merge_markers(path):
-    src = path.read_text(encoding="utf-8", errors="ignore")
-    # Real git conflict markers begin a line and are space/HEAD-suffixed; this
-    # avoids false positives on decorative '=======' / '>>>' comment dividers.
+    # A conflict marker in code fails the parse; one left inside a string or docstring does not.
+    # Real markers begin a line and are space/HEAD-suffixed, unlike decorative dividers.
     for marker in ("\n<<<<<<< ", "\n>>>>>>> ", "\n<<<<<<<\n", "\n>>>>>>>\n"):
         assert marker not in src, f"unresolved merge marker in {H.rel(path)}"
