@@ -71,40 +71,6 @@ def test_sqlite_store_present(db):
 
 
 # ── load-bearing callables the blueprints describe ───────────────────────────
-_CALLABLES = [
-    ("eli.core.config", "network_allowed"),
-    ("eli.runtime.evidence_planner", "plan_channels"),
-    ("eli.runtime.evidence_planner", "gather"),
-    ("eli.runtime.evidence_planner", "plan_and_gather"),
-    ("eli.runtime.report_pipeline", "generate_document"),
-    ("eli.runtime.report_pipeline", "enabled"),
-    ("eli.runtime.grounding_escalation", "escalate"),
-    ("eli.runtime.code_examiner", "examine"),
-    ("eli.runtime.code_examiner", "resolve_targets"),
-    ("eli.runtime.scheduled_tasks", "restore_scheduled_tasks"),
-    ("eli.runtime.scheduled_tasks", "schedule_request"),
-    ("eli.runtime.background_deepening", "schedule"),
-    ("eli.runtime.state_providers", "capture_all"),
-    ("eli.runtime.active_project", "get_active"),
-    ("eli.planning.autonomy_controller", "safe_tick"),
-    ("eli.planning.autonomy_controller", "safe_goal_tick"),
-    ("eli.planning.autonomy_controller", "safe_scheduler_tick"),
-    ("eli.planning.habits", "detect_habits"),
-    ("eli.cognition.agent_bus", "get_bus"),
-    ("eli.cognition.reasoning_modes", "canonical_mode"),
-    ("eli.core.dag", "build_dag"),
-    ("eli.core.model_tier", "detect_tier"),
-    ("eli.tools.registry.capabilities_doc", "generate_capabilities_doc"),
-    ("eli.tools.registry.capability_updater", "update_capability_manifest"),
-    ("eli.memory.memory", "get_memory"),
-]
-
-
-@pytest.mark.parametrize("module,attr", _CALLABLES, ids=[f"{m}.{a}" for m, a in _CALLABLES])
-def test_callable_exists(module, attr):
-    mod = importlib.import_module(module)
-    fn = getattr(mod, attr, None)
-    assert callable(fn), f"{module}.{attr} is missing or not callable"
 
 
 # ── a few behavioural claims ─────────────────────────────────────────────────

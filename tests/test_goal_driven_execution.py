@@ -241,3 +241,35 @@ def test_observe_only_still_short_circuits(monkeypatch):
     monkeypatch.setattr(sched, "save_scheduler_state", lambda s: s)
     out = sched.scheduler_tick(cooldown_sec=0)
     assert out["status"] == "observe_only" and "execution" not in out
+
+
+def test_the_daemons_ticks_pass_on_what_ran_and_name_what_failed(monkeypatch):
+    """The proactive daemon and the operator console call these on every tick: a tick that raised
+    would end the daemon's loop. They were only checked to exist."""
+    from eli.planning import autonomy_controller as ac
+    from eli.planning import autonomy_scheduler, goal_tick, proposal_memory_bridge, proposal_queue
+    from eli.runtime import code_monitor, self_model_refresh
+
+    def _fails(*a, **k):
+        raise RuntimeError("the goal store is locked")
+
+    monkeypatch.setattr(goal_tick, "governed_goal_tick", lambda limit=3: {"ok": True, "ran": limit})
+    monkeypatch.setattr(autonomy_scheduler, "scheduler_tick",
+                        lambda limit=3, cooldown_sec=60: {"ok": True, "limit": limit, "cooldown": cooldown_sec})
+    assert ac.safe_goal_tick(limit=2) == {"ok": True, "ran": 2}
+    assert ac.safe_scheduler_tick(limit=4, cooldown_sec=9) == {"ok": True, "limit": 4, "cooldown": 9}
+    monkeypatch.setattr(goal_tick, "governed_goal_tick", _fails)
+    monkeypatch.setattr(autonomy_scheduler, "scheduler_tick", _fails)
+    for out, kind in ((ac.safe_goal_tick(), "safe_goal_tick"), (ac.safe_scheduler_tick(), "safe_scheduler_tick")):
+        assert out == {"ok": False, "kind": kind, "error": "the goal store is locked"}
+
+    # one step of the maintenance tick failing is named, and the others still run
+    monkeypatch.setattr(code_monitor.CodeMonitor, "check", _fails)
+    monkeypatch.setattr(self_model_refresh, "refresh_all_overlays_nonfatal", lambda reason="": {"ok": True})
+    monkeypatch.setattr(proposal_queue, "summarize_by_state", lambda: {"pending": 1})
+    monkeypatch.setattr(proposal_memory_bridge, "drain_proposals_to_agent_memory",
+                        lambda max_items=64, archive=True: {"drained": 0})
+    out = ac.safe_tick(reason="a test")
+    assert out["ok"] is False and out["errors"] == ["code_monitor:the goal store is locked"]
+    assert out["overlay_refresh"] == {"ok": True} and out["proposal_policy_summary"] == {"pending": 1}
+    assert out["proposal_drain"] == {"drained": 0} and out["reason"] == "a test"
