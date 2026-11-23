@@ -3,7 +3,7 @@
 ELI v3 is sold under its own licence, and each model it passes on or fetches for the user is under
 its upstream's: the voice (Kokoro-82M, its voices, spaCy's English tagger, gruut's English G2P model),
 speech input (the Whisper models faster-whisper fetches, the Silero VAD inside faster-whisper), the
-wake word's feature models (openWakeWord), the text embedder, Qwen3-TTS's weights. MODELS names each,
+wake word's feature models (Google's speech_embedding, ELI's log-mel frontend), the text embedder, Qwen3-TTS's weights. MODELS names each,
 with its licence, where it comes from and the text of its licence (eli/runtime/licence_texts/), and
 `place` writes that text into the folder that holds the files, as LICENSE.<key>.txt:
 
@@ -27,6 +27,8 @@ from typing import Dict, Optional, Tuple
 log = logging.getLogger(__name__)
 
 TEXTS = Path(__file__).with_name("licence_texts")
+# The licence of a model file that is ELI's own work (a transform built from its definition).
+OWN = "LicenseRef-ELI"
 # The files that are models or weights, by suffix: what a build or a package checks for a licence.
 MODEL_SUFFIXES = (".onnx", ".gguf", ".safetensors", ".crf", ".tflite", ".bin")
 
@@ -67,15 +69,18 @@ MODELS: Dict[str, ModelLicence] = {m.key: m for m in (
         "Apache-2.0", "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF",
         "Apache-2.0.txt", ("nomic-embed-text-v1.5*.gguf",)),
     ModelLicence(
-        "openwakeword-features", "openWakeWord's feature models: melspectrogram.onnx (an ONNX export of "
-        "torchaudio's MelSpectrogram with fixed parameters) and embedding_model.onnx (Google's "
-        "speech_embedding/1, re-implemented by openWakeWord)",
-        "Apache-2.0", "https://github.com/dscripka/openWakeWord (openwakeword 0.4.0 on PyPI); "
-        "https://tfhub.dev/google/speech_embedding/1",
-        "Apache-2.0.txt", ("melspectrogram.onnx", "embedding_model.onnx"),
-        note="openWakeWord's README puts \"all of the included pre-trained models\" under CC BY-NC-SA 4.0 "
-             "and calls Google's speech_embedding model Apache-2.0; whether that note reaches "
-             "embedding_model.onnx is an open question for the owner (models/MODEL_LICENSES.md)."),
+        "speech-embedding", "Google's speech_embedding/1, the wake word's feature model "
+        "(wake_features/embedding_model.onnx), converted to ONNX by ELI from Google's own release "
+        "(packaging/wake_features.py; provenance in PROVENANCE.md beside it)",
+        "Apache-2.0", "https://tfhub.dev/google/speech_embedding/1 (served from "
+        "https://www.kaggle.com/models/google/speech-embedding)",
+        "Apache-2.0.txt", ("wake_features/embedding_model.onnx",)),
+    ModelLicence(
+        "eli-melspectrogram", "ELI's log-mel frontend for the wake word (wake_features/melspectrogram.onnx): "
+        "a fixed transform with no trained weights, built from its definition by packaging/wake_features.py",
+        OWN, "packaging/wake_features.py (part of ELI)",
+        "", ("wake_features/melspectrogram.onnx",),
+        note="ELI's own file, under ELI's own licence; no third-party work is in it."),
     ModelLicence(
         "silero-vad", "Silero VAD, the voice-activity model inside faster-whisper's package",
         "MIT", "https://github.com/snakers4/silero-vad (silero-vad on PyPI)",
@@ -106,6 +111,8 @@ def text_of(model: ModelLicence) -> str:
     lines = [model.name, f"Licence: {model.licence}", f"Source: {model.source}"]
     if model.note:
         lines.append(f"Note: {model.note}")
+    if model.licence == OWN:
+        return "\n".join(lines) + "\n\nThis file is part of ELI v3 and under its licence (LICENSE, COMMERCIAL_EULA.md).\n"
     lines.append("Placed beside the files by ELI v3 (eli/runtime/model_licences.py); ELI is licensed separately, "
                  "under its own licence, and this licence covers these files only.")
     body = (TEXTS / model.text).read_text(encoding="utf-8") if model.text else \

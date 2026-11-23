@@ -24,7 +24,7 @@ files are, their licence, their source and the licence's own text (`eli/runtime/
 | **gruut English G2P model** (`tts_kokoro/g2p_en.crf`, `g2p/model.crf` of gruut-lang-en 2.0.1, trained on the CMU Pronouncing Dictionary) | [rhasspy/gruut](https://github.com/rhasspy/gruut/tree/a2187f9dfe472e4aafffcf043bd1a220c057ee9d/gruut-lang-en) @ `a2187f9d` (the same file, SHA-256 `7942e8f8…`, is in gruut-lang-en 2.0.1 on PyPI) | **MIT** (© 2020 Michael Hansen); CMUdict: BSD-2-Clause-style |
 | **misaki's dictionaries** (`misaki/data/*.json`, inside the package) | [hexgrad/misaki](https://github.com/hexgrad/misaki) | **Apache-2.0** (the package's licence) |
 | **nomic-embed-text v1.5** `nomic-embed-text-v1.5.Q4_K_M.gguf` (`models/embeddings/`, the memory and search embedder) | [nomic-ai/nomic-embed-text-v1.5-GGUF](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | **Apache-2.0** (the model card's licence) |
-| **openWakeWord feature models** `melspectrogram.onnx` (an ONNX export of torchaudio's MelSpectrogram with fixed parameters) and `embedding_model.onnx` (Google's `speech_embedding/1`, re-implemented by openWakeWord), inside `openwakeword` 0.4.0 (`openwakeword/resources/models/`); ELI trains its own detector head on them | [dscripka/openWakeWord](https://github.com/dscripka/openWakeWord), [google/speech_embedding/1](https://tfhub.dev/google/speech_embedding/1) | Code **Apache-2.0**; Google's speech_embedding model Apache-2.0, per openWakeWord's README. Its licence note also puts "all of the included pre-trained models" under CC BY-NC-SA 4.0: the pre-trained wake-word models (alexa, hey_jarvis, ...) are left out of every build, wheelhouse and install (`packaging/gpl_sources.py`, LEFT_OUT_FILES), and whether that note reaches `embedding_model.onnx` is open (see *Open question* below) |
+| **The wake word's feature models** (`eli/perception/wake_features/`): `embedding_model.onnx`, Google's **speech_embedding/1** converted by ELI from Google's own release, and `melspectrogram.onnx`, ELI's own log-mel frontend built from its definition (no trained weights); `packaging/wake_features.py` rebuilds both, `PROVENANCE.md` beside them records sources, checksums and the check against openWakeWord's outputs | [google/speech_embedding/1](https://tfhub.dev/google/speech_embedding/1) (Kaggle Models) | embedding: **Apache-2.0** (Google); melspectrogram: ELI's own. None of the openwakeword package's model files (CC BY-NC-SA 4.0 by its own note, its two feature models among them) is carried or installed (`packaging/gpl_sources.py`, LEFT_OUT_FILES); openWakeWord's code (Apache-2.0) runs ELI's two |
 | **Silero VAD** `silero_vad_v6.onnx` (`faster_whisper/assets/`, inside faster-whisper's package) | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | **MIT** (© Silero Team) |
 | **CMU Sphinx US English** acoustic model, language model and dictionary (`speech_recognition/pocketsphinx-data/en-US/`, inside SpeechRecognition's package; ELI does not use them) | [cmusphinx/pocketsphinx](https://github.com/cmusphinx/pocketsphinx) | **BSD-2-Clause** (© Carnegie Mellon University; its own `LICENSE.txt` is in its folder) |
 
@@ -71,19 +71,16 @@ is never published there: it comes from its own pinned upstream. Restore with
 
 ---
 
-## Open question: openWakeWord's speech-embedding model
+## openWakeWord's feature models, replaced
 
-`embedding_model.onnx` is, by openWakeWord's README, Google's `speech_embedding/1` model, "provided by
-Google as a TFHub module under an Apache-2.0 license", which openWakeWord "manually re-implemented".
-The same README says "all of the included pre-trained models are licensed under the Creative Commons
-Attribution-NonCommercial-ShareAlike 4.0 International license due to the inclusion of datasets with
-unknown or restrictive licensing as part of the training data", and its official Hugging Face repository
-(`davidscripka/openwakeword`) carries that licence. The reason given (openWakeWord's own training data)
-does not apply to Google's model, which Google trained, but the note does not except it in words, and no
-statement from the author that it is Apache-2.0 was found in the package or on PyPI or Hugging Face.
-Until the owner decides (ask the author in writing, or convert Google's original Apache-2.0
-`speech_embedding/1` into ONNX for ELI), the release builds carry it as they did. `melspectrogram.onnx`
-is no trained model: a fixed signal transform, exported from torchaudio (BSD-2-Clause).
+openWakeWord's README calls its `embedding_model.onnx` Google's `speech_embedding/1` ("provided by
+Google as a TFHub module under an Apache-2.0 license", "manually re-implemented"), and also puts "all of
+the included pre-trained models" under CC BY-NC-SA 4.0. Rather than ship a file whose licence is in doubt,
+ELI converts Google's own release (Apache-2.0, fetched from Kaggle Models with its sha256) and builds the
+log-mel frontend from its definition (`packaging/wake_features.py`). On fixed audio ELI's pair gives what
+openWakeWord's gave (the embeddings identical under ONNX Runtime's default optimisation, the log-mel
+frames within 1.5e-5 dB), and a wake head trained on the old features scores the same clips within 1e-8
+on the new (`tests/test_wakeword_training.py`).
 
 ---
 
@@ -91,7 +88,7 @@ is no trained model: a fixed signal transform, exported from torchaudio (BSD-2-C
 
 | What | Licence | Why it is not used |
 |---|---|---|
-| openWakeWord's pre-trained wake-word models (alexa, hey_jarvis, hey_marvin, hey_mycroft, timer, weather) | CC BY-NC-SA 4.0 | non-commercial; ELI trains its own head, and every build and install leaves them out |
+| openWakeWord's pre-trained models (alexa, hey_jarvis, hey_marvin, hey_mycroft, timer, weather, and its melspectrogram and embedding models) | CC BY-NC-SA 4.0 | non-commercial; ELI trains its own head on its own feature models, and every build and install leaves all of them out |
 | Coqui **XTTS-v2** | Coqui Public Model License | non-commercial; ELI had agreed to it on the user's behalf and fetched it wherever coqui-tts was installed. No engine of v3 any more: Qwen3-TTS clones voices |
 | **Chatterbox** (Resemble AI) | MIT weights, but `chatterbox-tts` brings **pykakasi** (GPL-3.0) | no extra and no engine of v3 any more |
 | **Qwen2.5-3B-Instruct** | Qwen Research License (non-commercial) | it was the portable package's starter by default; never again a starter or a published asset |

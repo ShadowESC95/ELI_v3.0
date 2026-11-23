@@ -152,26 +152,16 @@ class LeftOutFiles(NamedTuple):
         return bool(re.search(self.pattern, rel)) and Path(rel).stem not in self.keep
 
 
-def _wake_feature_models() -> Tuple[str, ...]:
-    """FEATURE_MODELS in eli/perception/wakeword.py, the openWakeWord models ELI loads, read from the
-    source (this runs before ELI's own packages are known to be installed)."""
-    import ast
-    tree = ast.parse((ROOT / "eli" / "perception" / "wakeword.py").read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "FEATURE_MODELS" for t in node.targets):
-            return tuple(ast.literal_eval(node.value))
-    raise ValueError("eli/perception/wakeword.py names no FEATURE_MODELS")
-
-
-# openWakeWord's wheel carries its pre-trained wake-word models, which its licence note puts under CC
-# BY-NC-SA 4.0 (non-commercial), and a copy of Silero's VAD; ELI loads only the feature extractor's two
-# models (FEATURE_MODELS) and trains its own head. SpeechRecognition's carries FLAC encoder programs
+# openWakeWord's wheel carries its pre-trained models, which its licence note puts under CC BY-NC-SA 4.0
+# (non-commercial), its two feature models among them, and a copy of Silero's VAD; ELI runs its own two
+# feature models (eli/perception/wake_features/, built by packaging/wake_features.py) and trains its own
+# head, so none of the package's model files is kept. SpeechRecognition's carries FLAC encoder programs
 # (GPL-2.0), which only AudioData.get_flac_data() runs, for the online recognisers ELI never calls.
 # tests/claims/test_license_reachable.py holds both to the code.
 LEFT_OUT_FILES: Dict[str, LeftOutFiles] = {
-    "openwakeword": LeftOutFiles(r"^openwakeword/resources/models/[^/]+$", _wake_feature_models(),
-                                 "CC-BY-NC-SA-4.0 (its pre-trained wake-word models)",
-                                 "ELI runs only the feature extractor (FEATURE_MODELS)"),
+    "openwakeword": LeftOutFiles(r"^openwakeword/resources/models/[^/]+$", (),
+                                 "CC-BY-NC-SA-4.0 (its pre-trained models)",
+                                 "ELI runs its own feature models (eli/perception/wake_features/)"),
     "speechrecognition": LeftOutFiles(r"^speech_recognition/flac-[^/]+$", (), "GPL-2.0-or-later",
                                       "only get_flac_data() runs them, for online recognisers ELI never calls"),
 }

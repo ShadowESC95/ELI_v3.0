@@ -363,11 +363,9 @@ except Exception as _e:
     print(f"[ELI.spec] faster-whisper did not import ({_e}); speech input's data may be skipped")
 for pkg in ("llama_cpp", "faster_whisper"):
     datas += _optional_collect(pkg, data=True)
-# openWakeWord: only its feature extractor's models, the files ELI loads (FEATURE_MODELS in
-# eli/perception/wakeword.py). The package's pre-trained wake-word models are CC BY-NC-SA 4.0
-# (non-commercial) and ELI never loads them, so they stay out of the bundle.
-from eli.perception.wakeword import feature_model_files as _wake_feature_files  # noqa: E402
-datas += _wake_feature_files(_optional_collect("openwakeword", data=True))
+# openWakeWord: none of its package's model files (CC BY-NC-SA 4.0, non-commercial, by its own note).
+# ELI runs its own two feature models, which the eli/ tree above carries (eli/perception/wake_features/,
+# built by packaging/wake_features.py).
 # The Kokoro voice's text side: misaki reads its dictionaries (misaki/data/*.json) as package data,
 # spaCy and thinc register their parts through entry points read from the dist-info metadata, and
 # load the tagger's components by name, so all of it is collected whole.

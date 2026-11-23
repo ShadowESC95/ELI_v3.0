@@ -101,7 +101,7 @@ package whose source it cannot find is not released.
 | **opencv-python** (Linux and Windows only) | Apache-2.0; its wheels carry FFmpeg built under the **LGPL-2.1** and, on Linux, Qt 5 (**LGPL-3.0**) | Gaze cursor. Not installed or bundled on macOS, where its wheels (and the headless ones) link an FFmpeg with **x264 and x265 (GPL)** into cv2 |
 | **playwright** | Apache-2.0 | Browser automation plugin |
 | **bleak** | MIT | Bluetooth discovery |
-| **openwakeword** | Apache-2.0 code; the **pre-trained wake-word models in its package are CC BY-NC-SA 4.0** (non-commercial), per its own licence note | Wake word. ELI uses only its feature extractor (the melspectrogram and speech-embedding models) and trains its own detector head (`eli/perception/wakeword.py`); every build, wheelhouse and installer leaves the pre-trained models out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |
+| **openwakeword** | Apache-2.0 code; the **pre-trained models in its package are CC BY-NC-SA 4.0** (non-commercial), per its own licence note | Wake word. Its code runs ELI's own two feature models (`eli/perception/wake_features/`: Google's speech_embedding/1, Apache-2.0, converted from Google's release, and ELI's log-mel frontend) and ELI trains its own detector head; every build, wheelhouse and installer leaves all the package's model files out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |
 | **pychromecast**, **androidtv**, **pyatv** | MIT | Device drivers (Chromecast, Fire TV / Android TV, Apple TV / AirPlay) |
 | **adb-shell** | Apache-2.0 | Fire TV / Android TV pairing |
 | **PyAutoGUI** | BSD-3-Clause | Keyboard and mouse where no native tool does; its GPL dependencies are left out (see the GPL note above) |
@@ -178,7 +178,7 @@ Installed by `install.sh` or the OS package manager as needed:
 | **opencv-python** on macOS | Apache-2.0, with **x264, x265 and other GPL parts** in the FFmpeg its macOS wheels link into cv2 | Not installed or bundled on macOS (the gaze cursor says why); its Linux and Windows wheels carry an LGPL FFmpeg |
 | **coqui-tts** (XTTS-v2) | MPL-2.0 code; the model is under the **Coqui Public Model License** (non-commercial) | No engine of v3: ELI agreed to that licence for the user and fetched the model |
 | **chatterbox-tts** | MIT, but it brings **pykakasi (GPL-3.0)** | No extra and no engine of v3 |
-| openWakeWord's **pre-trained wake-word models** | CC BY-NC-SA 4.0 | Left out of every build, wheelhouse and install (`LEFT_OUT_FILES`) |
+| openWakeWord's **pre-trained models**, its feature models among them | CC BY-NC-SA 4.0 | Left out of every build, wheelhouse and install (`LEFT_OUT_FILES`); ELI ships its own feature models |
 | SpeechRecognition's **FLAC programs** | GPL-2.0 | Left out of every build, wheelhouse and install (`LEFT_OUT_FILES`) |
 
 Experimental trees under `experimental/` may reference PyQt6 — they are **not**
@@ -192,8 +192,8 @@ Third-party **model and voice files** are **not** ELI code. Each one ELI bundles
 with its licence and source, in **`models/MODEL_LICENSES.md`**, and carries its own licence beside its
 files wherever they are kept (`LICENSE.<key>.txt`, written by `eli/runtime/model_licences.py`). The
 release builds carry the voice's files (Kokoro-82M, Apache-2.0; spaCy's en_core_web_sm, MIT; gruut's
-English G2P model, MIT) in `tts_kokoro/`, the embedder (nomic-embed-text v1.5, Apache-2.0), openWakeWord's
-two feature models (Apache-2.0; one open question in `models/MODEL_LICENSES.md`), Silero's VAD (MIT, inside
+English G2P model, MIT) in `tts_kokoro/`, the embedder (nomic-embed-text v1.5, Apache-2.0), the wake word's
+two feature models (Google's speech_embedding/1, Apache-2.0, and ELI's own log-mel frontend), Silero's VAD (MIT, inside
 faster-whisper) and CMU Sphinx's English model (BSD-2-Clause, inside SpeechRecognition). Whisper's models
 (MIT) and Qwen3-TTS's weights (Apache-2.0, on a GPU machine only) are fetched on the user's machine. GGUF
 chat models are downloads, never bundled in a release build; a portable package bundles a starter only

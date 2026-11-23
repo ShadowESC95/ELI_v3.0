@@ -1,0 +1,6 @@
+ELI's log-mel frontend for the wake word (wake_features/melspectrogram.onnx): a fixed transform with no trained weights, built from its definition by packaging/wake_features.py
+Licence: LicenseRef-ELI
+Source: packaging/wake_features.py (part of ELI)
+Note: ELI's own file, under ELI's own licence; no third-party work is in it.
+
+This file is part of ELI v3 and under its licence (LICENSE, COMMERCIAL_EULA.md).

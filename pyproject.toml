@@ -239,6 +239,7 @@ exclude = ["tests*", "ops*", "build*"]
     "cognition/persona*.txt",
     "licensing/keys/*.pub",
     "licensing/keys/*.md",
+    "perception/wake_features/*.onnx",
 ]
 
 # Never let dev-tooling / dot-directories (.claude, .git, caches) get hoovered into the

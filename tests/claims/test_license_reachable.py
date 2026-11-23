@@ -731,32 +731,30 @@ def test_a_wheelhouse_holding_a_gpl_package_is_refused_and_pyautogui_goes_in_wit
     assert gs.kept_dependencies(gui, "manylinux2014_x86_64", ["3.12"]) == ["example-tween>=1.0"]
 
 
-def test_the_frozen_builds_carry_only_the_wake_word_files_eli_loads():
-    """ELI.spec collected all of openwakeword's data, so its pre-trained wake-word models (CC BY-NC-SA
-    4.0, non-commercial) went into every bundle, though ELI runs only the feature extractor. What every
-    build and installer leaves out of the installed package is all of its models but those."""
+def test_the_frozen_builds_carry_none_of_openwakewords_model_files():
+    """ELI.spec collected all of openwakeword's data, so its pre-trained models (CC BY-NC-SA 4.0,
+    non-commercial, by its own note, the two feature models among them) went into every bundle. ELI runs
+    its own two feature models (eli/perception/wake_features/, packaging/wake_features.py), and every
+    build and installer leaves all of the package's model files out."""
     import inspect
     import re
     from eli.perception import wakeword
 
     spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
-    named = [line for line in spec.splitlines() if '"openwakeword"' in line and not line.lstrip().startswith("#")]
-    assert named and all("_wake_feature_files(" in line for line in named), named
+    code = [line for line in spec.splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if '"openwakeword"' in line], "ELI.spec collects openwakeword's data again"
     gs = _gpl_sources()
-    assert gs.LEFT_OUT_FILES["openwakeword"].keep == wakeword.FEATURE_MODELS
-
+    entry = gs.LEFT_OUT_FILES["openwakeword"]
+    assert entry.keep == ()
+    for stem in ("melspectrogram", "embedding_model", "alexa_v0.1", "hey_jarvis_v0.1", "silero_vad"):
+        assert entry.matches(f"openwakeword/resources/models/{stem}.onnx"), stem
+    assert all((wakeword.FEATURE_DIR / f"{stem}.onnx").is_file() for stem in wakeword.FEATURE_MODELS)
+    assert "FEATURE_DIR" in inspect.getsource(wakeword._audio_features)
     oww = pytest.importorskip("openwakeword")
     from openwakeword.utils import AudioFeatures
     loaded = set(re.findall(r'"(\w+)\.(?:onnx|tflite)"', inspect.getsource(AudioFeatures.__init__)))
-    assert loaded and set(wakeword.FEATURE_MODELS) == loaded, "FEATURE_MODELS is not what ELI's extractor loads"
-    pretrained = {Path(p).stem for p in oww.get_pretrained_model_paths()}
-    entry = gs.LEFT_OUT_FILES["openwakeword"]
-    assert pretrained and not loaded & pretrained
-    assert all(entry.matches(f"openwakeword/resources/models/{stem}.onnx") for stem in pretrained)
-    assert not any(entry.matches(f"openwakeword/resources/models/{stem}.onnx") for stem in loaded)
-    hooks = pytest.importorskip("PyInstaller.utils.hooks")
-    kept = {Path(src).stem for src, _dest in wakeword.feature_model_files(hooks.collect_data_files("openwakeword"))}
-    assert kept <= loaded and not kept & pretrained
+    assert loaded and set(wakeword.FEATURE_MODELS) == loaded, "FEATURE_MODELS is not what the extractor runs"
+    assert {Path(p).stem for p in oww.get_pretrained_model_paths()}
 
 
 def test_what_a_kept_package_holds_under_such_a_licence_eli_never_uses():
@@ -895,7 +893,7 @@ def test_each_package_and_file_is_sorted_by_what_a_closed_paid_product_may_pass_
 
     bundle = tmp_path / "ELI"
     for rel in ("_internal/av.libs/libx264-0123.so.165", "_internal/libdbus-1.so.3", "_internal/examplegui.py",
-                "_internal/openwakeword/resources/models/melspectrogram.onnx",
+                "_internal/eli/perception/wake_features/melspectrogram.onnx",
                 "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"):
         (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
         (bundle / rel).write_bytes(b"")
@@ -934,8 +932,8 @@ def test_every_model_eli_bundles_or_fetches_carries_its_own_licence_beside_it(tm
     from tests._sparse import sparse_file
     gs = _gpl_sources()
     for model in ml.MODELS.values():
-        assert gs.licence_text_class(model.licence) == gs.PERMISSIVE, (model.key, model.licence)
-        assert model.source.startswith("https://") and model.files, model.key
+        assert model.licence == ml.OWN or gs.licence_text_class(model.licence) == gs.PERMISSIVE, (model.key, model.licence)
+        assert (model.source.startswith("https://") or model.licence == ml.OWN) and model.files, model.key
         if model.text:
             text = (ml.TEXTS / model.text).read_text(encoding="utf-8")
             assert gs.licence_text_class(text[:4000]) == gs.PERMISSIVE, model.text
@@ -943,7 +941,7 @@ def test_every_model_eli_bundles_or_fetches_carries_its_own_licence_beside_it(tm
                 assert "Copyright (c)" in text and "Permission is hereby granted" in text, model.text
     covered = {f"tts_kokoro/{e.rel}" for e in va.kokoro_manifest() if not e.unpack}
     covered |= {f"tts_kokoro/{e.rel}/meta.json" for e in va.kokoro_manifest() if e.unpack}
-    covered |= {f"openwakeword/resources/models/{stem}.onnx" for stem in wakeword.FEATURE_MODELS}
+    covered |= {f"eli/perception/wake_features/{stem}.onnx" for stem in wakeword.FEATURE_MODELS}
     covered |= {f"models--{e['repo'].replace('/', '--')}/snapshots/{e['revision']}/{rel}"
                 for kind in tts_qwen3.MODELS.values() for e in kind for rel in e["weights"]}
     covered |= {"models/whisper/models--Systran--faster-whisper-small.en/snapshots/x/model.bin",

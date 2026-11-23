@@ -34,12 +34,13 @@ with the licence's own text (`eli/runtime/model_licences.py`).
 
 ## The wake word's models
 
-openWakeWord 0.4.0's two feature models, `melspectrogram.onnx` and `embedding_model.onnx` (Apache-2.0 per
-its README; see the open question in `models/MODEL_LICENSES.md`), are all ELI loads of it
-(`FEATURE_MODELS` in `eli/perception/wakeword.py`): it trains its own detector head on them. The package's
-pre-trained wake-word models (CC BY-NC-SA 4.0, non-commercial) are left out of every build, wheelhouse and
-install (`packaging/gpl_sources.py`, LEFT_OUT_FILES). Classification: feature models **ship** (one open
-question), pre-trained models **never ship**.
+ELI's wake word runs two feature models of its own (`eli/perception/wake_features/`), rebuilt by
+`packaging/wake_features.py`: Google's speech_embedding/1 (Apache-2.0), converted from Google's own release,
+and a log-mel frontend built from its definition. ELI trains its own detector head on them. The openwakeword
+package's model files (CC BY-NC-SA 4.0 by its own note, its two feature models among them) are left out of
+every build, wheelhouse and install (`packaging/gpl_sources.py`, LEFT_OUT_FILES). Classification: ELI's two
+**ship**; openWakeWord's **never ship**. `PROVENANCE.md` beside them records the sources and the check against
+openWakeWord's outputs.
 
 ## The GPU voice (optional, not in the release builds)
 
