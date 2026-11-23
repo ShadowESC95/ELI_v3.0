@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -75,14 +73,10 @@ def test_mixed_edits_reproduce_the_new_file():
 
 
 @pytest.fixture
-def in_tree_module():
-    from eli.core.paths import source_root
-    d = Path(tempfile.mkdtemp(prefix="propose_", dir=str(Path(source_root()) / "artifacts")))
-    f = d / "target_mod.py"
+def in_tree_module(workspace):
+    f = workspace / "target_mod.py"
     f.write_text("def keep_me(a):\n    return a - 1\n\n\ndef other():\n    return 2\n", encoding="utf-8")
-    yield f
-    import shutil
-    shutil.rmtree(d, ignore_errors=True)
+    return f
 
 
 def test_a_standalone_program_is_not_proposed_as_the_files_new_version(in_tree_module):

@@ -122,57 +122,52 @@ def test_the_callers_thread_is_not_left_marked_background(contained, fresh_engin
     assert is_background_inference() is False
 
 
-def test_a_whole_file_candidate_is_kept_for_approval_not_applied(contained, tmp_path):
+def test_a_whole_file_candidate_is_kept_for_approval_not_applied(contained, tmp_path, workspace):
     """The 'propose-only' loop wrote the agent's code into the failing file. Now the candidate is
     recorded, unchecked, for the owner; approving it checks it on a copy and applies it only if
     it fixes the failure."""
-    import shutil
-    import tempfile
     from pathlib import Path
     from eli.core.paths import source_root
-    d = Path(tempfile.mkdtemp(prefix="selfrepair_", dir=str(Path(source_root()) / "artifacts")))
+    d = workspace
+    target = d / "calc.py"
+    target.write_text("def add(a, b):\n    d = {}\n    return d['k']\n", encoding="utf-8")
+    rel = target.relative_to(Path(source_root())).as_posix()
+    before = target.read_text()
+    fixed = "def add(a, b):\n    return a + b\n"
+    from eli.coding.patches import propose_file_patch
+    cr = _fake_cr()
+    tasks = {}
+
+    def _solve(self, task, **kw):
+        tasks["target_file"] = kw.get("target_file")
+        cr.patch = propose_file_patch(kw["target_file"], fixed)
+        return cr
+    eng = SI.get_self_improvement()
+    with patch.object(eng, "analyze_failures", return_value=[{"error": _tb(rel)}]):
+        with patch("eli.coding.agent.CodeAgent.solve", _solve):
+            r = eng.propose_via_agent(max_items=1)
+    assert Path(tasks["target_file"]) == target
+    cid = r["proposals"][0]["candidate_id"]
+    assert target.read_text() == before and not list(d.glob("*.eli_bak*"))
+    conn = eng.memory._get_connection()
     try:
-        target = d / "calc.py"
-        target.write_text("def add(a, b):\n    d = {}\n    return d['k']\n", encoding="utf-8")
-        rel = target.relative_to(Path(source_root())).as_posix()
-        before = target.read_text()
-        fixed = "def add(a, b):\n    return a + b\n"
-        from eli.coding.patches import propose_file_patch
-        cr = _fake_cr()
-        tasks = {}
-
-        def _solve(self, task, **kw):
-            tasks["target_file"] = kw.get("target_file")
-            cr.patch = propose_file_patch(kw["target_file"], fixed)
-            return cr
-        eng = SI.get_self_improvement()
-        with patch.object(eng, "analyze_failures", return_value=[{"error": _tb(rel)}]):
-            with patch("eli.coding.agent.CodeAgent.solve", _solve):
-                r = eng.propose_via_agent(max_items=1)
-        assert Path(tasks["target_file"]) == target
-        cid = r["proposals"][0]["candidate_id"]
-        assert target.read_text() == before and not list(d.glob("*.eli_bak*"))
-        conn = eng.memory._get_connection()
-        try:
-            kept = conn.execute("SELECT diagnosis FROM code_patches WHERE id = ?", (cid,)).fetchone()[0]
-        finally:
-            conn.close()
-        assert kept == SI._investigation({"error": _tb(rel)}), "the candidate names the diagnosis it was made for"
-        assert {c["id"]: c for c in eng.candidate_archive(limit=200)}.get(cid) is None, "no verdict until checked"
-
-        # approval: the copy-of-the-tree check decides
-        with patch.object(eng, "verify_in_workspace", return_value={"verdict": "unchanged", "cost_s": 0.0}):
-            res = eng.approve_candidate(cid)
-        assert res["applied"] is False and target.read_text() == before
-
-        cid2 = eng.record_candidate({"file": rel, "old": before, "new": fixed, "description": "fix add"})
-        with patch.object(eng, "verify_in_workspace", return_value={"verdict": "fixed", "cost_s": 0.0}), \
-                patch.object(SI, "_run_targeted_tests", return_value=(True, True, "targeted tests passed")):
-            res = eng.approve_candidate(cid2)
-        assert res["applied"] is True and target.read_text() == fixed
-        assert {c["id"]: c for c in eng.candidate_archive(limit=200)}[cid2]["status"] == "adopted"
+        kept = conn.execute("SELECT diagnosis FROM code_patches WHERE id = ?", (cid,)).fetchone()[0]
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        conn.close()
+    assert kept == SI._investigation({"error": _tb(rel)}), "the candidate names the diagnosis it was made for"
+    assert {c["id"]: c for c in eng.candidate_archive(limit=200)}.get(cid) is None, "no verdict until checked"
+
+    # approval: the copy-of-the-tree check decides
+    with patch.object(eng, "verify_in_workspace", return_value={"verdict": "unchanged", "cost_s": 0.0}):
+        res = eng.approve_candidate(cid)
+    assert res["applied"] is False and target.read_text() == before
+
+    cid2 = eng.record_candidate({"file": rel, "old": before, "new": fixed, "description": "fix add"})
+    with patch.object(eng, "verify_in_workspace", return_value={"verdict": "fixed", "cost_s": 0.0}), \
+            patch.object(SI, "_run_targeted_tests", return_value=(True, True, "targeted tests passed")):
+        res = eng.approve_candidate(cid2)
+    assert res["applied"] is True and target.read_text() == fixed
+    assert {c["id"]: c for c in eng.candidate_archive(limit=200)}[cid2]["status"] == "adopted"
 
 
 def test_propose_via_agent_no_failures():

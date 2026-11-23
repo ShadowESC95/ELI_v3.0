@@ -1,7 +1,4 @@
 """A patch whose tests could not run stays reported as unverified, and can be made to revert."""
-import pathlib
-import shutil
-import tempfile
 
 import pytest
 
@@ -9,16 +6,12 @@ import eli.runtime.self_improvement as si
 
 
 @pytest.fixture
-def target(monkeypatch):
-    from eli.execution import executor_enhanced as EX
-    root = getattr(EX, "PROJECT_ROOT", pathlib.Path(".").resolve())
-    d = pathlib.Path(tempfile.mkdtemp(prefix="selfpatch_unverified_", dir=str(root / "artifacts")))
-    f = d / "target.py"
+def target(monkeypatch, workspace):
+    f = workspace / "target.py"
     f.write_text("def main():\n    return 1\n")
     monkeypatch.setattr(si, "_dotted_module_for_path", lambda p: "fake.module.for.test")
     monkeypatch.setattr(si, "_smoke_import_module", lambda dotted, timeout=30.0: (True, "ok"))
-    yield f
-    shutil.rmtree(d, ignore_errors=True)
+    return f
 
 
 def _patch(engine, f):

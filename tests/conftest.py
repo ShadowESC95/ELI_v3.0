@@ -180,12 +180,13 @@ def _no_repair_offer_from_an_earlier_test():
 
 @pytest.fixture
 def workspace():
-    """A throwaway folder inside the checkout (under artifacts/), for tests of code that only writes
-    inside the project: FIX_FILE and the patch-set engine refuse a path outside it."""
+    """A throwaway folder inside the project, for tests of code that only writes inside it (FIX_FILE,
+    the patch-set engine and self-repair refuse a path outside it): in this run's sandbox, which is
+    in the checkout. It was the checkout's own artifacts/, written by every such test."""
     import shutil
     import tempfile
-    from eli.runtime.self_improvement import PROJECT_ROOT
-    d = Path(tempfile.mkdtemp(prefix="workspace_", dir=str(PROJECT_ROOT / "artifacts")))
+    SANDBOX.mkdir(parents=True, exist_ok=True)
+    d = Path(tempfile.mkdtemp(prefix="workspace_", dir=str(SANDBOX)))
     yield d
     shutil.rmtree(d, ignore_errors=True)
 

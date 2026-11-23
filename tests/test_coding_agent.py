@@ -259,15 +259,11 @@ def test_search_prefers_the_node_whose_refinements_improve():
 # ── solving never writes ELI's source ────────────────────────────────────────────
 
 @pytest.fixture
-def in_tree_file():
+def in_tree_file(workspace):
     """A small module inside ELI's source tree, as a self-repair task would name one."""
-    import shutil
-    from eli.core.paths import source_root
-    d = Path(tempfile.mkdtemp(prefix="agent_nowrite_", dir=str(Path(source_root()) / "artifacts")))
-    f = d / "adder.py"
+    f = workspace / "adder.py"
     f.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-    yield f
-    shutil.rmtree(d, ignore_errors=True)
+    return f
 
 
 def _fixing_stub(prompt, system="", max_tokens=1000, temperature=0.2, **k):
