@@ -465,6 +465,84 @@ def test_the_appimage_and_the_deb_share_one_per_user_install():
         assert "packaging/linux/per_user_install.sh" in body and "rsync" not in body
 
 
+_FORMER_DEB = "eli-mkxi"          # the package's name up to and including the 3.0.171 release
+_LAST_FORMER_DEB = "3.0.171"
+
+
+@pytest.fixture(scope="module")
+def built_deb(tmp_path_factory):
+    """build-deb.sh itself, run on a stand-in portable package of two files instead of the real one."""
+    if sys.platform == "win32" or not (shutil.which("dpkg-deb") and shutil.which("dpkg")):
+        pytest.skip("builds and reads a .deb with dpkg-deb")
+    root = tmp_path_factory.mktemp("deb")
+    version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', (_REPO / "pyproject.toml").read_text(encoding="utf-8")).group(1)
+    (root / "packaging" / "debian").mkdir(parents=True)
+    shutil.copy(_REPO / "packaging" / "debian" / "build-deb.sh", root / "packaging" / "debian" / "build-deb.sh")
+    (root / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n', encoding="utf-8")
+    payload = root / "stage" / f"ELI_v3.0-{version}-linux-portable"
+    (payload / "packaging" / "linux").mkdir(parents=True)
+    (payload / "packaging" / "linux" / "per_user_install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (payload / "README.md").write_text("stand-in\n", encoding="utf-8")
+    (root / "dist" / "app_packages").mkdir(parents=True)
+    subprocess.run(["tar", "-czf", str(root / "dist" / "app_packages" / f"{payload.name}.tar.gz"),
+                    "-C", str(payload.parent), payload.name], check=True)
+    got = subprocess.run(["bash", str(root / "packaging" / "debian" / "build-deb.sh")],
+                         capture_output=True, text=True, timeout=120)
+    assert got.returncode == 0, got.stdout + got.stderr
+    debs = sorted((root / "dist").glob("*.deb"))
+    assert len(debs) == 1, debs
+    return debs[0], version
+
+
+def _deb_field(deb: Path, field: str) -> str:
+    return subprocess.run(["dpkg-deb", "-f", str(deb), field], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_the_deb_is_eli_v3_and_takes_the_place_of_eli_mkxi(built_deb):
+    """v3's package was eli-mkxi, v2's name, while v2's own was eli-v2. It is eli-v3 now. A machine with
+    eli-mkxi installed upgrades with `apt install ./eli-v3_<version>_amd64.deb`: eli-v3 breaks and
+    replaces every eli-mkxi, including one of its own version, since the 3.0.171 tree built both."""
+    deb, version = built_deb
+    assert deb.name == f"eli-v3_{version}_amd64.deb"
+    assert _deb_field(deb, "Package") == "eli-v3" and _deb_field(deb, "Version") == version
+    assert _deb_field(deb, "Provides") == f"{_FORMER_DEB} (= {version})"
+    for field in ("Breaks", "Replaces"):
+        relation = re.fullmatch(rf"{re.escape(_FORMER_DEB)} \((<<|<=|=|>=|>>) (\S+)\)", _deb_field(deb, field))
+        assert relation, (field, _deb_field(deb, field))
+        for installed in (_LAST_FORMER_DEB, version):
+            covered = subprocess.run(["dpkg", "--compare-versions", installed, relation.group(1), relation.group(2)])
+            assert covered.returncode == 0, f"{field} leaves {_FORMER_DEB} {installed} in place"
+    files = subprocess.run(["dpkg-deb", "-c", str(deb)], capture_output=True, text=True, check=True).stdout
+    for path in ("./opt/eli-v3/packaging/linux/per_user_install.sh", "./usr/bin/eli-v3",
+                 "./usr/share/applications/eli-v3.desktop"):
+        assert path in files, path
+    assert "mkxi" not in files
+
+
+def test_no_script_in_the_deb_removes_anything(built_deb, tmp_path):
+    """Removing, purging or replacing the package never reaches the user's folder: the package's
+    scripts only refresh the menu and icon caches."""
+    deb, _ = built_deb
+    control = tmp_path / "control"
+    subprocess.run(["dpkg-deb", "-e", str(deb), str(control)], check=True)
+    scripts = {p.name: p.read_text(encoding="utf-8") for p in control.iterdir() if p.name not in ("control", "md5sums")}
+    assert set(scripts) == {"postinst"}, sorted(scripts)
+    for name, body in scripts.items():
+        assert not re.search(r"\brm\b|\brmdir\b|\bunlink\b|-delete\b|\bmv\b", body), name
+        assert not re.search(r"HOME|~|/home/|\.local|ELI_v3|mkxi", body), name
+
+
+def test_the_release_checksums_and_install_line_name_the_deb_the_build_writes(built_deb):
+    import fnmatch
+    deb, version = built_deb
+    text = (_REPO / "build_packages.sh").read_text(encoding="utf-8")
+    named = re.findall(r"[\w.*${}-]+_amd64\.deb", text)
+    assert named, "build_packages.sh names no .deb"
+    for name in named:
+        assert fnmatch.fnmatchcase(deb.name, name.replace("${VERSION}", version)), name
+    assert f"apt install ./dist/{deb.name.replace(version, '${VERSION}')}" in text
+
+
 def _payload(folder: Path, version: str, code: str) -> Path:
     (folder / "eli").mkdir(parents=True)
     (folder / "config").mkdir()

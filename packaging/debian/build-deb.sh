@@ -3,12 +3,18 @@
 # installs under /opt/eli-v3; a /usr/bin/eli-v3 launcher bootstraps a writable
 # per-user install (venv + models) under ~/.local/share/ELI_v3 on first run —
 # the same model the AppImage uses. No root-owned mutable state.
+#
+# The package is eli-v3, as v2's is eli-v2. Up to 3.0.171 it was eli-mkxi, with the same files,
+# so this one takes its place: `apt install ./eli-v3_<version>_amd64.deb` removes eli-mkxi and
+# installs eli-v3. Neither package has a script that removes anything: the per-user folder is the
+# user's, never the package's.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VERSION="${1:-$(grep -E '^version' "$ROOT/pyproject.toml" | head -1 | awk -F'"' '{print $2}')}"
 APP_NAME="ELI_v3.0"
-PKG="eli-mkxi"
+PKG="eli-v3"
+FORMER_PKG="eli-mkxi"
 OUT_DIR="$ROOT/dist"
 APP_OUT="$ROOT/dist/app_packages"
 WORK="$ROOT/build/deb"
@@ -64,6 +70,11 @@ Terminal=false
 EOF
 
 INSTALLED_KB=$(du -sk "$PKGDIR/opt" "$PKGDIR/usr" | awk '{s+=$1} END{print s}')
+# Breaks and Replaces name every eli-mkxi up to this version, not only older ones: the name changed
+# at 3.0.171 itself, so a build of that version exists under both names, and dpkg only lets one
+# package's files take over another's when Replaces names that package's version. No eli-mkxi is
+# built from here on, so every one there is falls under it. Provides keeps the old name answered;
+# dpkg and apt never count a package's own Provides against its own Breaks.
 cat > "$PKGDIR/DEBIAN/control" <<EOF
 Package: $PKG
 Version: $VERSION
@@ -72,6 +83,9 @@ Priority: optional
 Architecture: amd64
 Depends: python3 (>= 3.10), python3-venv, python3-pip, rsync, python3-dev, build-essential, portaudio19-dev, libglib2.0-0, libgl1, libegl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0
 Recommends: ffmpeg
+Provides: $FORMER_PKG (= $VERSION)
+Breaks: $FORMER_PKG (<= $VERSION)
+Replaces: $FORMER_PKG (<= $VERSION)
 Installed-Size: $INSTALLED_KB
 Maintainer: Jason Fitzgibbon Bridgeman <jaybridgeman0095@gmail.com>
 Description: ELI — strictly local, private AI assistant and cognitive runtime

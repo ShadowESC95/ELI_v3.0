@@ -1,7 +1,7 @@
 # ELI v3 Script & Setup Reference
 
 **Version:** 3.0.127 (scrub dead Desktop Path= stubs; redistribution-safe icons)
-**Repository:** ELI_MKXI / ELI v3.0  
+**Repository:** ELI_v3.0  
 **Last updated:** 2026-09-14
 
 **Beginner guide:** **[INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
@@ -130,12 +130,12 @@ flowchart TD
 
     A --> M{Release artifact?}
     M -->|AppImage| N[Double-click AppImage]
-    N --> O[Copy to ~/.local/share/ELI_v2]
+    N --> O[Copy to ~/.local/share/ELI_v3]
     O --> P[First-run install.sh / ELI_Setup.sh]
     P --> L
     M -->|Windows zip| Q[ELI_Setup.bat or install.bat]
     Q --> F
-    M -->|Debian .deb| R[eli-v2 command]
+    M -->|Debian .deb| R[eli-v3 command]
     R --> O
     M -->|Source dev| S[bash install.sh with flags]
     S --> L
@@ -510,7 +510,7 @@ Rebuild `blueprints/new_user_install_guide.pdf` only.
 |---|---|
 | **When to use** | Grandma-friendly AppImage from portable tarball (requires host Python 3.10+). |
 | **Usage** | `bash packaging/linux/build-appimage.sh [version]` |
-| **Steps** | Build/find portable tar → stage AppDir → write `AppRun` (first launch → `~/.local/share/ELI_v2`, run ELI_Setup) → appimagetool → SHA256. |
+| **Steps** | Build/find portable tar → stage AppDir → write `AppRun` (first launch → `~/.local/share/ELI_v3`, run ELI_Setup) → appimagetool → SHA256. |
 | **Env** | `ELI_INSTALL_ROOT`, `ELI_APPIMAGE_FORCE_SYNC`, `SKIP_TESTS`. |
 | **Fallback** | If appimagetool missing, downloads from GitHub releases. |
 
@@ -518,13 +518,13 @@ Rebuild `blueprints/new_user_install_guide.pdf` only.
 
 ### `packaging/linux/build-appimage-pyinstaller.sh`
 
-Frozen **PyInstaller** one-dir bundle → AppImage. **No host Python required.** Prerequisite: `pyinstaller --noconfirm ELI.spec` → `dist/ELI/`. Ships LICENSE in AppDir; mutable state → `~/.local/share/ELI_v2`.
+Frozen **PyInstaller** one-dir bundle → AppImage. **No host Python required.** Prerequisite: `pyinstaller --noconfirm ELI.spec` → `dist/ELI/`. Ships LICENSE in AppDir; mutable state → `~/.local/share/ELI_v3`.
 
 ---
 
 ### `packaging/debian/build-deb.sh`
 
-Lean `.deb` (~6 MB): git archive to `/opt/eli-v2`, `/usr/bin/eli-v2` first-launch installer to `~/.local/share/ELI_v2`. Requires `dpkg-deb`.
+Package `eli-v3` (`dist/eli-v3_<version>_amd64.deb`) from the Linux portable package: the payload in `/opt/eli-v3`, and `/usr/bin/eli-v3` runs `packaging/linux/per_user_install.sh` (the AppImage's per-user install and upgrade) into `~/.local/share/ELI_v3`. Up to 3.0.171 the package was named `eli-mkxi`; `eli-v3` breaks, replaces and provides it, so `sudo apt install ./eli-v3_<version>_amd64.deb` removes the old one in its place (`dpkg -i` alone stops at it). The only maintainer script refreshes the menu and icon caches; none removes anything. Requires `dpkg-deb`.
 
 ---
 
@@ -1202,7 +1202,7 @@ The `eli/` package contains **452 Python modules** across **26 subpackages** (ex
 
 | Variable | Purpose |
 |----------|---------|
-| `ELI_INSTALL_ROOT` | AppImage/deb copy target (`~/.local/share/ELI_v2`) |
+| `ELI_INSTALL_ROOT` | AppImage/deb copy target (`~/.local/share/ELI_v3`) |
 | `ELI_APPIMAGE_FORCE_SYNC` | Force AppImage tree re-sync |
 | `ELI_ASSET_RELEASE_TAG` | GitHub assets tag (default `local-assets-v3.0`) |
 | `GITHUB_REPOSITORY` | Asset repo (default `ShadowESC95/ELI_v3.0`) |
@@ -1278,7 +1278,7 @@ Symptoms gathered from installer logic, startup repair paths, and field reports.
 
 ### AppImage first launch fails
 
-**Cause:** No host Python 3.10+ (source-based AppImage); setup log at `~/.local/share/ELI_v2/setup.log`.  
+**Cause:** No host Python 3.10+ (source-based AppImage); setup log at `~/.local/share/ELI_v3/setup.log`.  
 **Fix:** Install Python 3.10 or newer; or use PyInstaller AppImage (`build-appimage-pyinstaller.sh`) which needs no host Python.
 
 ### Windows PowerShell execution policy

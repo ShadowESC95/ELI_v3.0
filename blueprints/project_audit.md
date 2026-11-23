@@ -346,7 +346,9 @@ Severity P0=integrity, P1=routing/exec, P2=quality. Status as of `a641471`.
 ## 12. Install / packaging / redistribution
 - `install.sh` (+ `.bat`/`.ps1`): frozen lock (`requirements.lock.txt`) + GPU verify + DB init. **[B]**
 - Platform requirement files: `requirements-{windows,macos,android,full,learning}.txt`.
-- `pyproject.toml`, `eli-mkxi.desktop`, `build_packages.sh`, `packaging/`.
+- `pyproject.toml`, `build_packages.sh`, `packaging/` (the Debian package is `eli-v3`; up to 3.0.171
+  `eli-mkxi`). Menu entries are written as `eli-v3*.desktop` (`eli/runtime/desktop_launchers.py`, the
+  package builders); no `.desktop` file is tracked.
 - Redistribution mechanics: portable settings storage + stale-path healing
   (`runtime_settings._heal_model_paths`, `_resolve_relative_model_paths`), dataset redaction.
   **Open risk [B]:** personal values (e.g. `user_name`) can still end up tracked; the
