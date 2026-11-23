@@ -75,8 +75,13 @@ system.
 * **Piper voices** — flagged `license_review_required` in
   `packaging/runtime_asset_manifest.json`; downloaded at runtime.
 * **PyQt** — GPL; the frozen bundle is PySide6-only (excluded in `ELI.spec`).
-* **yt-dlp is bundled.** It comes with the `media` extra in `pyproject.toml`, one of the
-  `REQUIRED_EXTRAS` in `release.yml`; without it playback of a video's sound is browser-only.
+* **Everything ELI needs to run its features is bundled.** Voice input and output, the
+  window, the server, documents, vision, web search, wake words, the device drivers and
+  yt-dlp are `pyproject.toml`'s dependencies, so every build installs them and fails if one
+  cannot be installed. The extras are what is built for, or chosen by, the machine's GPU:
+  `llm` (the inference engine) is in `REQUIRED_EXTRAS`; `image` (and, on Linux, `chatterbox`)
+  in `OPTIONAL_EXTRAS`. `tests/claims/test_runtime_dependencies.py` fails when ELI imports a
+  package that is not declared this way.
 * **Optional extras without wheels for a platform** — each `OPTIONAL_EXTRAS`
   group in `release.yml` installs independently; a group with no wheels for
   that OS is skipped with a workflow warning and ELI degrades cleanly
@@ -87,7 +92,7 @@ system.
 ```
 python3.12 -m venv .venv-build && source .venv-build/bin/activate   # the release builds on 3.12 (release.yml PYTHON_VERSION)
 pip install -r requirements-build.txt
-pip install ".[gui,llm,server,docs,analysis,extras,media]"      # + optional extras you want bundled
+pip install ".[llm]"      # ELI's dependencies and the engine (install packaging/llama_source.py's build first); + optional extras you want bundled
 pyinstaller --noconfirm --clean ELI.spec
 
 # then, per platform:

@@ -59,7 +59,7 @@ package whose source it cannot find is not released.
 
 ---
 
-## Core Python dependencies (`pip install -e .[full]`)
+## Core Python dependencies (`pip install -e .`; `.[full]` adds the inference engine and image generation)
 
 | Component | License | Notes |
 |---|---|---|
@@ -72,21 +72,24 @@ package whose source it cannot find is not released.
 | **FastAPI** / **Starlette** / **uvicorn** | MIT | Web server |
 | **paho-mqtt** | EPL-2.0 / EDL-1.0 | MQTT device server |
 | **zeroconf** | LGPL-2.1+ | mDNS discovery |
+| **opencv-python** | Apache-2.0 | Vision / gaze |
+| **playwright** | Apache-2.0 | Browser automation plugin |
+| **bleak** | MIT | Bluetooth discovery |
+| **openwakeword** | Apache-2.0 | Wake word |
+| **pychromecast**, **androidtv**, **pyatv** | MIT | Device drivers (Chromecast, Fire TV / Android TV, Apple TV / AirPlay) |
+| **adb-shell** | Apache-2.0 | Fire TV / Android TV pairing |
+| **yara-python** | Apache-2.0 | The plugin scanner's YARA engine (the user's own rules) |
 | **numpy**, **Pillow**, **requests**, **pydantic**, etc. | BSD/MIT/Apache-2.0 | See installed package metadata |
 
 Full pinned versions: `requirements-full.txt`, `requirements.lock.txt`.
 
 ---
 
-## Optional / feature extras
+## Optional extras (built for, or chosen by, the machine's GPU)
 
 | Component | License | Used for |
 |---|---|---|
 | **diffusers**, **accelerate**, **safetensors** | Apache-2.0 | Local image generation |
-| **opencv-python** | Apache-2.0 | Vision / gaze |
-| **playwright** | Apache-2.0 | Browser automation plugin |
-| **bleak** | MIT | Bluetooth discovery |
-| **openwakeword** | Apache-2.0 | Wake word |
 
 ---
 

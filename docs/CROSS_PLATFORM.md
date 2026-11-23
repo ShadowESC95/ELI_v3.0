@@ -141,8 +141,8 @@ input) — not on a headless server or Android · ➖ N/A on that platform
   browser YouTube. Deep playlist control is best on Linux; other platforms open the
   correct Spotify context and nudge play via native hooks. (Media *playback* via
   `play_sound` is fully cross-platform.)
-- **YouTube background** plays a video's sound through `mpv` with `yt-dlp`. Release builds carry
-  `yt-dlp` (the `media` extra); `mpv` is a system program. Both fetch the stream themselves,
+- **YouTube background** plays a video's sound through `mpv` with `yt-dlp`. Every install and release build
+  carries `yt-dlp` (one of ELI's dependencies); `mpv` is a system program. Both fetch the stream themselves,
   past ELI's own network guard, so with the Net toggle off they are not started and ELI says the
   play did not happen because it is offline.
 - **One window at a time** in the packaged app is kept by an OS lock on a file (`msvcrt` on
