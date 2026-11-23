@@ -133,7 +133,7 @@ def _eli_count_rows_v2(db: _EliPath) -> dict[str, int]:
     if not db.exists():
         return out
     try:
-        con = _eli_sqlite3.connect(str(db))
+        con = _eli_ro_connect(db)
         cur = con.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         names = [r[0] for r in cur.fetchall()]
@@ -841,7 +841,7 @@ def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[o
     db = _eli_db_paths_v2()["user_db"]
     if db.exists():
         try:
-            con = _eli_sqlite3.connect(str(db))
+            con = _eli_ro_connect(db)
             cur = con.cursor()
 
             table_plan = [
@@ -914,19 +914,19 @@ import sqlite3 as _eli_v8_sqlite3
 from pathlib import Path as _EliV8Path
 
 
-def _eli_v8_project_root() -> _EliV8Path:
-    try:
-        return _EliV8Path(__file__).resolve().parents[2]
-    except Exception:
-        return _EliV8Path.cwd()
-
-
 def _eli_v8_db_paths() -> list[_EliV8Path]:
-    root = _eli_v8_project_root()
-    return [
-        root / "artifacts" / "db" / "user.sqlite3",
-        root / "artifacts" / "db" / "agent.sqlite3",
-    ]
+    """The user's own databases, wherever this install keeps them (the data root of a packaged
+    app, ELI_USER_DB / ELI_AGENT_DB, or the source tree in development). Built from the source
+    folder, they named a folder an installed app never writes, so its learned facts went unseen
+    and its learned name unredacted. Every reader in this module takes its paths from here."""
+    from eli.core.paths import agent_db_path, user_db_path
+    return [_EliV8Path(user_db_path()), _EliV8Path(agent_db_path())]
+
+
+def _eli_ro_connect(db):
+    """Open a user database read-only: this module only reads, and must never create or change one."""
+    import sqlite3
+    return sqlite3.connect(_EliV8Path(db).resolve().as_uri() + "?mode=ro", uri=True)
 
 
 def _eli_v8_norm(s: object) -> str:
@@ -1017,7 +1017,7 @@ def _eli_v8_collect_db_texts(limit_per_table: int = 600) -> list[str]:
             continue
 
         try:
-            con = _eli_v8_sqlite3.connect(str(db))
+            con = _eli_ro_connect(db)
             cur = con.cursor()
         except Exception:
             continue
@@ -1848,19 +1848,8 @@ import sqlite3 as _eli_v12_sqlite3
 from pathlib import Path as _EliV12Path
 
 
-def _eli_v12_root() -> _EliV12Path:
-    try:
-        return _EliV12Path(__file__).resolve().parents[2]
-    except Exception:
-        return _EliV12Path.cwd()
-
-
 def _eli_v12_db_paths() -> list[_EliV12Path]:
-    root = _eli_v12_root()
-    return [
-        root / "artifacts" / "db" / "user.sqlite3",
-        root / "artifacts" / "db" / "agent.sqlite3",
-    ]
+    return [_EliV12Path(p) for p in _eli_v8_db_paths()]
 
 
 def _eli_v12_dynamic_identity_tokens() -> list[str]:
@@ -1902,7 +1891,8 @@ def _eli_v12_dynamic_identity_tokens() -> list[str]:
         if not db.exists():
             continue
         try:
-            con = _eli_v12_sqlite3.connect(str(db))
+            # Read-only: the redaction only looks, and must never create or change the user's data.
+            con = _eli_ro_connect(db)
             cur = con.cursor()
             cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [r[0] for r in cur.fetchall()]
@@ -2340,12 +2330,10 @@ def _eli_v14_name_tokens() -> set[str]:
         _SWLOG.debug("suppressed exception", exc_info=True)
 
     # Pull explicit name-like memory facts dynamically from this installation only.
-    root = _eli_v14_project_root()
-    db = root / "artifacts" / "db" / "user.sqlite3"
+    db = _eli_v8_db_paths()[0]
     try:
-        import sqlite3 as _eli_v14_sqlite3
         if db.exists():
-            con = _eli_v14_sqlite3.connect(str(db))
+            con = _eli_ro_connect(db)
             cur = con.cursor()
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
             if cur.fetchone():

@@ -48,3 +48,26 @@ def test_unrelated_text_untouched():
     s = "The user opened a file in their home directory."
     out = _redact(s)
     assert "home directory" in out
+
+
+def test_a_name_learned_in_this_installs_own_database_is_redacted_and_the_database_is_only_read(
+        tmp_path, monkeypatch):
+    # The learned name lives in the user's database wherever this install keeps it (a packaged app's
+    # data root, ELI_USER_DB): the redactor once read <source folder>/artifacts/db instead, which an
+    # installed app never writes, so the name went out unredacted.
+    import sqlite3
+    db = tmp_path / "data" / "user.sqlite3"
+    db.parent.mkdir()
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE memories (content TEXT)")
+    con.execute("INSERT INTO memories VALUES ('The user''s preferred name is Rowan Vale')")
+    con.commit()
+    con.close()
+    before = db.read_bytes()
+    monkeypatch.setenv("ELI_USER_DB", str(db))
+    monkeypatch.setenv("ELI_AGENT_DB", str(tmp_path / "data" / "agent.sqlite3"))
+    out = _redact("Thanks, Rowan Vale, it is saved.")
+    assert "Rowan Vale" not in out, out
+    assert "<user>" in out, out
+    assert db.read_bytes() == before
+    assert not (tmp_path / "data" / "agent.sqlite3").exists()
