@@ -103,12 +103,17 @@ but real.
 
 ## 5. Testing strategy (two layers + the gaps)
 
-**Layer 1 — code correctness:** **646 pytest files** — routing patterns, contracts, executor gates, memory, kernel,
+**Layer 1 — code correctness:** **640 pytest files** — routing patterns, contracts, executor gates, memory, kernel,
 perception/voice, packaging. About 23 minutes for the full run; run on every change. A test checks what the code
-does: none reads the source for a string, none only checks that a name exists, and none skips because one of ELI's
-own modules failed to import. Every run keeps ELI's state in one sandbox (`artifacts/_pytest`: data, config,
-training, the GPU pack log), and any file a test writes in the checkout's own state is named at the end (a failure
-in CI and with `ELI_TEST_STRICT_ISOLATION=1`).
+does: none only checks that a module imports or a name exists (`tests/test_00_imports.py` is the one import list),
+and none skips because one of ELI's own modules failed to import. About 210 tests read a file's text for a string:
+some 85 the installers, release workflow and packaging scripts (no single system can run them all), some 115 ELI's
+own source, for engine internals that have no test of their behaviour yet. Every run keeps ELI's state in one sandbox
+(`artifacts/_pytest`: data, config, training, the GPU pack log, downloaded plugins, the capability manifest the claims
+read, the eval's throwaway copies, the coding tests' workspaces), and anything written, made or deleted anywhere in
+the checkout outside it is named at the end, with the test that did it (a failure in CI and with
+`ELI_TEST_STRICT_ISOLATION=1`). Still written in the checkout while they run, and removed again: the code-examiner
+and self-repair tests' probe modules in `eli/` and `tests/` (the examiner takes only ELI's own modules).
 
 **Layer 2 — behavioural eval:** `tools/eval/` (see `tools/eval/README.md`) drives the
 **real pipeline** and asserts on telemetry (action / grounding / response_mode /
