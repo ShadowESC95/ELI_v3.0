@@ -68,6 +68,9 @@ jobs:
               || echo "::warning::optional extra '$extra' does not install on this runner; the release's Linux build skips it the same way"
           done
 
+      - name: Leave out the GPL packages PyAutoGUI declares, as every release build does
+        run: python packaging/gpl_sources.py --leave-out
+
       - name: Every test
         run: |
           python -m pytest -p no:cacheprovider -o addopts="" -q --strict-markers \

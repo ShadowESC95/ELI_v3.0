@@ -11,6 +11,7 @@ requests>=2.33
 Pillow>=12.0
 mss>=9.0
 PyAutoGUI>=0.9.54
+python-xlib>=0.33; sys_platform == "linux"   # the Xlib PyAutoGUI drives (LGPL), not python3-xlib (GPL)
 python-dotenv>=1.0
 PyYAML>=6.0
 tqdm>=4.67

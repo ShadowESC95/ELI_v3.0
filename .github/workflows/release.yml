@@ -144,6 +144,10 @@ jobs:
               || echo "::warning::optional extra '$extra' has no installable wheels on windows — shipped build degrades cleanly without it"
           done
 
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
+
       - name: Generate capability manifests (bundled introspection data)
         shell: bash
         run: |
@@ -303,6 +307,10 @@ jobs:
             pip install ".[$extra]" \
               || echo "::warning::optional extra '$extra' has no installable wheels on macos-arm64 — shipped build degrades cleanly without it"
           done
+
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
 
       - name: Generate capability manifests (bundled introspection data)
         run: |
@@ -482,6 +490,10 @@ jobs:
                   print(f"::warning::{mod} unavailable — {why} will degrade to the Kokoro voice: {e}")
           PY
 
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
+
       - name: Generate capability manifests (bundled introspection data)
         run: |
           python -m eli.core.init_data
@@ -624,8 +636,8 @@ jobs:
           mv dist/app_packages/ELI_v3.0-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
-      # GPL-3.0 lets the bundles carry a GPL package when its exact source goes with them; with none
-      # left in the build, SOURCES.md says so. This environment installs the extras every build does (and
+      # GPL-3.0 lets the bundles carry a GPL package when its exact source goes with them; SOURCES.md
+      # says so plainly when the builds carry none (PyAutoGUI's are left out above). This environment installs the extras every build does (and
       # chatterbox, Linux's own). A source that cannot be fetched fails the release. Beside it,
       # LGPL_SOURCES.md says where the source of each LGPL package (Qt for Python and the Qt inside it
       # among them) is, at the version the builds carry; one it cannot find fails it too.

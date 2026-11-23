@@ -113,9 +113,18 @@ build_windows_wheelhouse_for() {
 
     if [ "$PLATFORM" = "win_amd64" ]; then
         echo "[wheelhouse] Building pure-Python automation wheels (x64)…"
-        if ! python3 -m pip wheel \
-                --wheel-dir "$OUT_DIR" \
-                "PyAutoGUI>=0.9.54"; then
+        # PyAutoGUI without its declared dependencies, then those of them this platform needs that are
+        # not under the GPL. MouseInfo and PyMsgBox are, and no release carries them
+        # (packaging/gpl_sources.py, LEFT_OUT); a plain `pip wheel PyAutoGUI` built them into it, with
+        # python3-xlib, which only Linux even asks for.
+        local _pythons="" _gui="" _kept=""
+        for pyver in $PYVERS; do _pythons="$_pythons ${pyver:0:1}.${pyver:1}"; done
+        if python3 -m pip wheel --no-deps --wheel-dir "$OUT_DIR" "PyAutoGUI>=0.9.54" \
+                && _gui="$(ls "$OUT_DIR"/[Pp]y[Aa]uto[Gg][Uu][Ii]-*.whl | sort -V | tail -1)" \
+                && _kept="$(python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --kept-dependencies "$_gui" "$PLATFORM" $_pythons)" \
+                && python3 -m pip wheel --wheel-dir "$OUT_DIR" $_kept; then
+            echo "[wheelhouse] $(basename "$_gui") and what it needs on ${PLATFORM}: $(echo $_kept)"
+        else
             echo "[wheelhouse] Missing pure-Python automation wheels for PyAutoGUI."
             missing=$((missing + 1))
         fi
@@ -123,6 +132,8 @@ build_windows_wheelhouse_for() {
         echo "[wheelhouse] Skipping PyAutoGUI wheel build on ${PLATFORM} (desktop automation N/A on WoA)."
     fi
 
+    # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the release here.
+    python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --check-wheels "$OUT_DIR"
     ( cd "$OUT_DIR" && ls -1 > "$MANIFEST" 2>/dev/null || true )
     if [ "$missing" -gt 0 ]; then
         echo "[wheelhouse] ${PLATFORM}: ${missing} wheel(s) missing — lean/online install may still work."
@@ -230,6 +241,7 @@ WOA_EOF
         done
         python3 -m pip download -r "$PROJECT_ROOT/requirements-portable-bootstrap.txt" \
             -d "$STAGING/wheelhouse" --prefer-binary -q 2>/dev/null || true
+        python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --check-wheels "$STAGING/wheelhouse"
     fi
 }
 

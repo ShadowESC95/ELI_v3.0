@@ -153,10 +153,14 @@ if [ "${ELI_BUNDLE_TORCH:-0}" = "1" ]; then
 fi
 if [ "${ELI_FULL_WHEELHOUSE:-0}" = "1" ] && [ -f "$ROOT/requirements.lock.txt" ]; then
   echo "[package]   downloading full pinned wheel set (this is large, needs network)…"
-  "$PYTHON" -m pip download -r "$ROOT/requirements.lock.txt" -d "$STAGING/wheelhouse" \
+  # --no-deps: the lock is the whole set, and following PyAutoGUI's declared dependencies would fetch
+  # the GPL ones no release carries (packaging/gpl_sources.py, LEFT_OUT), which the lock leaves out
+  "$PYTHON" -m pip download --no-deps -r "$ROOT/requirements.lock.txt" -d "$STAGING/wheelhouse" \
       --prefer-binary -q 2>/dev/null || echo "[package]   (some wheels unavailable — install will fetch those)"
 fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
+  # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the package here
+  "$PYTHON" "$ROOT/packaging/gpl_sources.py" --check-wheels "$STAGING/wheelhouse" || exit 1
   _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l || true)"
   echo "[package] wheelhouse: ${_wh_count} wheel(s)"
   if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ] && [ "${_wh_count:-0}" -lt 1 ]; then

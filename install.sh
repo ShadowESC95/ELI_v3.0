@@ -996,6 +996,11 @@ if ! _pip install ${_PIP_LINKS[@]+${_PIP_LINKS[@]+"${_PIP_LINKS[@]}"}} -r "$REQ"
             || warn "Some packages could not be installed (named above). ELI runs without them; what uses them is unavailable."
     fi
 fi
+# PyAutoGUI declares MouseInfo, PyMsgBox and python3-xlib, which are under the GPL and which ELI runs
+# without (packaging/gpl_sources.py, LEFT_OUT): take them out again, as every release build does, and
+# put back python-xlib's Xlib, which python3-xlib overwrote.
+"$PYTHON_VENV" "$SCRIPT_DIR/packaging/gpl_sources.py" --leave-out \
+    || warn "PyAutoGUI's GPL dependencies are still installed (named above); ELI works the same with them."
 
 # Make launchers executable
 chmod +x "$SCRIPT_DIR/eli.sh" 2>/dev/null || true
