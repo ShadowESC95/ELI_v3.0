@@ -148,7 +148,10 @@ only matters when those don't match the user's CUDA or a source build is require
    CPU) — then **verifies `llama_supports_gpu_offload()`** and, if it landed CPU-only,
    prints the exact CUDA-rebuild command (closes the silent-CPU-wheel trap).
 4. Installs the ELI package (`[full]`) + all remaining dependencies from the
-   **frozen `requirements.lock.txt`** (exact known-good versions; reproducible).
+   **frozen `requirements.lock.txt`** (exact known-good versions; reproducible), then takes
+   out again the GPL packages PyAutoGUI declares and ELI runs without (MouseInfo, PyMsgBox,
+   python3-xlib) and puts back python-xlib's Xlib, which python3-xlib overwrote
+   (`packaging/gpl_sources.py --leave-out`, as every release build does).
 5. Seeds `config/settings.json` from the template (offline-by-default, wizard on) —
    never overwrites an existing config.
 6. Runs **`python -m eli.core.init_data`** — creates **every** SQLite store/table
@@ -188,7 +191,7 @@ from auto-restore: ryan, lessac, cori — see `models/MODEL_LICENSES.md`.
 - `install.sh` (Linux/macOS), `install.bat` / `install.ps1` (Windows).
 - `requirements.lock.txt` — frozen exact versions, with markers for what only some
   Pythons or systems need (excludes torch and llama-cpp, which the installers fetch for
-  the machine's GPU).
+  the machine's GPU, and PyAutoGUI's GPL dependencies, which no release carries).
 - `pyproject.toml` — package metadata + `[project.scripts]` (`eli` → `eli.__main__:console_main`, which reads every option `python -m eli` does).
 
 ## Launch
