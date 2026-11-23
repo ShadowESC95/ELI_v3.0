@@ -88,78 +88,38 @@ _DEVICE_DECIDED: dict = {}
 def _whisper_card() -> Optional[dict]:
     """The card ctranslate2 runs whisper on: CUDA device 0, the first NVIDIA card in bus order
     (eli/__init__.py sets CUDA_DEVICE_ORDER=PCI_BUS_ID). None otherwise: ctranslate2 is CUDA only."""
-    try:
-        from eli.core.hardware_profile import get_live_gpu_telemetry
-        cards = [d for d in (get_live_gpu_telemetry().get("devices") or []) if d.get("vendor") == "nvidia"]
-    except Exception:
-        log.debug("whisper card unknown", exc_info=True)
-        return None
+    from eli.perception.gpu_room import nvidia_cards
+    cards = nvidia_cards()
     return cards[0] if cards else None
 
 
-def _footprint_file() -> Path:
-    from eli.core.paths import data_dir
-    return Path(data_dir()) / "runtime" / "whisper_gpu.json"
-
-
-def _footprint_key(card: dict, model: str) -> str:
-    return f"{card.get('name')}|{int(card.get('total_mb') or 0)}|{model}"
+_FOOTPRINTS = "whisper_gpu"      # the table of what whisper was measured holding (eli/perception/gpu_room)
 
 
 def _measured_footprint_mb(card: dict, model: str) -> Optional[float]:
     """What whisper was measured holding on this card, weights and working buffers, after its warm-up."""
-    import json
-    try:
-        return float(json.loads(_footprint_file().read_text(encoding="utf-8"))[_footprint_key(card, model)])
-    except Exception:
-        return None
+    from eli.perception.gpu_room import measured_footprint_mb
+    return measured_footprint_mb(_FOOTPRINTS, card, model)
 
 
 def _record_footprint(card: dict, model: str, mb: float) -> None:
-    import json
-    path = _footprint_file()
-    try:
-        table = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-        table[_footprint_key(card, model)] = round(float(mb), 1)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(table, indent=1), encoding="utf-8")
-    except Exception:
-        log.debug("whisper footprint not recorded", exc_info=True)
+    from eli.perception.gpu_room import record_footprint
+    record_footprint(_FOOTPRINTS, card, model, mb)
 
 
 def _gpu_room_for_whisper(model: str, model_dir: str) -> bool:
     """GPU only when its card still holds this whisper model after the language model takes every
-    layer it can: whisper on the GPU must not cost the language model layers. What whisper needs is
-    its measured footprint on this card (weights and working buffers), or its weights until measured;
-    what the language model needs is its load plan (eli/core/load_plan.py), or, loaded, what it holds.
-    Unknown either way: the CPU, so the language model keeps the GPU."""
+    layer it can (eli/perception/gpu_room): its measured footprint on this card, or its weights until
+    measured. Unknown either way: the CPU, so the language model keeps the GPU."""
     card = _whisper_card()
     if card is None or not card.get("free_mb"):         # ctranslate2 offloads to NVIDIA only
         return False
     need = _measured_footprint_mb(card, model) or _whisper_weights_mb(model, model_dir)
     if need <= 0:
         return False
-    try:
-        import sys
-        from eli.core.hardware_profile import vram_reserve_mb
-        room = float(card["free_mb"]) - float(vram_reserve_mb())
-        gi = sys.modules.get("eli.cognition.gguf_inference")
-        if gi is None or getattr(gi, "_llm", None) is None:
-            # not loaded yet: what its plan puts on this card
-            from eli.core import config, load_plan
-            from eli.cognition.gguf_inference import load_request
-            plan = load_plan.plan(load_request(config.get_gguf_model_path()))
-            if plan is None or plan.cpu_only:
-                return False
-            if plan.n_gpu_layers < plan.blocks + 1 or plan.experts_in_ram:
-                return False                       # the language model already wants more than the cards hold
-            same = [d.index for d in plan.devices if d.name.lower() == "cuda0"] or \
-                [d.index for d in plan.devices if d.description == card.get("name")]
-            room -= float(plan.use_mb.get(same[0], 0.0)) if same else max(plan.use_mb.values(), default=0.0)
-        return room >= need
-    except Exception:
-        log.debug("whisper GPU room unknown", exc_info=True)
-        return False
+    from eli.perception.gpu_room import room_mb
+    room = room_mb(card, 0)
+    return room is not None and room >= need
 
 
 def whisper_cache_ready(
