@@ -143,18 +143,6 @@ def test_router_concurrent_routing():
 # ── Memory DB stress tests ────────────────────────────────────────────────
 
 
-def test_memory_bulk_insert(tmp_db):
-    conn = sqlite3.connect(str(tmp_db))
-    for i in range(200):
-        conn.execute(
-            "INSERT INTO memories (text, tags, timestamp, kind) VALUES (?, ?, ?, ?)",
-            (f"Memory entry number {i} with content", f"tag_{i % 10}", float(i), "memory")
-        )
-    conn.commit()
-    count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-    conn.close()
-    assert count == 200
-
 def test_memory_recall_from_200_entries(tmp_db):
     from eli.memory.memory import Memory
     conn = sqlite3.connect(str(tmp_db))

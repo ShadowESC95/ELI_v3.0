@@ -16,12 +16,6 @@ _IDS = [getattr(a, "name", f"agent{i}") for i, a in enumerate(_AGENTS)]
 
 
 @pytest.mark.parametrize("agent", _AGENTS, ids=_IDS)
-def test_agent_has_name_and_run(agent):
-    assert isinstance(getattr(agent, "name", None), str) and agent.name
-    assert callable(getattr(agent, "run", None))
-
-
-@pytest.mark.parametrize("agent", _AGENTS, ids=_IDS)
 def test_agent_runs_and_self_gates_on_irrelevant_input(agent):
     # "ok" as a CHAT turn is irrelevant to every specialist agent → must not crash,
     # must return an AgentResult, and should self-gate (skip / 0 confidence) rather

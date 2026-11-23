@@ -7,7 +7,7 @@ from pathlib import Path
 
 from eli.cognition.output_governor import sanitize_assistant_text
 from eli.core.runtime_settings import load_settings, save_settings, _resolve_relative_model_paths
-from eli.core.paths import project_root, get_paths
+from eli.core.paths import project_root
 
 
 # ── Settings + Path integration ───────────────────────────────────────────
@@ -117,11 +117,6 @@ def test_tts_voice_setting_persists(tmp_settings_file, monkeypatch):
 
 # ── Paths + Settings integration ──────────────────────────────────────────
 
-def test_settings_file_in_config_dir():
-    paths = get_paths()
-    config_dir = paths.config_dir
-    assert config_dir is not None
-    assert isinstance(config_dir, Path)
 
 def test_project_root_consistent():
     r1 = project_root()

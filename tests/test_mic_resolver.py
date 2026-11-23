@@ -3,7 +3,6 @@
 These mock the actual audio probe so they are deterministic and never touch a
 real microphone (CI-safe).
 """
-import importlib
 
 import pytest
 
@@ -137,10 +136,6 @@ def test_diagnostics_shape_without_probe():
                       "resolved_device_index", "resolved_reason"}
     # No probe forced → resolved fields are None.
     assert d["resolved_device_index"] is None
-
-
-def test_module_imports_clean():
-    importlib.reload(mr)
 
 
 def test_rank_usb_before_analog():

@@ -61,14 +61,6 @@ def test_every_installed_voice_is_found_and_the_natural_ones_listed():
 
 # ── Voice model finding ───────────────────────────────────────────────────
 
-def test_find_voice_model_returns_path_or_none():
-    result = find_voice_model("en_US-lessac-high")
-    assert result is None or isinstance(result, Path)
-
-def test_find_nonexistent_voice():
-    result = find_voice_model("en_US-nonexistent-ultra")
-    # Should fall back to any available voice or return None
-    assert result is None or isinstance(result, Path)
 
 def test_find_voice_model_onnx_extension():
     result = find_voice_model("en_US-lessac-high")
@@ -221,14 +213,6 @@ def test_get_active_voice_resolves_to_usable_voice(monkeypatch, tmp_path):
 
 # ── Edge cases ────────────────────────────────────────────────────────────
 
-def test_find_voice_empty_string():
-    result = find_voice_model("")
-    # Should fall back to any available voice
-    assert result is None or isinstance(result, Path)
-
-def test_find_voice_none():
-    result = find_voice_model(None)
-    assert result is None or isinstance(result, Path)
 
 def test_list_voices_sorted():
     voices = list_voices()

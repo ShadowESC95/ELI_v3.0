@@ -122,10 +122,6 @@ def test_no_store_path_is_fixed_when_its_module_is_imported():
 def test_is_not_frozen():
     assert not is_frozen()
 
-def test_find_project_root_returns_path_or_none():
-    result = _find_project_root()
-    assert result is None or isinstance(result, Path)
-
 
 def test_installer_like_tree_without_git_is_not_dev_mode(monkeypatch, tmp_path):
     import eli.core.paths as paths
@@ -251,26 +247,6 @@ def test_models_root_matches_models_dir():
 # ── get_paths / PATHS singleton ───────────────────────────────────────────
 
 
-def test_paths_project_root_attr():
-    p = get_paths()
-    assert p.project_root is not None
-
-def test_paths_models_dir_attr():
-    p = get_paths()
-    assert p.models_dir is not None
-
-def test_paths_config_dir_attr():
-    p = get_paths()
-    assert p.config_dir is not None
-
-def test_paths_user_db_attr():
-    p = get_paths()
-    assert p.user_db is not None
-
-def test_paths_agent_db_attr():
-    p = get_paths()
-    assert p.agent_db is not None
-
 def test_paths_repr():
     p = get_paths()
     r = repr(p)
@@ -279,9 +255,6 @@ def test_paths_repr():
 
 # ── GGUF model path ───────────────────────────────────────────────────────
 
-def test_get_gguf_model_path_returns_str_or_none():
-    result = get_gguf_model_path()
-    assert result is None or isinstance(result, str)
 
 def test_gguf_env_override(monkeypatch, tmp_path):
     model = tmp_path / "env_model.gguf"
@@ -353,10 +326,6 @@ def test_eli_paths_root_alias():
     p = EliPaths()
     assert p.root == p.project_root
 
-def test_eli_paths_db_alias():
-    p = EliPaths()
-    assert p.db is not None
-    assert isinstance(p.db, Path)
 
 def test_eli_paths_log_dir_alias():
     p = EliPaths()

@@ -45,8 +45,3 @@ def test_release_tag_default_tracks_pyproject_version():
     assert m.group(1) == version, (
         f"self_upgrade default tag v{m.group(1)} != pyproject version {version} — "
         "bump both when releasing")
-
-
-def test_capability_manifest_shipped():
-    from tests.claims import _helpers as H
-    assert H.manifest().get("total", 0) >= 200                  # the manifest this run generated

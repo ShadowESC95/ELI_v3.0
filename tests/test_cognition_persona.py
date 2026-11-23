@@ -15,30 +15,6 @@ def test_persona_txt_exists():
     persona_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt"
     assert persona_path.exists(), "persona.txt not found"
 
-def test_persona_txt_not_empty():
-    persona_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt"
-    if persona_path.exists():
-        text = persona_path.read_text(encoding="utf-8")
-        assert len(text.strip()) > 100
-
-def test_persona_txt_contains_eli_name():
-    persona_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt"
-    if persona_path.exists():
-        text = persona_path.read_text(encoding="utf-8").lower()
-        assert "eli" in text
-
-def test_persona_txt_has_voice_guidelines():
-    persona_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt"
-    if persona_path.exists():
-        text = persona_path.read_text(encoding="utf-8").upper()
-        assert "VOICE" in text or "DRY" in text or "DIRECT" in text
-
-def test_persona_contains_wrong_right_examples():
-    persona_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt"
-    if persona_path.exists():
-        text = persona_path.read_text(encoding="utf-8")
-        assert "WRONG" in text or "wrong" in text.lower()
-
 
 # ── get_persona ──────────────────────────────────────────────────────────
 

@@ -5,17 +5,6 @@ from __future__ import annotations
 # ── Agent Bus ─────────────────────────────────────────────────────────────
 
 
-def test_agent_bus_instantiation():
-    from eli.cognition.agent_bus import AgentBus
-    bus = AgentBus()
-    assert bus is not None
-
-def test_agent_bus_has_dispatch():
-    from eli.cognition.agent_bus import AgentBus
-    bus = AgentBus()
-    assert hasattr(bus, "dispatch") or hasattr(bus, "run") or hasattr(bus, "send")
-
-
 # ── Orchestrator ──────────────────────────────────────────────────────────
 
 

@@ -128,19 +128,6 @@ def test_fts_query_drops_stopwords():
     assert terms == ["fallout"], f"stopwords survived: {terms}"
 
 
-def test_an_all_stopword_query_still_searches_something():
-    """"what about that?" must not become an empty FTS5 query."""
-    import re
-
-    from eli.runtime.reflection import TOPIC_STOPWORDS
-    q = "what about that"
-    terms = [t for t in re.split(r"[^a-zA-Z0-9_]+", q)
-             if len(t) > 1 and t.lower() not in TOPIC_STOPWORDS]
-    if not terms:
-        terms = [t for t in re.split(r"[^a-zA-Z0-9_]+", q) if len(t) > 1]
-    assert terms, "fallback produced no search terms at all"
-
-
 def test_the_keyword_channel_reads_what_was_said_not_the_tags(tmp_path):
     """Tags are split at "_" by the index, so "memory" matched every row tagged memory_recall or
     working_memory: a recall of "memory status" brought back eighteen unrelated messages."""

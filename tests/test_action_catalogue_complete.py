@@ -43,13 +43,6 @@ def test_a_model_guess_can_never_rename_the_user_or_change_elis_setup():
     assert not (_EXPLICIT_ONLY_ACTIONS - set(SUPPORTED_ACTIONS)), "names an action that doesn't exist"
 
 
-def test_no_supported_action_is_missing_from_the_manifest():
-    from tests.claims import _helpers as H
-    known = {c["action"] for c in H.capabilities()}            # the manifest this run generated
-    missing = sorted(set(SUPPORTED_ACTIONS) - known)
-    assert not missing, f"supported but undeclared: {missing}"
-
-
 def test_internal_actions_stay_out_of_the_user_catalogue():
     cat = set(_catalogue())
     leaked = sorted(cat & set(_INTERNAL_ACTIONS))

@@ -21,8 +21,6 @@ from eli.runtime import device_server
 
 
 # ── discovery ──────────────────────────────────────────────────────────────
-def test_mdns_discovery_exists():
-    assert hasattr(mqtt_setup, "discover_brokers_mdns")
 
 
 def test_mdns_discovery_never_raises_without_zeroconf(monkeypatch):

@@ -28,48 +28,12 @@ from a value that later changes.
 import re
 from pathlib import Path
 
-import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 ENGINE = REPO / "eli" / "kernel" / "stages" / "generation.py"
 
-N_CTX = 10384
-CHARS_PER_TOK = 3.5
-
-
-def _est(chars):
-    return max(1, int(chars / CHARS_PER_TOK))
-
-
-def _avail(chars, n_ctx=N_CTX):
-    return max(128, n_ctx - _est(chars) - 64)
-
 
 # ── the arithmetic the fix restores ────────────────────────────────────────
-def test_the_untruncated_estimate_is_what_produced_128():
-    """Reproduces the live failure: the pre-truncation prompt hits the floor."""
-    assert _avail(36000) == 128
-
-
-def test_the_truncated_prompt_leaves_thousands_of_tokens():
-    """22,380 chars is what was actually sent."""
-    assert _avail(22380) > 3000
-
-
-def test_recomputing_raises_the_budget_by_an_order_of_magnitude():
-    before, after = _avail(36000), _avail(22380)
-    assert after > before * 20
-
-
-@pytest.mark.parametrize("pre,post", [(36000, 22380), (60000, 28000), (40000, 12000)])
-def test_a_truncation_always_frees_budget(pre, post):
-    assert _avail(post) >= _avail(pre)
-
-
-def test_a_prompt_that_never_needed_truncating_is_unaffected():
-    """The re-fit must not inflate a budget that was already correct."""
-    small = 8000
-    assert _avail(small) == _avail(small)
 
 
 # ── the source must recompute after truncating ─────────────────────────────

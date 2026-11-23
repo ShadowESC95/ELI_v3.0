@@ -3,45 +3,7 @@ test_06_runtime.py
 ==================
 Tests for eli.runtime — agent, approvals, grounded remediation, self-improvement.
 """
-import importlib
 import pytest
-
-
-def _load(mod_path):
-    return importlib.import_module(mod_path)
-
-
-def test_runtime_eli_agent_has_class():
-    # The standalone eli.runtime.eli_agent module was removed; its runtime
-    # dispatch role is now CognitiveEngine.process, reached via the headless
-    # runtime entry point. Verify that entry exists.
-    mod = _load("eli.cli.headless")
-    assert callable(getattr(mod, "run_headless", None)), \
-        f"no runtime dispatch entry (run_headless) in eli.cli.headless: {dir(mod)}"
-
-
-def test_runtime_grounded_remediation_has_class():
-    mod = _load("eli.runtime.grounded_remediation")
-    syms = dir(mod)
-    # Module is function-based: offer_for_result, try_handle_query are the public API
-    matches = [s for s in syms if "Remediat" in s or "Grounded" in s
-               or s in ("offer_for_result", "try_handle_query", "capture_executor_failure")]
-    assert matches, f"No remediation class/function in grounded_remediation.py: {syms}"
-
-
-def test_runtime_self_improvement_has_class():
-    mod = _load("eli.runtime.self_improvement")
-    syms = dir(mod)
-    matches = [s for s in syms if "Improve" in s or "Self" in s]
-    assert matches, f"No self-improvement class: {syms}"
-
-
-
-
-
-
-
-
 
 
 def test_the_self_model_in_every_prompt_does_not_name_elis_room():

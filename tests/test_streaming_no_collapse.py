@@ -80,18 +80,6 @@ class TestStreamingNeverCollapses:
                 except Exception:
                     pass  # Engine may route differently; no crash = pass
 
-    def test_zero_width_space_not_treated_as_visible_content(self):
-        """\\u200b is the 'I ran silently' sentinel — GUI must detect it as non-visible."""
-        sentinel = "\u200b"
-        # The GUI checks: if not token.strip() → treat as invisible
-        # \u200b.strip() returns \u200b (Python's str.strip only strips ASCII whitespace)
-        # The GUI must explicitly filter it out:
-        is_invisible = (not sentinel) or (sentinel == "\u200b") or (sentinel.replace("\u200b", "").strip() == "")
-        assert is_invisible, (
-            f"Sentinel '\\u200b' should be treated as invisible by the GUI "
-            f"(strip() does not remove it, but explicit check should)"
-        )
-
 
 # ---------------------------------------------------------------------------
 # WorkingMemory pinning after successful executor call

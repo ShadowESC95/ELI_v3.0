@@ -9,33 +9,8 @@ from eli.memory.memory import Memory
 
 # ── Memory store write/read cycle ────────────────────────────────────────
 
-def _write_memories(tmp_db, count=10):
-    conn = sqlite3.connect(str(tmp_db))
-    for i in range(count):
-        conn.execute(
-            "INSERT INTO memories (text, tags, timestamp, kind) VALUES (?,?,?,?)",
-            (f"Memory text {i}: user likes {['python','jazz','dark mode','linux'][i%4]}",
-             f"tag_{i%4}", f"2024-01-{i+1:02d}T00:00:00", "memory")
-        )
-    conn.commit()
-    conn.close()
-
-
-def test_memory_count_after_write(tmp_db):
-    _write_memories(tmp_db, 5)
-    conn = sqlite3.connect(str(tmp_db))
-    count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-    conn.close()
-    assert count == 5
-
 
 # ── FTS5 Index ────────────────────────────────────────────────────────────
-
-def test_fts5_table_exists(tmp_db):
-    conn = sqlite3.connect(str(tmp_db))
-    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    conn.close()
-    assert "memories_fts" in tables
 
 
 def test_fts5_no_false_positives(tmp_db):

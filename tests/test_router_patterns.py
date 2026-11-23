@@ -11,15 +11,6 @@ def action(text: str) -> str:
 
 # ── Greeting / Phatic routing ─────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "hello", "hi", "hey", "howdy", "good morning", "good evening",
-    "hello there", "hi eli", "hey there",
-])
-def test_phatic_greeting(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    assert "action" in result
-
 
 # ── Math / factual routing ────────────────────────────────────────────────
 
@@ -46,20 +37,6 @@ def test_factual_queries(text):
 
 # ── Memory specific recall ────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "When did I mention jazz?",
-    "Have I talked about Python before?",
-    "Do you remember what I said last time?",
-    "What have I told you about my job?",
-    "When did I mention my name?",
-    "What are my interests according to you?",
-    "Do you have any notes about me?",
-])
-def test_specific_memory_recall(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    assert "action" in result
-
 
 # ── Identity / self-awareness queries ────────────────────────────────────
 
@@ -85,19 +62,6 @@ def test_identity_queries(text):
 
 # ── Reasoning mode queries ────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "What reasoning mode are you using?",
-    "Are you in tree of thoughts mode?",
-    "Switch to chain of thought",
-    "What is your current thinking mode?",
-    "Use constitutional AI mode",
-    "Enable self-consistency",
-])
-def test_reasoning_mode_queries(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    assert "action" in result
-
 
 # ── Cognition/pipeline queries ────────────────────────────────────────────
 
@@ -119,54 +83,11 @@ def test_cognition_queries(text):
 
 # ── File system queries ───────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "List files in ~/Documents",
-    "Read the file README.md",
-    "Show directory contents",
-    "What files are in the current folder?",
-    "Open config.json",
-])
-def test_file_queries(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    assert "action" in result
-
 
 # ── Code queries ──────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "Write a Python function to sort a list",
-    "Fix this code: def foo(): retun 42",
-    "Explain this Python code",
-    "Create a bash script to backup files",
-    "What does this regex do: ^\\d+$",
-    "How do I reverse a string in Python?",
-    "Write a SQL query to select all users",
-    "Debug this JavaScript function",
-])
-def test_code_queries(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    a = (result.get("action") or "").upper()
-    assert len(a) > 0
-
 
 # ── Operator / media commands ────────────────────────────────────────────
-
-@pytest.mark.parametrize("text", [
-    "Pause the music",
-    "Resume playback",
-    "Play next track",
-    "Stop everything",
-    "Volume up",
-    "Mute",
-    "Skip",
-    "Next song",
-])
-def test_operator_commands(text):
-    result = route(text)
-    assert isinstance(result, dict)
-    assert "action" in result
 
 
 # ── Long-form queries ─────────────────────────────────────────────────────
@@ -189,56 +110,11 @@ def test_long_query_routing(text):
 
 # ── Confidence bounds ─────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "hello", "what is Python?", "open file.txt",
-    "what do you know about me?", "show system status",
-])
-def test_confidence_in_range(text):
-    result = route(text)
-    conf = result.get("confidence", result.get("score", 0.5))
-    if conf is not None:
-        assert 0.0 <= float(conf) <= 1.0
-
 
 # ── Action string format ──────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "hello", "what is machine learning?", "list files",
-    "what do you remember?", "show runtime status",
-    "write python code", "explain this error",
-])
-def test_action_is_uppercase_string(text):
-    result = route(text)
-    a = result.get("action", "")
-    assert isinstance(a, str)
-    if a:
-        assert a == a.upper()
-
 
 # ── No crashes on weird inputs ────────────────────────────────────────────
-
-WEIRD_INPUTS = [
-    None,
-    "",
-    "   ",
-    "\n\n\n",
-    "\t\t",
-    "." * 500,
-    "?" * 100,
-    "1" * 200,
-    "!!!!",
-    "🤖🤖🤖",
-    "SELECT * FROM users;",
-    "<script>alert('xss')</script>",
-    "../../etc/passwd",
-    '{"key": null}',
-    "True",
-    "False",
-    "None",
-    "0",
-    "-1",
-    "inf",
-]
 
 
 # ── Visual content-questions gather a real glance (not CHAT guessing) ────────

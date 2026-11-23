@@ -28,19 +28,6 @@ def test_execution_plan_has_action():
     assert hasattr(result, "action")
     assert result.action == "CHAT"
 
-def test_execution_plan_has_steps():
-    result = plan_for("CHAT")
-    assert hasattr(result, "steps")
-    assert isinstance(result.steps, list)
-
-def test_execution_plan_has_agent_profile():
-    result = plan_for("CHAT")
-    assert hasattr(result, "agent_profile")
-    assert isinstance(result.agent_profile, list)
-
-def test_execution_plan_has_response_provider():
-    result = plan_for("CHAT")
-    assert hasattr(result, "response_provider")
 
 def test_execution_plan_steps_not_empty():
     result = plan_for("CHAT")

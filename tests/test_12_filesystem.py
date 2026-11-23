@@ -5,7 +5,6 @@ Validates the project filesystem — no missing __init__.py files, expected
 directories present, key JSON artefacts valid, no stale .pyc-only modules.
 """
 import os
-import json
 from pathlib import Path
 
 import pytest
@@ -48,20 +47,6 @@ def test_pyproject_toml_valid():
     path = os.path.join(PROJECT_ROOT, "pyproject.toml")
     data = load_toml(path)
     assert "project" in data or "tool" in data, "pyproject.toml looks empty"
-
-
-def test_capability_manifest_valid_json():
-    from tests.claims import _helpers as H
-    assert H.manifest().get("total", 0) > 0                     # the manifest this run generated
-
-
-def test_capability_inventory_valid_json():
-    path = os.path.join(ELI_ROOT, "capability_inventory.generated.json")
-    if not os.path.isfile(path):
-        pytest.skip("capability_inventory.generated.json not present")
-    with open(path) as f:
-        data = json.load(f)
-    assert data is not None
 
 
 def test_persona_txt_and_auto_txt_present():

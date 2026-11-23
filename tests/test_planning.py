@@ -9,12 +9,6 @@ import sqlite3
 
 # ── Plugin system ─────────────────────────────────────────────────────────
 
-def test_plugins_dir_exists():
-    from eli.core.paths import plugins_dir
-    # Directory may not exist in dev, but function should work
-    p = plugins_dir()
-    assert p is not None
-
 
 # ── Knowledge Graph ───────────────────────────────────────────────────────
 

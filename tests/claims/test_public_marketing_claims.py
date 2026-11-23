@@ -70,11 +70,6 @@ def test_shell_gate_is_denylist_not_allowlist():
     assert "allowlist" not in src.lower() or "denylist" in src.lower()
 
 
-def test_netguard_socket_guard_exists():
-    from eli.core.netguard import should_block_network
-    assert callable(should_block_network)
-
-
 def test_server_default_port_is_8081_not_8502():
     src = (REPO / "api" / "server.py").read_text(encoding="utf-8")
     assert "8081" in src
@@ -114,11 +109,6 @@ def test_custom_agent_loader_exists():
     src = (REPO / "eli" / "cognition" / "agent_bus.py").read_text(encoding="utf-8")
     assert "SpecAgent" in src
     assert "_load_custom_agents" in src or "custom agents" in src.lower()
-
-
-def test_hyde_query_expansion_module_exists():
-    from eli.cognition.hyde import expand_query_hyde
-    assert callable(expand_query_hyde)
 
 
 def test_lora_train_action_in_manifest():

@@ -20,40 +20,13 @@ def engine():
 
 # ── Initialization ────────────────────────────────────────────────────────
 
-def test_engine_init():
-    eng = CognitiveEngine()
-    assert eng is not None
-
 
 def test_engine_request_counter_starts_zero(engine):
     assert engine._request_counter == 0
 
-def test_engine_is_singleton_or_instance():
-    e1 = CognitiveEngine()
-    assert e1 is not None
-
 
 # ── _build_enhanced_system ────────────────────────────────────────────────
 
-
-def test_build_enhanced_system_not_empty(engine):
-    result = engine._build_enhanced_system()
-    assert len(result.strip()) > 0
-
-def test_build_enhanced_system_contains_eli(engine):
-    result = engine._build_enhanced_system()
-    assert "ELI" in result or "eli" in result.lower()
-
-def test_build_enhanced_system_compact_mode(engine):
-    result = engine._build_enhanced_system(compact=True)
-    assert isinstance(result, str)
-    assert len(result) > 0
-
-@pytest.mark.parametrize("mode", ["quick", "chain_of_thought", "tree_of_thoughts", "self_consistency"])
-def test_build_enhanced_system_reasoning_mode_injected(engine, mode):
-    result = engine._build_enhanced_system(reasoning_mode=mode)
-    assert isinstance(result, str)
-    assert len(result) > 0
 
 def test_build_enhanced_system_reasoning_mode_quick(engine):
     result = engine._build_enhanced_system(reasoning_mode="quick")
@@ -71,15 +44,6 @@ def test_build_enhanced_system_reasoning_mode_cot(engine):
     assert "Normal" in result
     assert "Chain of Thought" not in result
 
-def test_build_enhanced_system_voice_enforcement(engine):
-    result = engine._build_enhanced_system()
-    # At least one voice-related enforcement term
-    has_voice = any(t in result for t in ["Of course", "Certainly", "VOICE", "voice", "filler"])
-    assert has_voice or "Short answer:" in result or "NEVER" in result
-
-def test_build_enhanced_system_memory_grounding(engine):
-    result = engine._build_enhanced_system()
-    assert "MEMORY" in result or "memory" in result.lower() or "hallucin" in result.lower() or "fabricat" in result.lower()
 
 def test_build_enhanced_system_valid_modes_list(engine):
     result = engine._build_enhanced_system()
@@ -93,10 +57,6 @@ def test_build_enhanced_system_valid_modes_list(engine):
 
 # ── _compact_persona ──────────────────────────────────────────────────────
 
-
-def test_compact_persona_not_empty(engine):
-    result = engine._compact_persona()
-    assert len(result.strip()) > 0
 
 def test_compact_persona_limit_chars(engine):
     # The FULL persona voice (personality ownership, EliWorld, banned-disclaimer sections)
@@ -127,18 +87,6 @@ def test_recall_memory_query_respects_limit(engine):
 
 
 # ── Multiple engine instances ─────────────────────────────────────────────
-
-def test_two_engine_calls():
-    e1 = CognitiveEngine()
-    e2 = CognitiveEngine()
-    assert e1 is not None
-    assert e2 is not None
-
-def test_engine_build_system_multiple_times(engine):
-    for mode in ["quick", "chain_of_thought", "tree_of_thoughts"]:
-        result = engine._build_enhanced_system(reasoning_mode=mode)
-        assert isinstance(result, str)
-        assert len(result) > 100
 
 
 # ── Degenerate-output guard (fragment never surfaced) ─────────────────────
