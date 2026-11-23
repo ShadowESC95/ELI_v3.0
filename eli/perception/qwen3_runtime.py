@@ -191,6 +191,7 @@ def make(root: Optional[Path] = None, *, torch_backend: str = "", require_cuda: 
                 raise RuntimeError(f"the runtime does not see CUDA or lacks a package: {info}")
             if require_cuda:
                 (root / _READY).write_text(json.dumps(info, indent=1), encoding="utf-8")
+            shutil.rmtree(root / "cache", ignore_errors=True)   # uv's downloads: the environment holds what it needs
             _STATE.update(state="ready", detail="")
             log.info("[TTS] Qwen3-TTS runtime ready: %s", info)
             return {"ok": True, "info": info}
