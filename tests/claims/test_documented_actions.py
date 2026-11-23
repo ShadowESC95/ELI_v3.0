@@ -35,7 +35,7 @@ def test_a_test_never_rewrites_the_checkouts_blueprint():
     from eli.tools.registry import capabilities_doc as cd
 
     before = cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None
-    written = Path(cd.generate_capabilities_doc()["path"])
+    written = Path(cd.generate_capabilities_doc(H.manifest_path())["path"])
     assert written != cd.OUT and written.is_file()
     assert (cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None) == before
 
@@ -46,14 +46,14 @@ def test_a_new_date_over_an_unchanged_table_is_not_written(tmp_path, monkeypatch
 
     target = tmp_path / "capabilities_and_actions.md"
     monkeypatch.setenv("ELI_CAPABILITIES_DOC", str(target))
-    cd.generate_capabilities_doc()
+    cd.generate_capabilities_doc(H.manifest_path())
     dated_earlier = re.sub(r"Auto-generated \d{4}-\d{2}-\d{2}", "Auto-generated 2000-01-01",
                            target.read_text(encoding="utf-8"))
     target.write_text(dated_earlier, encoding="utf-8")
-    cd.generate_capabilities_doc()
+    cd.generate_capabilities_doc(H.manifest_path())
     assert target.read_text(encoding="utf-8") == dated_earlier, "rewritten for its date alone"
     target.write_text(dated_earlier.replace("| `", "| `CHANGED_", 1), encoding="utf-8")
-    cd.generate_capabilities_doc()
+    cd.generate_capabilities_doc(H.manifest_path())
     assert "CHANGED_" not in target.read_text(encoding="utf-8"), "a real change was not written"
 
 
@@ -67,6 +67,6 @@ def test_an_engine_start_never_writes_the_blueprint_even_with_no_sandbox_named(m
 
     monkeypatch.delenv("ELI_CAPABILITIES_DOC", raising=False)
     before = cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None
-    written = Path(cd.generate_capabilities_doc()["path"])
+    written = Path(cd.generate_capabilities_doc(H.manifest_path())["path"])
     assert data_dir() in written.parents and written.is_file()
     assert (cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None) == before

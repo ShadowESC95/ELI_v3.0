@@ -18,14 +18,18 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 
+def manifest_path() -> Path:
+    """The capability manifest the run generated (tests/claims/conftest.py: in the run's sandbox).
+    Generated, not committed, so a fresh clone has none. The claims conftest normally makes it before
+    collection; made here too, so a test outside tests/claims reads the same one."""
+    from .conftest import ensure_claims_artifacts, manifest_file
+    ensure_claims_artifacts()
+    return manifest_file()
+
+
 @lru_cache(maxsize=1)
 def manifest() -> dict:
-    """The capability manifest the run generated (tests/claims/conftest.py: in the run's sandbox)."""
-    from .conftest import ensure_claims_artifacts, manifest_file
-    # Generated, not committed, so a fresh clone has none. The claims conftest normally makes it
-    # before collection; made here too, so a test outside tests/claims reads the same one.
-    ensure_claims_artifacts()
-    return json.loads(manifest_file().read_text(encoding="utf-8"))
+    return json.loads(manifest_path().read_text(encoding="utf-8"))
 
 
 def capabilities() -> list:
