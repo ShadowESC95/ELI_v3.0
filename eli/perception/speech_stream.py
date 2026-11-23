@@ -366,6 +366,7 @@ class SpeechStream:
         self._unrenderable = ""            # text a system voice must speak whole
         self._lock_held = False
         self._opened = False
+        self._hold = False                 # paused by the user, before or after the output opened
         self.started = False
 
     # ── text in ─────────────────────────────────────────────────────────────
@@ -387,6 +388,7 @@ class SpeechStream:
 
     # ── control ─────────────────────────────────────────────────────────────
     def pause(self) -> None:
+        self._hold = True
         q = self._q()
         if q is not None:
             with q.lock:
@@ -394,11 +396,12 @@ class SpeechStream:
         self._set_speaking(False)
 
     def resume(self) -> None:
+        self._hold = False
         q = self._q()
         if q is not None:
             with q.lock:
                 q.paused = False
-                active = bool(q.segments) or not q.finished
+                active = (bool(q.segments) or not q.finished) and not q.priming
         else:
             active = False
         if active:
@@ -420,8 +423,7 @@ class SpeechStream:
 
     @property
     def paused(self) -> bool:
-        q = self._q()
-        return bool(q is not None and q.paused)
+        return self._hold
 
     @property
     def stopped(self) -> bool:
@@ -578,6 +580,9 @@ class SpeechStream:
             if not self._open_output(int(rate)):
                 return
             q = self._q()
+            if self._hold:
+                with q.lock:
+                    q.paused = True                 # paused before anything could be heard
             x = np.asarray(samples, dtype=np.float32).ravel()
             if int(rate) != q.rate:
                 from eli.perception.audio_samples import resample

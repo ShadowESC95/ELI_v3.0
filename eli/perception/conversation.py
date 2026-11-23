@@ -266,7 +266,7 @@ class Conversation:
         if state == self.state:
             return
         self.state = state
-        if state == "listening":
+        if state in ("listening", "paused"):
             self._quiet_since = self._clock()
         cb = self._on_state
         if cb is not None:
@@ -297,11 +297,11 @@ class Conversation:
     def idle_due(self) -> bool:
         """The user has said nothing for longer than they take to answer: the conversation is over."""
         with self._lock:
-            return (self.state == "listening" and self._quiet_since is not None
+            return (self.state in ("listening", "paused") and self._quiet_since is not None
                     and self._clock() - self._quiet_since > self.idle_timeout())
 
     def _note_answer_gap(self) -> None:
-        if self.state == "listening" and self._quiet_since is not None:
+        if self.state == "listening" and self._quiet_since is not None and self.stream is None:
             from eli.perception.audio_stt import VoiceGate
             self._gaps = (self._gaps + [self._clock() - self._quiet_since])[-VoiceGate.CONTINUATIONS_KEPT:]
             _save_gaps(self._gaps)
@@ -355,6 +355,7 @@ class Conversation:
             if stream is not None and not stream.paused:
                 stream.pause()
                 self._barged = True
+                self._set("listening")       # ELI is quiet and listening to them
 
     def barge_in_was_nothing(self) -> None:
         """The sound that silenced ELI held no words: it goes on."""
