@@ -782,6 +782,91 @@ def test_the_files_left_out_go_from_the_environment_and_the_wheels(tmp_path, mon
     assert gs.main(["--check-wheels", str(house)]) == 1               # an sdist is refused, not rewritten
 
 
+def test_each_package_and_file_is_sorted_by_what_a_closed_paid_product_may_pass_on(tmp_path, monkeypatch, capsys):
+    """Only the GPL was looked for, in each package's own metadata: PyAV (BSD-3-Clause) carried x264 and
+    x265 (GPL-2.0) inside its FFmpeg into every bundle, and a non-commercial licence or none at all went
+    through. Every package is sorted into a licence class (permissive, vendor terms, weak copyleft,
+    unknown, strong copyleft, non-commercial) from its SPDX expression, its License field, its
+    classifiers or its licence file, and the libraries it carries; ELI.spec stops on the last two and on
+    unknown, and each build checks what it built for such libraries and the files left out. Invented
+    packages and file names."""
+    import re
+    gs = _gpl_sources()
+
+    class Meta(dict):
+        def get_all(self, key):
+            value = self.get(key)
+            return value if isinstance(value, list) else ([value] if value else [])
+
+    def of(expression="", licence="", classifiers=()):
+        return gs.licence_class(Meta({"License-Expression": expression, "License": licence,
+                                      "Classifier": [f"License :: {c}" for c in classifiers]}))
+
+    assert of("MIT") == of("Apache-2.0 OR BSD-3-Clause") == of(licence="BSD") == gs.PERMISSIVE
+    assert of("EPL-2.0 OR BSD-3-Clause") == gs.PERMISSIVE                  # the freer of two offered
+    assert of("MPL-2.0 AND MIT") == of(licence="MPL-2.0 AND (Apache-2.0 OR MIT)") == gs.WEAK
+    assert of("LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only") == gs.WEAK  # Qt for Python, used under the LGPL
+    assert of("GPL-2.0-or-later WITH Classpath-exception-2.0") == gs.WEAK
+    assert of(licence="GPLv2-or-later with a special exception which allows to use it in non-free programs") == gs.WEAK
+    assert of("GPL-3.0-or-later") == of(licence="GPLv2") == of("AGPL-3.0-only") == gs.STRONG
+    assert of(licence="Copyright (c) 2014, a maintainer",
+              classifiers=["OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]) == gs.STRONG
+    assert of("CC-BY-NC-SA-4.0") == of(licence="Example Research License Agreement") == gs.NONCOMMERCIAL
+    assert of(licence="Free for non-commercial use") == of("LicenseRef-Example-NC-1.0") == gs.NONCOMMERCIAL
+    assert of("LicenseRef-NVIDIA-Proprietary") == gs.VENDOR
+    assert of(licence="Permission is hereby granted, free of charge, to any person obtaining a copy") == gs.PERMISSIVE
+    assert of(licence="", classifiers=["Other/Proprietary License"]) == of() == gs.UNKNOWN
+    assert of("CC-BY-4.0") == gs.PERMISSIVE and of("CC-BY-SA-4.0") == gs.WEAK
+
+    names = ["av.libs/libx264-0123abcd.so.165", "av/.dylibs/libx265.215.dylib", "av.libs/libx264-165-0123.dll",
+             "_internal/libreadline.so.8", "_internal/libdb-5.3.so", "cv2/.dylibs/libpostproc.58.dylib",
+             "speech_recognition/flac-linux-x86_64", "example/flac-win32.exe"]
+    clean = ["_internal/libdbus-1.so.3", "_internal/libFLAC.so.12", "pyttsx3/drivers/espeak.py",
+             "_internal/libavcodec-0123.so.61", "_internal/libsndfile.so.1"]
+    assert [n for n, _ in gs.native_breaches(names + clean)] == names
+
+    site = tmp_path / "site"
+    _invented_dist(site, "example-video", "1.0", {"examplevideo/__init__.py": b"",
+                   "examplevideo.libs/libx264-0123.so.165": b"\x7fELF"}, "License-Expression: BSD-3-Clause\n")
+    _invented_dist(site, "example-weights", "1.0", {"exampleweights/__init__.py": b""},
+                   "License: Example Research License (non-commercial)\n")
+    _invented_dist(site, "example-silent", "1.0", {"examplesilent/__init__.py": b""})
+    _invented_dist(site, "example-known", "1.0", {"exampleknown/__init__.py": b""})
+    _invented_dist(site, "example-qt", "6.0", {"exampleqt/__init__.py": b""},
+                   "License-Expression: LGPL-3.0-only OR GPL-3.0-only\n")
+    _invented_dist(site, "example-plain", "1.0", {"exampleplain/__init__.py": b""}, "License-Expression: MIT\n")
+    installed = gs.installed_distributions([str(site)])
+    monkeypatch.setattr(gs, "KNOWN_LICENCES", {"example-known": ("MIT", "read by hand from its repository")})
+    assert gs.classify(installed["example-video"])[0] == gs.STRONG
+    assert "libx264-0123.so.165" in gs.classify(installed["example-video"])[1]
+    assert gs.classify(installed["example-known"]) == (gs.PERMISSIVE, "MIT (read by hand from its repository)")
+    found = {p["name"]: p["class"] for p in gs.breach_distributions(installed)}
+    assert found == {"example-video": gs.STRONG, "example-weights": gs.NONCOMMERCIAL, "example-silent": gs.UNKNOWN}
+
+    bundle = tmp_path / "ELI"
+    for rel in ("_internal/av.libs/libx264-0123.so.165", "_internal/libdbus-1.so.3", "_internal/examplegui.py",
+                "_internal/openwakeword/resources/models/melspectrogram.onnx",
+                "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"):
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_bytes(b"")
+    assert [line.split(":", 1)[0] for line in gs.bundle_breaches(bundle)] == \
+        ["_internal/av.libs/libx264-0123.so.165", "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"]
+    assert gs.main(["--check-bundle", str(bundle)]) == 1 and "libx264-0123.so.165" in capsys.readouterr().err
+    for rel in ("_internal/av.libs/libx264-0123.so.165", "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"):
+        (bundle / rel).unlink()
+    assert gs.main(["--check-bundle", str(bundle)]) == 0
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    before = spec[:spec.index("a = Analysis(")]
+    assert re.search(r"_breach = gpl_sources\.breach_distributions\(\)\s*\nif _breach:\s*\n\s*_fail\(", before)
+    assert '"readline",' in spec[spec.index("excludes = ["):spec.index("a = Analysis(")]
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for job, built in (("build-windows", "dist/ELI"), ("build-macos", "dist/ELI.app"), ("build-linux", "dist/ELI")):
+        text = release.split(f"\n  {job}:", 1)[1].split("\n  build-", 1)[0]
+        check = text.index(f"python packaging/gpl_sources.py --check-bundle {built}\n")
+        assert text.index("pyinstaller --noconfirm") < check < text.index("Smoke check"), job
+
+
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):
     """With PyAutoGUI's three left out, SOURCES.md listed nothing and said nothing. The build's own tools
     (PyInstaller, under the GPL with its bootloader exception) were fetched as if a build carried them."""

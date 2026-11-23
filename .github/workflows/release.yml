@@ -196,6 +196,10 @@ jobs:
         shell: bash
         run: pyinstaller --noconfirm --clean ELI.spec
 
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI
+
       - name: Smoke check — bundle structure + REAL launch selftest
         shell: bash
         run: |
@@ -355,6 +359,10 @@ jobs:
 
       - name: PyInstaller build (ELI.spec)
         run: pyinstaller --noconfirm --clean ELI.spec
+
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI.app
 
       - name: Smoke check — .app structure + REAL launch selftest
         run: |
@@ -573,6 +581,10 @@ jobs:
         run: |
           python packaging/linux/trim_bundle.py dist/ELI/_internal
           python packaging/linux/trim_bundle.py --check dist/ELI/_internal
+
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI
 
       - name: Smoke check — bundle structure + REAL launch selftest (headless + xcb)
         run: |

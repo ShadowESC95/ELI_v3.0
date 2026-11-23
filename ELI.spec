@@ -81,6 +81,14 @@ if _gpl:
 _stand_in_problems = gpl_sources.stand_in_problems()
 if _stand_in_problems:
     _fail("; ".join(_stand_in_problems))
+# Nor anything else a closed, paid product may not pass on: a package under another strong copyleft or a
+# non-commercial licence, one carrying a native library under the GPL whatever its own metadata says
+# (PyAV's x264 and x265, OpenCV's on macOS), or one whose licence nothing says until it is found by hand
+# (KNOWN_LICENCES in packaging/gpl_sources.py).
+_breach = gpl_sources.breach_distributions()
+if _breach:
+    _fail("packages a closed, paid product may not pass on are installed in the build environment: "
+          + "; ".join(f"{p['name']} {p['version']} ({p['class']}: {p['licence']})" for p in _breach))
 # Files of a package ELI keeps that no release carries (openWakeWord's non-commercial wake-word models,
 # SpeechRecognition's GPL FLAC programs), which the same --leave-out step deletes.
 _left_out_files = gpl_sources.left_out_files()
@@ -427,6 +435,10 @@ excludes = [
     # local PyQt install and tainting the bundle.
     "PyQt5", "PyQt6", "PySide2",
     "tkinter", "IPython", "jupyter", "pytest",
+    # Python's readline module links GNU Readline (GPL-3.0) on a Linux build machine, and PyInstaller
+    # took it (and libreadline) along with the standard library modules that import it when they can
+    # (cmd, pdb, code); ELI never edits lines at a terminal prompt, and those modules run without it.
+    "readline",
 ]
 
 if sys.platform == "darwin":

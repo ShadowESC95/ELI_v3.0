@@ -17,14 +17,20 @@ files are taken out the same way:
     python packaging/gpl_sources.py --leave-out DIR       # rewrite the wheels in DIR without those files
     python packaging/gpl_sources.py --check-wheels DIR    # fail when a wheel or sdist in DIR is under the
                                                           # GPL or holds a file left out
+    python packaging/gpl_sources.py --check-bundle DIR    # fail when a built bundle holds a library or
+                                                          # program under a strong copyleft (NATIVE_LIBRARIES)
+                                                          # or a file left out
     python packaging/gpl_sources.py --kept-dependencies WHEEL PLATFORM PYTHON...
                                                           # what WHEEL needs on that platform, less them
     python packaging/gpl_sources.py --list                # the GPL and LGPL packages a release built
                                                           # here would carry (no network)
 
 The frozen builds run --leave-out after their last install, and ELI.spec stops a build whose environment
-still holds a package under the GPL (gpl_distributions) or a file left out (left_out_files), or whose
-stand-in for a left-out package is not intact. The build's own tools are not counted: what requirements-build.txt brings and ELI does not
+still holds a package under the GPL (gpl_distributions) or a file left out (left_out_files), whose
+stand-in for a left-out package is not intact, or that holds a package in a class a closed, paid product
+may not pass on (breach_distributions: a strong copyleft, a non-commercial licence, a native library
+under the GPL inside a package whose own metadata says otherwise, or no licence anyone could read; see
+the licence classes below). Each build checks what it built with --check-bundle. The build's own tools are not counted: what requirements-build.txt brings and ELI does not
 (PyInstaller, whose bootloader every frozen app starts through, is under the GPL with an exception that
 lets the bootloader go with any program; pyinstaller-hooks-contrib only runs during the build). The
 wheelhouses pass --leave-out DIR, then --check-wheels. A user's own `pip install` from PyPI still fetches PyAutoGUI's
@@ -156,7 +162,8 @@ def _wake_feature_models() -> Tuple[str, ...]:
 # tests/claims/test_license_reachable.py holds both to the code.
 LEFT_OUT_FILES: Dict[str, LeftOutFiles] = {
     "openwakeword": LeftOutFiles(r"^openwakeword/resources/models/[^/]+$", _wake_feature_models(),
-                                 "CC-BY-NC-SA-4.0", "ELI runs only the feature extractor (FEATURE_MODELS)"),
+                                 "CC-BY-NC-SA-4.0 (its pre-trained wake-word models)",
+                                 "ELI runs only the feature extractor (FEATURE_MODELS)"),
     "speechrecognition": LeftOutFiles(r"^speech_recognition/flac-[^/]+$", (), "GPL-2.0-or-later",
                                       "only get_flac_data() runs them, for online recognisers ELI never calls"),
 }
@@ -566,6 +573,227 @@ def is_lgpl(facts: List[str]) -> bool:
     return bool(_LGPL.search("\n".join(facts)))
 
 
+# ── what a closed, paid product may pass on ─────────────────────────────────────────────────────────
+# Every package a release carries, and every library or model file inside one, falls in one of these
+# classes, freest first. ELI v3 is sold under its own licence: what is in BREACH is not shipped, not
+# installed by ELI's installers and not loaded into ELI's process, and what is UNKNOWN is found by hand
+# (KNOWN_LICENCES) before a release carries it.
+PERMISSIVE = "permissive"          # MIT, BSD, Apache, ISC, PSF, zlib, CC0, CC-BY...: keep the notice
+VENDOR = "vendor terms"            # a vendor's runtime whose licence lets an application carry it (CUDA)
+WEAK = "weak copyleft"             # LGPL, MPL, EPL, a GPL with a linking exception: fine as whole files,
+                                   # linked dynamically and replaceable, with directions to the source
+UNKNOWN = "unknown"
+STRONG = "strong copyleft"         # GPL, AGPL, Sleepycat, SSPL, EUPL, OSL
+NONCOMMERCIAL = "non-commercial"   # CC BY-NC, research-only and other non-commercial licences
+CLASSES = (PERMISSIVE, VENDOR, WEAK, UNKNOWN, STRONG, NONCOMMERCIAL)
+BREACH = (STRONG, NONCOMMERCIAL)
+
+# A licence's name or text, by the first class whose pattern it matches.
+_CLASS_PATTERNS = (
+    (NONCOMMERCIAL, re.compile(r"non[- ]?commercial|(?:^|[-\s(])(?-i:NC)(?:[-\s)]|$)|research[- ](?:only|licen[cs]e)"
+                               r"|qwen[- ]research|\bCPML\b|coqui public model", re.I)),
+    (WEAK, re.compile(r"(?:GPL|General Public Licen[cs]e).{0,80}exception|LGPL|(?:Lesser|Library) General Public"
+                      r"|\bMPL\b|Mozilla Public|\bEPL\b|Eclipse Public|\bCDDL\b|Common Development and Distribution"
+                      r"|\bCPL\b|Common Public Licen|MS-RL|CC[- ]BY[- ]SA|ShareAlike", re.I | re.S)),
+    (STRONG, re.compile(r"(?<![A-Za-z])A?GPL|GNU (?:AFFERO )?GENERAL PUBLIC LICEN[CS]E|Sleepycat|\bSSPL\b"
+                        r"|Server Side Public|\bEUPL\b|European Union Public|\bOSL\b|Open Software Licen[cs]e"
+                        r"|\bRPL\b|Reciprocal Public", re.I)),
+    (VENDOR, re.compile(r"NVIDIA", re.I)),
+    (PERMISSIVE, re.compile(r"\bMIT\b|\bBSD|Apache|\bISC\b|\bPSF|Python Software Foundation|Python License"
+                            r"|\bzlib\b|\bCC0|Unlicense|Public Domain|\bHPND|Historical Permission|\bBSL-1\.0"
+                            r"|Boost Software|\bZPL|Zope Public|WTFPL|\bX11\b|\bNCSA\b|Unicode|\bEDL\b"
+                            r"|Eclipse Distribution|\bOFL\b|Open Font|\bCC[- ]BY(?![- ](?:NC|SA|ND))"
+                            r"|Creative Commons Attribution(?![- ](?:Non|Share|No))|libpng|\bFTL\b|FreeType"
+                            r"|Expat|\bUPL\b|Artistic|\bCNRI|OpenSSL|\bAFL\b|Academic Free|BlueOak"
+                            r"|Permission is hereby granted, free of charge|Redistribution and use in source and binary"
+                            r"|Permission to use, copy, modify", re.I)),
+)
+_RANK = {c: i for i, c in enumerate(CLASSES)}
+
+# What the metadata leaves unsaid, found by hand: the licence, and where it was read.
+KNOWN_LICENCES: Dict[str, Tuple[str, str]] = {
+    "pypiwin32": ("PSF-2.0", "a stub that installs pywin32 (PSF-2.0), published by pywin32's maintainers: "
+                             "https://github.com/mhammond/pywin32"),
+}
+
+# Native libraries and programs that wheels and build machines bring in under a strong copyleft, by
+# file name, whatever the package's own metadata says: PyAV's wheels (BSD-3-Clause) link x264 and x265
+# (GPL-2.0) into their FFmpeg on every platform, Python's readline module links GNU Readline (GPL-3.0)
+# and PortAudio built with JACK links Berkeley DB (Sleepycat) on a Linux build machine.
+NATIVE_LIBRARIES: Tuple[Tuple[str, str], ...] = (
+    (r"^(?:lib)?x264(?:[-.]|$)", "GPL-2.0-or-later (x264)"),
+    (r"^(?:lib)?x265(?:[-.]|$)", "GPL-2.0-or-later (x265)"),
+    (r"^(?:lib)?postproc(?:[-.]|$)", "GPL-2.0-or-later (FFmpeg's libpostproc)"),
+    (r"^(?:lib)?(?:xvidcore|rubberband|vidstab|frei0r)", "GPL-2.0-or-later"),
+    (r"^libreadline\.|^libhistory\.", "GPL-3.0-or-later (GNU Readline)"),
+    (r"^libdb(?:-[\d.]+)?\.(?:so|dylib)|^libdb[\d_]*\.dll$", "Sleepycat (Berkeley DB)"),
+    (r"^libgdbm", "GPL-3.0-or-later (GNU dbm)"),
+    (r"^libfftw3", "GPL-2.0-or-later (FFTW)"),
+    (r"^libgsl\.", "GPL-3.0-or-later (GNU Scientific Library)"),
+    (r"^(?:lib)?espeak(?:-ng)?(?:[-.]|$)|^espeakbridge\.|^(?:lib)?piper_phonemize", "GPL-3.0-or-later (eSpeak NG)"),
+    (r"^flac(?:-[\w.-]+)?(?:\.exe)?$", "GPL-2.0-or-later (the FLAC command-line programs)"),
+)
+# Source, stubs and text that name such a library are not the library (pyttsx3's espeak.py driver).
+_NOT_NATIVE = (".py", ".pyc", ".pyi", ".pyx", ".pxd", ".h", ".txt", ".md", ".rst", ".json", ".html")
+
+
+def _class_of_name(text: str) -> str:
+    for klass, pattern in _CLASS_PATTERNS:
+        if pattern.search(text):
+            return klass
+    return UNKNOWN
+
+
+def _expression_class(text: str) -> Optional[str]:
+    """The class of an SPDX licence expression (A OR B takes the freer, A AND B the stricter; a GPL WITH
+    an exception is weak), or None when the text is not one."""
+    tokens = re.findall(r"\(|\)|[^\s()]+", text)
+    if not tokens or not any(t.upper() in ("OR", "AND", "WITH") for t in tokens) and len(tokens) != 1:
+        return None
+    pos = 0
+
+    def peek() -> str:
+        return tokens[pos].upper() if pos < len(tokens) else ""
+
+    def atom() -> str:
+        nonlocal pos
+        if peek() == "(":
+            pos += 1
+            klass = either()
+            if peek() != ")":
+                raise ValueError("unbalanced")
+            pos += 1
+            return klass
+        if pos >= len(tokens) or peek() in ("OR", "AND", "WITH", ")"):
+            raise ValueError("missing licence")
+        name = tokens[pos]
+        pos += 1
+        if peek() == "WITH":
+            pos += 2
+            return WEAK if _class_of_name(name) == STRONG else _class_of_name(name)
+        return _class_of_name(name)
+
+    def both() -> str:
+        nonlocal pos
+        klass = atom()
+        while peek() == "AND":
+            pos += 1
+            klass = max(klass, atom(), key=_RANK.get)
+        return klass
+
+    def either() -> str:
+        nonlocal pos
+        klass = both()
+        while peek() == "OR":
+            pos += 1
+            klass = min(klass, both(), key=_RANK.get)
+        return klass
+
+    try:
+        klass = either()
+    except (ValueError, IndexError):
+        return None
+    return klass if pos == len(tokens) else None
+
+
+def licence_class(dist) -> str:
+    """The class of what a distribution's metadata says (or the metadata read out of a wheel or sdist):
+    its SPDX expression when it has one; else its License field and licence classifiers, where a
+    non-commercial term wins, a GPL counts unless an LGPL is offered beside it (as is_gpl reads it), and
+    of the rest the freest is taken (they are the licences offered); else the licence files it carries."""
+    meta = getattr(dist, "metadata", dist)
+    expression = str(meta.get("License-Expression") or "").strip()
+    if expression:
+        klass = _expression_class(expression)
+        if klass is not None and klass != UNKNOWN:
+            return klass
+    field = str(meta.get("License") or "").strip()
+    if field and "\n" not in field and len(field) < 120:
+        klass = _expression_class(field)
+        if klass is not None and klass != UNKNOWN:
+            return klass
+    facts = [expression, field[:4000]] + [c for c in (meta.get_all("Classifier") or []) if c.startswith("License ::")]
+    found = {_class_of_name(f) for f in facts if f} - {UNKNOWN}
+    if not found and hasattr(dist, "read_text"):
+        for name in meta.get_all("License-File") or []:
+            for where in (f"licenses/{name}", name):
+                text = dist.read_text(where)
+                if text:
+                    found |= {_class_of_name(text[:4000])} - {UNKNOWN}
+                    break
+    if NONCOMMERCIAL in found:
+        return NONCOMMERCIAL
+    if STRONG in found:
+        return WEAK if WEAK in found and is_lgpl(facts) else STRONG
+    return min(found, key=_RANK.get) if found else UNKNOWN
+
+
+def native_breaches(names: Iterable[str]) -> List[Tuple[str, str]]:
+    """(path, licence) of each of these paths whose file name is a native library or program NATIVE_LIBRARIES
+    puts under a strong copyleft."""
+    found = []
+    for name in names:
+        base = re.split(r"[\\/]", str(name))[-1]
+        if base.lower().endswith(_NOT_NATIVE):
+            continue
+        for pattern, licence in NATIVE_LIBRARIES:
+            if re.search(pattern, base):
+                found.append((str(name), licence))
+                break
+    return found
+
+
+def classify(dist: metadata.Distribution) -> Tuple[str, str]:
+    """(class, what it is under) of an installed distribution: KNOWN_LICENCES first, else its metadata,
+    and strong copyleft whatever that says when it carries a library NATIVE_LIBRARIES names."""
+    key = _key(str(dist.metadata.get("Name") or ""))
+    if key in KNOWN_LICENCES:
+        licence, where = KNOWN_LICENCES[key]
+        klass, said = _class_of_name(licence), f"{licence} ({where})"
+    else:
+        klass, said = licence_class(dist), "; ".join(licence_facts(dist)) or "nothing in its metadata"
+    carried = native_breaches(f for f, _ in _record(dist))
+    if carried:
+        return STRONG, f"{said}, and it carries {', '.join(sorted({Path(f).name for f, _ in carried}))} " \
+                       f"({'; '.join(sorted({lic for _, lic in carried}))})"
+    return klass, said
+
+
+def breach_distributions(installed: Optional[Dict[str, metadata.Distribution]] = None,
+                         root: Path = ROOT) -> List[Dict[str, str]]:
+    """Every installed distribution a release built here would carry (all but the build's own tools and
+    ELI itself) that is in BREACH, or whose licence nothing says (UNKNOWN), with why."""
+    installed = installed_distributions() if installed is None else installed
+    skip = build_only(installed, root) | {_key(_project(root)["name"])}
+    found = []
+    for key, dist in sorted(installed.items()):
+        if key in skip:
+            continue
+        klass, said = classify(dist)
+        if klass in BREACH or klass == UNKNOWN:
+            found.append({"name": str(dist.metadata.get("Name")), "version": str(dist.version),
+                          "class": klass, "licence": said})
+    return found
+
+
+def bundle_breaches(directory: Path) -> List[str]:
+    """What a built bundle (dist/ELI, ELI.app, a portable tree) holds that no release carries: each native
+    library or program under a strong copyleft (NATIVE_LIBRARIES) and each file LEFT_OUT_FILES names."""
+    root = Path(directory)
+    files = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() or p.is_symlink()]
+    native = native_breaches(files)
+    found = [f"{rel}: {licence}" for rel, licence in native]
+    for rel in sorted(set(files) - {rel for rel, _ in native}):
+        parts = rel.split("/")
+        for i in range(len(parts)):
+            tail = "/".join(parts[i:])
+            entry = next((e for e in LEFT_OUT_FILES.values() if e.matches(tail)), None)
+            if entry is not None:
+                found.append(f"{rel}: {entry.licence} ({entry.why})")
+                break
+    return sorted(found)
+
+
 def lgpl_distributions() -> List[Dict[str, object]]:
     """Each installed LGPL distribution, with the repositories its metadata names and the Qt
     libraries among its files (Qt for Python's wheels carry Qt's)."""
@@ -812,6 +1040,13 @@ def main(argv: List[str]) -> int:
         if not found:
             print(f"[gpl] {argv[1]}: no package under the GPL, nothing left out")
         return 1 if found else 0
+    if argv[:1] == ["--check-bundle"] and len(argv) == 2:
+        found = bundle_breaches(Path(argv[1]))
+        for line in found:
+            print(f"::error::{argv[1]} carries what ELI v3 does not pass on: {line}", file=sys.stderr)
+        if not found:
+            print(f"[licences] {argv[1]}: no library or file under a strong copyleft or a non-commercial licence")
+        return 1 if found else 0
     if argv[:1] == ["--kept-dependencies"] and len(argv) >= 4:
         print("\n".join(kept_dependencies(Path(argv[1]), argv[2], argv[3:])))
         return 0
@@ -821,6 +1056,8 @@ def main(argv: List[str]) -> int:
             print(f"{pkg['name']}=={pkg['version']}  ({pkg['licence']})")
         if not carried:
             print("no package under the GPL")
+        for pkg in breach_distributions():
+            print(f"{pkg['name']}=={pkg['version']}  {pkg['class']}: {pkg['licence']}")
         for problem in stand_in_problems():
             print(f"stand-in: {problem}")
         for dist, files in left_out_files():
