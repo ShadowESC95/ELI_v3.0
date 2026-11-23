@@ -292,27 +292,6 @@ def voice_prosody() -> Dict[str, Any]:
     return dict(_palette.get_tone(current_tone()["tone"]).get("voice") or {})
 
 
-def voice_exaggeration() -> Optional[float]:
-    """Map the active tone's expressiveness to a Chatterbox ``exaggeration`` value
-    (~0.25..1.0; ~0.5 ≈ neutral). ``None`` when no distinct tone is active, so the
-    backend keeps its own default. Reuses the palette's ``noise_scale`` so the emotion
-    the WORDS carry also shapes a cloned voice's delivery — the neural equivalent of
-    the Piper prosody overlay, but native to the model instead of a post-hoc pitch shift."""
-    try:
-        ns = voice_prosody().get("noise_scale")
-        if ns is None:
-            return None
-        ns = float(ns)
-    except (TypeError, ValueError):
-        return None
-    except Exception:
-        log.debug("[tone] exaggeration read failed", exc_info=True)
-        return None
-    # Palette noise_scale spans ~0.6 (flat) .. ~0.9 (animated) → ~0.35 .. ~0.85.
-    ex = 0.35 + (ns - 0.6) / (0.9 - 0.6) * (0.85 - 0.35)
-    return max(0.25, min(1.0, round(ex, 3)))
-
-
 def expression() -> str:
     """Avatar face for the current tone — consumed by the world/avatar mapper."""
     return str(_palette.get_tone(current_tone()["tone"]).get("expression") or "neutral")

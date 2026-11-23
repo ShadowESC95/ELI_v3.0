@@ -1393,7 +1393,8 @@ class StartupModelSelectionDialog(QDialog):
 
     def selected_tts_voice(self) -> str:
         """The voice id implied by the engine choice: the natural engine's own default voice
-        (eli/perception/tts_xtts), or '' (empty = leave the chosen voice as-is)."""
+        (a Qwen3-TTS speaker, kept in eli/perception/tts_xtts), or '' (empty = leave the chosen voice
+        as-is)."""
         if self.selected_tts_engine() != "natural":
             return ""
         from eli.perception.tts_xtts import NATURAL_PREFIX, _DEFAULT_NATURAL

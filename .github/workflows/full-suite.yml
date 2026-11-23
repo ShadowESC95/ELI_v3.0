@@ -36,7 +36,7 @@ jobs:
       # out voice input and output, so test_stt_noise_self_heal.py ran without SpeechRecognition.
       # tests/claims/test_runtime_dependencies.py holds these to release.yml's.
       REQUIRED_EXTRAS: "llm"
-      OPTIONAL_EXTRAS: "image chatterbox"
+      OPTIONAL_EXTRAS: "image"
     steps:
       - uses: actions/checkout@v5
 

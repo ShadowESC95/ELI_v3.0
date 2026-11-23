@@ -1133,7 +1133,6 @@ def main():
                     _wv = _wizard.selected_tts_voice()
                     if _wv:
                         update_kwargs["tts_voice"] = _wv
-                        os.environ["ELI_XTTS_DEVICE"] = "cuda"
                 except Exception:
                     log.debug("[ELI] wizard tts engine read failed", exc_info=True)
                 _rs_update(**update_kwargs)

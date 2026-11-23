@@ -261,53 +261,12 @@ for pkg in ("pyttsx3", "plyer.platforms", "uvicorn"):
 # graphs and mesh inspection work in the packaged build, not just from source.
 for pkg in ("meshio", "matplotlib", "mpl_toolkits", "pandas", "plotly", "scipy"):
     hiddenimports += _optional_collect(pkg)
-# Coqui XTTS-v2 — the neural voice-clone engine. `eli/perception/tts_xtts.py`
-# imports `TTS` LAZILY, inside xtts_available(), so PyInstaller's static analysis
-# never sees it. The v2.1.65 AppImage proved the consequence: pip installed
-# coqui-tts on the runner (coqui_tts-0.27.5.dist-info is in the bundle) but the
-# TTS/ package itself was never collected, so `import TTS` failed at runtime and
-# every cloned voice fell back to the default voice — with the extra bundled and unusable.
-# `trainer` is imported by coqui-tts at load time and has the same problem.
-# coqui-tts cannot be imported bare: it reaches for
-# `transformers.pytorch_utils.isin_mps_friendly`, which transformers>=5 removed.
-# ELI carries a shim for exactly this (tts_xtts._patch_transformers_compat) and
-# applies it before its own probe. The spec did not, so `__import__("TTS")` raised,
-# _optional_collect reported "optional dependency not installed" and collected
-# nothing — v2.1.66 shipped trainer/ and torch/ but no TTS/, with pip having
-# installed coqui-tts perfectly well. Reuse the project's shim rather than
-# duplicating it; if it is unavailable the collect below simply skips as before.
-try:
-    from eli.perception.tts_xtts import _patch_transformers_compat as _eli_tts_shim
-    _eli_tts_shim()
-    print("[ELI.spec] applied transformers compat shim before collecting TTS")
-except Exception as _e:
-    print(f"[ELI.spec] transformers compat shim unavailable ({_e}); TTS may be skipped")
-# `transformers` uses a LAZY module system: submodules are declared in
-# `_import_structure` and imported on attribute access, which PyInstaller cannot
-# trace. It reached the bundle only as a traced dependency of something else, so it
-# was partial — and XTTS-v2 uses GPT-2 as its text encoder, so importing TTS in the
-# frozen app died with "Could not import module 'GPT2PreTrainedModel'". That error
-# took three releases to surface because xtts_available() discarded it.
-# Reproduced locally in a minimal frozen probe (six CI releases could not settle it;
-# two local builds did). Four separate things break XTTS in a PyInstaller bundle, and
-# the FIRST one masquerades as the others:
-#
-#  1. `transformers.models.gpt2.modeling_gpt2` calls
-#     importlib.metadata.version("torchcodec"). PyInstaller ships the package but not
-#     its .dist-info, so the lookup raises PackageNotFoundError — and transformers'
-#     lazy loader re-reports it as "Could not import module 'GPT2PreTrainedModel'".
-#     That misleading message sent five releases chasing GPT-2 and transformers pins.
-#     Fixed by copy_metadata below.
-#  2. TTS reads TTS/vocoder/configs/*.py at import → needs include_py_files.
-#  3. coqui-tts pulls transitive packages PyInstaller cannot trace statically.
-#  4. `inflect` decorates with typeguard's @typechecked, which calls
-#     inspect.getsource() at import time — impossible in a frozen app unless the .py
-#     source ships as data so linecache can read it.
-_NEURAL_PKGS = (
-    "TTS", "trainer", "transformers",
-    "ko_speech_tools", "coqpit_config", "monotonic_alignment_search",
-    "num2words", "inflect", "anyascii", "librosa", "soundfile", "typeguard",
-)
+# `transformers` uses a LAZY module system: submodules are declared in `_import_structure` and imported
+# on attribute access, which PyInstaller cannot trace (image generation's pipelines reach for it that
+# way). soundfile and num2words are read the same way by ELI's audio and the Kokoro voice's numbers.
+# Coqui XTTS-v2 (coqui-tts), which these lines once collected, is no engine of v3: its model is
+# non-commercial.
+_NEURAL_PKGS = ("transformers", "num2words", "soundfile")
 for pkg in _NEURAL_PKGS:
     hiddenimports += _optional_collect(pkg)
 # The Kokoro voice (eli/perception/tts_kokoro.py) imports these lazily, on the first reply spoken.
@@ -419,19 +378,11 @@ for _m in ("spacy", "spacy-legacy", "spacy-loggers", "thinc", "misaki", "confect
         datas += copy_metadata(_m)
     except Exception as _e:
         print(f"[ELI.spec] no metadata for {_m}: {_e}")
-# coqui-tts ships model/config JSON inside the package; submodules alone leave the
-# engine importable but unable to build a model.
-# (2) and (4): these packages are read as SOURCE at import time, so .py files must
-# ship as data, not only as compiled modules in the PYZ.
 for pkg in _NEURAL_PKGS:
     datas += _optional_collect(pkg, data=True)
-for pkg in ("TTS", "trainer", "inflect", "typeguard"):
-    try:
-        datas += collect_data_files(pkg, include_py_files=True)
-    except Exception as _e:
-        print(f"[ELI.spec] source-data collection skipped for {pkg}: {_e}")
-# (1): dist-info metadata for anything queried via importlib.metadata at import.
-for _m in ("torchcodec", "torch", "torchaudio", "coqui-tts", "transformers", "numpy"):
+# dist-info metadata for anything queried via importlib.metadata at import (transformers asks for
+# torchcodec's version, and reads a missing one as a failed import of what it was loading).
+for _m in ("torchcodec", "torch", "torchaudio", "transformers", "numpy"):
     try:
         datas += copy_metadata(_m)
     except Exception as _e:

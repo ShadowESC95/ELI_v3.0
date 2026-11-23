@@ -121,7 +121,7 @@ evidence-planner first (real code/web/memory analysis) before synthesising.
 | `LIST_VOICES` | List ELI's voices (36 Kokoro voices, American and British English and Mandarin) and which are on this machine | “what voices do you have” · “list voices” · “which accents can I get” | Core |
 | `DOWNLOAD_VOICE` | Fetch one of ELI's Kokoro voices (American or British English) and switch to it | “download a British voice” · “get me a female British voice” · “install bf_emma” | Core |
 | `SET_VOICE` | Switch the active TTS voice/accent (distinct from persona tone) | “use the alan voice” · “switch your voice to amy” · “use the robotic style voice” · “use the natural voice” | Core |
-| `CREATE_VOICE` | Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone) | “create a voice called Nova from clip.mp4” · “make an ELI voice from recording.wav” | Core |
+| `CREATE_VOICE` | Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; Qwen3-TTS clone) | “create a voice called Nova from clip.mp4” · “make an ELI voice from recording.wav” | Core |
 | `LISTEN_FOR_COMMAND` | Start listening for a voice command | “listen” / the wake word “computer” | Core |
 | `DESIGN_VOICE` | Build a custom style voice from a base voice with pitch, speed and effects | “design a voice called Nova, deep and slow” · “make a custom voice named Nova” | Core |
 | `WAKE_SET` | Set your own wake word (any phrase); ELI persists it and trains the detector on it | “change the wake word to athena” · “set my wake word to atlas” | Core |

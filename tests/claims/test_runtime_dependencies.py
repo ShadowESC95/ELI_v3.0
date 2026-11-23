@@ -48,7 +48,6 @@ DISTRIBUTION = {
     "llama_cpp": "llama-cpp-python",
     "pycrfsuite": "python-crfsuite",
     "win32com": "pywin32",
-    "chatterbox": "chatterbox-tts",
     "yara": "yara-python",
 }
 
@@ -56,7 +55,6 @@ DISTRIBUTION = {
 NOT_DECLARED = {
     "PyQt5": "a GPL binding; ELI ships PySide6, and eli/gui/qt_compat.py uses PyQt only where the user has it",
     "PyQt6": "a GPL binding; ELI ships PySide6, and eli/gui/qt_compat.py uses PyQt only where the user has it",
-    "TTS": "Coqui XTTS: its model is under a non-commercial licence, so ELI never ships it (Chatterbox clones)",
     "gi": "PyGObject comes with the Linux desktop (python3-gi); pip cannot build it without the system's "
           "own build files, and a packaged ELI asks the system's Python for it",
     "flash_attn": "an optional speed-up for Qwen3-TTS, built for the user's own CUDA (PyPI has no wheels); "
@@ -72,7 +70,7 @@ NOT_DECLARED = {
 # engine is built for CUDA, Metal, ROCm, Vulkan or the CPU, and PyTorch comes from the index for the GPU
 # found; the rest run on PyTorch. Only these may wait in an optional extra.
 GPU_BOUND = frozenset({"llama-cpp-python", "torch", "torchaudio", "diffusers", "transformers", "peft",
-                       "datasets", "bitsandbytes", "chatterbox-tts"})
+                       "datasets", "bitsandbytes"})
 
 # What each requirements file is installed on (install.sh, install.ps1 and their fallbacks): the lock on
 # Linux and Windows, the ranges when the lock cannot be met there, requirements-macos.txt on a Mac.

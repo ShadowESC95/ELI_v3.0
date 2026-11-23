@@ -36,8 +36,7 @@ _SYSTEM_VOICE_PREFIX = "sys:"
 # Delivery: the tone palette's values (eli/cognition/emotion_palette). Kokoro takes a speed, the
 # palette's pace (length_scale, >1 slower) inverted; the pause after each sentence is added between
 # the sentences; pitch is shifted afterwards (_apply_tone_pitch). noise_scale and noise_w (the
-# earlier engine's variation controls) have no Kokoro counterpart; the palette still reads them for
-# a cloned voice's exaggeration (tone_adaptor.voice_exaggeration).
+# earlier engine's variation controls) have no Kokoro counterpart.
 _PROSODY_DEFAULTS = {k: v for k, v in _NEUTRAL_VOICE.items() if k != "pitch"}
 
 
@@ -404,19 +403,12 @@ def _voice_file(vid: str):
 
 def _natural_voices() -> List[str]:
     """The built-in neural voices (natural:<id>): Qwen3-TTS's speakers on a machine whose GPU runs it,
-    else XTTS-v2's when that extra is installed, else none."""
+    else none."""
     try:
         from eli.perception import tts_qwen3
-        found = tts_qwen3.list_natural_voices()
-        if found:
-            return found
+        return list(tts_qwen3.list_natural_voices())
     except Exception:
         log.debug("[TTS] Qwen3-TTS voices unavailable", exc_info=True)
-    try:
-        from eli.perception import tts_xtts
-        return list(tts_xtts.list_natural_voices())
-    except Exception:
-        log.debug("[TTS] XTTS voices unavailable", exc_info=True)
         return []
 
 
@@ -681,17 +673,12 @@ def voice_for_reply(text: str, active: str) -> str:
 
 
 def _neural_engine_available() -> bool:
-    """True when a natural voice can synthesise: Qwen3-TTS on this GPU, or XTTS-v2 installed."""
+    """True when a natural voice can synthesise: Qwen3-TTS on this GPU."""
     try:
         from eli.perception import tts_qwen3
-        if tts_qwen3.usable("custom"):
-            return True
+        return bool(tts_qwen3.usable("custom"))
     except Exception:
         log.debug("[TTS] Qwen3-TTS check failed", exc_info=True)
-    try:
-        from eli.perception import tts_xtts
-        return bool(tts_xtts.xtts_available())
-    except Exception:
         return False
 
 
@@ -701,11 +688,7 @@ def _clone_backend_available(which: str) -> bool:
         if which == "qwen3":
             from eli.perception import tts_qwen3
             return bool(tts_qwen3.usable("base"))
-        if which == "chatterbox":
-            from eli.perception import tts_chatterbox
-            return bool(tts_chatterbox.chatterbox_available())
-        from eli.perception import tts_xtts
-        return bool(tts_xtts.xtts_available())
+        return False
     except Exception:
         return False
 
@@ -743,11 +726,8 @@ def available_backends() -> dict:
         # the model file the default engine reads, when it is here
         "active_model": str(files["model"]) if files else None,
         "pyttsx3": True,
-        # neural engines: Qwen3-TTS (GPU extra) for natural and cloned voices, then Chatterbox (MIT),
-        # then XTTS-v2 (legacy)
+        # the neural engine: Qwen3-TTS (Apache-2.0, on a GPU with room) for natural and cloned voices
         "qwen3": _clone_backend_available("qwen3"),
-        "chatterbox": _clone_backend_available("chatterbox"),
-        "xtts": _clone_backend_available("xtts"),
         "last_playback": last_playback(),
     }
 
@@ -828,7 +808,7 @@ def _neural_unavailable_reason() -> str:
             return f"Qwen3-TTS failed: {tts_qwen3.last_error()}"
     except Exception:
         log.debug("[TTS] Qwen3-TTS state unknown", exc_info=True)
-    if _clone_backend_available("qwen3") or _clone_backend_available("chatterbox") or _clone_backend_available("xtts"):
+    if _clone_backend_available("qwen3"):
         return "the neural engine is present but produced no audio for this voice"
     return ("the neural voice engine is not on this machine (ELI makes its runtime only where an NVIDIA "
             "GPU has room for it beside the language model)")
@@ -1282,7 +1262,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
         return None
     active = voice_for_reply(text, voice_name or get_active_voice())
     # Natural neural voice (natural:<id>): Qwen3-TTS's built-in speaker on a GPU with room for it,
-    # steered by the tone; then XTTS-v2's when that extra is installed; else the default voice.
+    # steered by the tone; else the default voice.
     if str(active).startswith("natural:"):
         try:
             from eli.perception import tts_qwen3
@@ -1292,19 +1272,10 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
                 return wav               # the tone is in the instruction, no pitch shift after
         except Exception:
             log.debug("[TTS_WAV] Qwen3-TTS natural voice failed", exc_info=True)
-        try:
-            from eli.perception import tts_xtts
-            wav = tts_xtts.synthesize_natural_wav(text, active)
-            if wav:
-                _note_neural_fallback(None)
-                return _apply_tone_pitch(wav)
-        except Exception:
-            log.debug("[TTS_WAV] natural voice resolve failed", exc_info=True)
         _note_neural_fallback(active)
         active = _DEFAULT_VOICE
-    # Cloned voice (clone:<name>): Qwen3-TTS from the reference recording on a GPU with room for it,
-    # then Chatterbox (MIT), then Coqui XTTS-v2. Each returns None when it cannot, and the default
-    # voice speaks.
+    # Cloned voice (clone:<name>): Qwen3-TTS from the reference recording on a GPU with room for it;
+    # it returns None when it cannot, and the default voice speaks.
     if str(active).startswith("clone:"):
         spec = None
         try:
@@ -1322,28 +1293,6 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
                     return _apply_tone_pitch(wav)
         except Exception:
             log.debug("[TTS_WAV] Qwen3-TTS clone failed", exc_info=True)
-        try:
-            from eli.cognition import tone_adaptor as _ta
-            _exag = _ta.voice_exaggeration()
-        except Exception:
-            _exag = None
-            log.debug("[TTS_WAV] tone exaggeration read skipped", exc_info=True)
-        try:
-            from eli.perception import tts_chatterbox
-            wav = tts_chatterbox.synthesize_wav(text, active, exaggeration=_exag)
-            if wav:
-                _note_neural_fallback(None)
-                return wav  # Chatterbox handles emotion natively — no post-hoc pitch shift
-        except Exception:
-            log.debug("[TTS_WAV] chatterbox clone resolve failed", exc_info=True)
-        try:
-            from eli.perception import tts_xtts
-            wav = tts_xtts.synthesize_wav(text, active)
-            if wav:
-                _note_neural_fallback(None)
-                return _apply_tone_pitch(wav)
-        except Exception:
-            log.debug("[TTS_WAV] clone voice resolve failed", exc_info=True)
         _note_neural_fallback(active)
         active = _DEFAULT_VOICE
     # Style voice (char:calm, char:robotic, …): render its base Kokoro voice, then run its ffmpeg

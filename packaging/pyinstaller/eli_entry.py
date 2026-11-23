@@ -215,29 +215,6 @@ def _assert_paths_outside_bundle() -> None:
         if _samples is None or not len(_samples):
             raise RuntimeError(f"selftest: the Kokoro voice did not render: {_tk.load_error() or 'no audio'}")
         print(f"selftest: the Kokoro voice renders ({len(_samples) / _tk.SAMPLE_RATE:.1f} s of speech)")
-    # Neural voice engine: assert the FROZEN app can actually import it, not merely
-    # that pip installed it on the runner. v2.1.65 and v2.1.66 both shipped
-    # coqui_tts-*.dist-info with no usable TTS package — the spec's bare
-    # `__import__("TTS")` raised on a transformers incompatibility ELI already
-    # carries a shim for, so collection was skipped and every cloned voice fell back
-    # to the default voice. A directory listing cannot settle this: collect_submodules puts pure
-    # Python in the PYZ inside the executable, so `_internal/TTS/` legitimately holds
-    # only data files. The import is the only honest check.
-    if os.environ.get("ELI_REQUIRE_NEURAL_VOICE") == "1":
-        from eli.perception import tts_xtts as _tx
-        if not _tx.xtts_available():
-            why = ""
-            try:
-                why = _tx.xtts_import_error()
-            except Exception:
-                pass
-            raise RuntimeError(
-                "selftest: the neural voice engine is NOT usable in this bundle — "
-                "cloned/natural voices would silently fall back to the default voice. "
-                f"Import failed with: {why or 'unknown (no reason recorded)'}. "
-                "Check that ELI.spec collected TTS and its transitive imports."
-            )
-        print("selftest: neural voice engine usable (XTTS-v2 importable in the bundle)")
 
 
 def _selftest() -> int:

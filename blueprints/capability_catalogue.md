@@ -183,7 +183,7 @@ families are grouped below so the real surface is visible.
 | `STT_DIAGNOSTICS`, `VOICE_DIAGNOSTICS` | Diagnose the STT/voice pipeline (mic, ducking, wake gate). |
 | `SAY` / `SPEAK` *(plugin: tts)* | Speak text (Kokoro; Qwen3-TTS on a GPU). |
 | `LIST_VOICES`, `SET_VOICE`, `DOWNLOAD_VOICE` | List ELI's voices / switch the TTS voice / fetch one of the Kokoro voices. |
-| `CREATE_VOICE`, `DESIGN_VOICE` | Make a voice from a recording (XTTS-v2 clone) / build a style voice from a base voice with pitch, speed and effects. |
+| `CREATE_VOICE`, `DESIGN_VOICE` | Make a voice from a recording (Qwen3-TTS clone) / build a style voice from a base voice with pitch, speed and effects. |
 | `WAKE_SET`, `WAKE_TRAIN`, `WAKE_ENROLL`, `TRAIN_VOICE` | Set the wake word / train the local wake-word model / record the user saying it and retrain / learn the user's voice and tone. |
 | `SPEAKER_ENROLL`, `SPEAKER_STATUS`, `LIST_SPEAKERS` | Speaker identification for shared machines (`perception/speaker_id.py`): enrol a speaker, status, list. |
 
