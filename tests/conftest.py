@@ -386,19 +386,23 @@ def _note_written(event, args) -> None:
                 return
         elif not (isinstance(flags, int) and flags & _WRITE_FLAGS):
             return
-        targets = args[:1]
-    elif event in ("os.mkdir", "os.remove", "os.rmdir", "shutil.rmtree"):
-        targets = args[:1]
-    elif event == "os.rename":                         # os.replace too
-        targets = args[:2]
+        targets = [(args[0], None)]
+    elif event in ("os.mkdir", "os.remove", "os.rmdir", "shutil.rmtree") and args:
+        # (path, [mode,] dir_fd): a name relative to an open folder, as shutil.rmtree removes by
+        targets = [(args[0], args[-1] if len(args) > 1 else None)]
+    elif event == "os.rename":                         # os.replace too: (src, dst, src_dir_fd, dst_dir_fd)
+        targets = [(args[0], args[2] if len(args) > 2 else None), (args[1], args[3] if len(args) > 3 else None)]
     else:
         return
-    for target in targets:
+    for target, dir_fd in targets:
         if target is None or isinstance(target, int):
             continue
         try:
-            path = os.path.realpath(os.fsdecode(target))
-        except (TypeError, ValueError):
+            name = os.fsdecode(target)
+            if isinstance(dir_fd, int) and not os.path.isabs(name):
+                name = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), name)
+            path = os.path.realpath(name)
+        except (TypeError, ValueError, OSError):
             continue
         if not (path == _WATCHED or path.startswith(_WATCHED + os.sep)):
             continue
@@ -433,6 +437,12 @@ def measurements_stay_on_this_machine(monkeypatch, tmp_path):
 def pytest_sessionfinish(session, exitstatus):
     asked = [p for p in (session.config.getoption("xmlpath", None),             # --junitxml
                          session.config.getoption("basetemp", None)) if p]
+    try:
+        asked.append(session.config.rootpath / session.config.getini("cache_dir"))   # pytest's own cache
+    except (ValueError, KeyError):
+        pass                                                                       # -p no:cacheprovider
+    if session.config.pluginmanager.hasplugin("_cov"):                             # --cov's data file
+        asked.append(Path(os.environ.get("COVERAGE_FILE") or ".coverage").resolve())
     escaped = _written_since(_STATE_BEFORE, asked)
     if escaped:
         print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files or folders in this checkout were "

@@ -240,6 +240,14 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / ".venv" / "lib").mkdir()
     (tmp_path / "report.xml").write_text("asked for")
+    # a folder removed elsewhere is not this checkout's, though rmtree names its files relative to it
+    import shutil
+    import tempfile
+    monkeypatch.chdir(tmp_path)
+    elsewhere = Path(tempfile.mkdtemp())
+    (elsewhere / "notes.txt").write_text("not the checkout's")
+    shutil.rmtree(elsewhere)
+    assert str((tmp_path / "notes.txt").resolve()) not in conftest._WRITTEN_BY
     this_test = os.environ["PYTEST_CURRENT_TEST"].split(" ")[0]
     assert conftest._written_since(before, [tmp_path / "report.xml"]) == [
         f"artifacts/runtime/ (made by {this_test})",
