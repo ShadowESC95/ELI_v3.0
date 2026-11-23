@@ -1079,6 +1079,51 @@ def test_a_package_or_an_asset_release_passes_on_no_model_a_closed_product_may_n
     assert 'cp -a "$ASSET_ROOT/models/." "$STAGING/models/"' not in script, "models/ is copied whole again"
 
 
+def test_a_wheelhouse_installs_offline_without_what_is_left_out(tmp_path, monkeypatch, capsys):
+    """With PyAV taken out of the Windows full wheelhouse, pip installing faster-whisper from it offline
+    stopped on faster-whisper's `av>=11`, as PyAutoGUI's install did on MouseInfo and PyMsgBox. --leave-out DIR
+    puts a placeholder in the place of each left-out package whose declaring package is there: a wheel of
+    metadata alone, above any version the project publishes, which every install's --leave-out uninstalls
+    again. pip resolves the set offline. Invented packages; pip itself, offline."""
+    import subprocess
+    import sys
+    import zipfile
+    gs = _gpl_sources()
+    monkeypatch.setattr(gs, "LEFT_OUT", {"example-codec": gs.LeftOut("example-speech", ("examplecodec",), ("decode",), "")})
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+
+    def wheel(name, version, requires=""):
+        dist = name.replace("-", "_")
+        path = house / f"{dist}-{version}-py3-none-any.whl"
+        meta = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{requires}"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(f"{dist}/__init__.py", "")
+            z.writestr(f"{dist}-{version}.dist-info/METADATA", meta)
+            z.writestr(f"{dist}-{version}.dist-info/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            z.writestr(f"{dist}-{version}.dist-info/RECORD", "")
+        return path
+
+    wheel("example-speech", "1.2", "Requires-Dist: example-codec>=11\nRequires-Dist: example-tokens\n")
+    wheel("example-tokens", "0.2")
+    wheel("example-codec", "17.0", "License: BSD-3-Clause\n")
+    assert gs.main(["--leave-out", str(house)]) == 0
+    names = sorted(p.name for p in house.iterdir())
+    assert names == [f"example_codec-{gs.PLACEHOLDER_VERSION}-py3-none-any.whl", "example_speech-1.2-py3-none-any.whl",
+                     "example_tokens-0.2-py3-none-any.whl"], names
+    assert gs.main(["--check-wheels", str(house)]) == 0
+    capsys.readouterr()
+    ran = subprocess.run([sys.executable, "-m", "pip", "install", "--dry-run", "--no-index", "--find-links", str(house),
+                          "--target", str(tmp_path / "target"), "--disable-pip-version-check", "example-speech"],
+                         capture_output=True, text=True, timeout=300)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert f"example-codec-{gs.PLACEHOLDER_VERSION}" in ran.stdout and "example-speech-1.2" in ran.stdout
+    assert gs.main(["--leave-out", str(house)]) == 0 and len(list(house.iterdir())) == 3     # kept, not doubled
+    build = (REPO / "build_packages.sh").read_text(encoding="utf-8")
+    loop = build.split("build_windows_wheelhouse_for() {", 1)[1].split("torch \\", 1)[0]
+    assert '--abi "$abi" --abi abi3 --abi none' in loop, "the wheelhouse leaves out abi3 wheels (tokenizers) again"
+
+
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):
     """With PyAutoGUI's three left out, SOURCES.md listed nothing and said nothing. The build's own tools
     (PyInstaller, under the GPL with its bootloader exception) were fetched as if a build carried them."""

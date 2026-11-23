@@ -14,7 +14,10 @@ files are taken out the same way:
     python packaging/gpl_sources.py --leave-out           # uninstall them from this environment,
                                                           # reinstall what shared files with them, and
                                                           # delete the files left out of the others
-    python packaging/gpl_sources.py --leave-out DIR       # rewrite the wheels in DIR without those files
+    python packaging/gpl_sources.py --leave-out DIR       # rewrite the wheels in DIR without those files, take
+                                                          # out the left-out packages' and put a placeholder of
+                                                          # metadata alone in their place, so pip installs
+                                                          # what declares them offline from DIR
     python packaging/gpl_sources.py --check-wheels DIR    # fail when a wheel or sdist in DIR is under the
                                                           # GPL or holds a file left out
     python packaging/gpl_sources.py --check-bundle DIR    # fail when a built bundle holds a library or
@@ -456,15 +459,63 @@ def archive_left_out(path: Path, meta=None) -> List[str]:
     return [n for n in _archive_names(path) if entry.matches(n)] if entry else []
 
 
+# A placeholder stands in a wheelhouse for what LEFT_OUT names, so that pip, installing offline from it,
+# can meet the declaration of the package that asks for it (faster-whisper's `av>=11`, PyAutoGUI's
+# `pymsgbox`) without the package itself: a wheel with no files but its metadata, at a version above any
+# the project publishes (pip, online too, takes it over PyPI's). Every install's --leave-out uninstalls it
+# again by its name, as it would the real package.
+PLACEHOLDER_VERSION = "9999+eli.left.out"
+PLACEHOLDER_KEYWORD = "eli-left-out-placeholder"
+
+
+def is_placeholder(meta) -> bool:
+    return meta is not None and PLACEHOLDER_KEYWORD in str(meta.get("Keywords") or "")
+
+
+def placeholder_wheel(name: str, directory: Path) -> Path:
+    """Write the placeholder wheel of `name` (a LEFT_OUT distribution) into `directory`."""
+    entry = LEFT_OUT[_key(name)]
+    dist = re.sub(r"[-.]+", "_", name)
+    info = f"{dist}-{PLACEHOLDER_VERSION}.dist-info"
+    files = {
+        f"{info}/METADATA": (f"Metadata-Version: 2.1\nName: {name}\nVersion: {PLACEHOLDER_VERSION}\n"
+                             f"Summary: ELI leaves {name} out (packaging/gpl_sources.py, LEFT_OUT); this placeholder "
+                             f"meets {entry.of}'s declaration and holds nothing\n"
+                             f"License-Expression: LicenseRef-ELI-placeholder\nKeywords: {PLACEHOLDER_KEYWORD}\n"),
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nGenerator: eli-gpl-sources\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    rows = []
+    for rel, body in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(body.encode()).digest()).rstrip(b"=").decode()
+        rows.append(f"{rel},sha256={digest},{len(body.encode())}")
+    rows.append(f"{info}/RECORD,,")
+    path = Path(directory) / f"{dist}-{PLACEHOLDER_VERSION}-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for rel, body in files.items():
+            z.writestr(rel, body)
+        z.writestr(f"{info}/RECORD", "\n".join(rows) + "\n")
+    return path
+
+
 def leave_out_of_wheels(directory: Path) -> int:
-    """Take out of `directory` the wheels and sdists of what LEFT_OUT names, and rewrite each wheel without
-    the files LEFT_OUT_FILES names and their rows in its RECORD, as every install leaves them out of the
-    environment. An sdist holding such files is not rewritten: --check-wheels refuses it."""
+    """Take out of `directory` the wheels and sdists of what LEFT_OUT names, put a placeholder (above) in
+    the place of each wherever a wheel of the package that declares it is there, and rewrite each wheel
+    without the files LEFT_OUT_FILES names and their rows in its RECORD, as every install leaves them out
+    of the environment. An sdist holding such files is not rewritten: --check-wheels refuses it."""
+    present = set()
     for path in sorted(p for p in Path(directory).iterdir() if p.is_file()):
         meta = archive_metadata(path)
-        if meta is not None and _key(str(meta.get("Name") or "")) in LEFT_OUT:
+        if meta is None:
+            continue
+        key = _key(str(meta.get("Name") or ""))
+        present.add(key)
+        if key in LEFT_OUT and not is_placeholder(meta):
             print(f"[gpl] {path.name}: left out (packaging/gpl_sources.py, LEFT_OUT)", flush=True)
             path.unlink()
+    for name, entry in sorted(LEFT_OUT.items()):
+        if _key(entry.of) in present and not list(Path(directory).glob(f"{re.sub(r'[-.]+', '_', name)}-{PLACEHOLDER_VERSION}-*.whl")):
+            print(f"[gpl] {placeholder_wheel(name, directory).name}: stands in for {name}, which {entry.of} declares",
+                  flush=True)
     for path in sorted(Path(directory).glob("*.whl")):
         gone = set(archive_left_out(path))
         if not gone:
@@ -495,7 +546,7 @@ def gpl_archives(directory: Path) -> List[str]:
         carried = native_breaches(_archive_names(path)) if meta is not None else []
         if meta is not None and is_gpl(licence_facts(meta)):
             found.append(f"{path.name} ({'; '.join(licence_facts(meta))})")
-        elif meta is not None and _key(str(meta.get("Name") or "")) in LEFT_OUT:
+        elif meta is not None and _key(str(meta.get("Name") or "")) in LEFT_OUT and not is_placeholder(meta):
             found.append(f"{path.name} (left out of every release: packaging/gpl_sources.py, LEFT_OUT)")
         elif carried:
             found.append(f"{path.name} (carries {', '.join(sorted({Path(f).name for f, _ in carried}))}: "

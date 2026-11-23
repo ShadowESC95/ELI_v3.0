@@ -78,12 +78,15 @@ build_windows_wheelhouse_for() {
                 PyAutoGUI*|pyautogui*) continue ;;
                 accelerate*) extra_download_args=(--no-deps) ;;
             esac
+            # the stable ABI and pure wheels too: tokenizers, cryptography and others publish only cp3x-abi3
+            # wheels, and with --abi cpXY alone the wheelhouse went without them, so an offline install of
+            # faster-whisper (and what needs those) could not finish
             if ! python3 -m pip download \
                     --dest "$OUT_DIR" \
                     --platform "$PLATFORM" \
                     --python-version "$pyver" \
                     --implementation cp \
-                    --abi "$abi" \
+                    --abi "$abi" --abi abi3 --abi none \
                     --only-binary=:all: \
                     --prefer-binary \
                     ${extra_download_args[@]+"${extra_download_args[@]}"} \

@@ -26,7 +26,10 @@ checkouts.
 > environment holds any package under the GPL, the wheelhouses are checked the same way,
 > and `requirements.lock.txt` pins none of them. ELI's installers take them out of the
 > environment they make as well; a `pip install` you run yourself from PyPI still fetches
-> them onto your machine, as PyAutoGUI's metadata asks.
+> them onto your machine, as PyAutoGUI's metadata asks. A wheelhouse a release ships holds, in
+> their place (and PyAV's), a placeholder wheel of metadata alone that meets the declaration, so
+> an install from it works offline and fetches none of them; the installer's `--leave-out`
+> removes the placeholders again.
 >
 > **Nor anything else a closed, paid product may not pass on.** Each package a build carries
 > is sorted into a licence class (permissive, vendor terms, weak copyleft, unknown, strong
