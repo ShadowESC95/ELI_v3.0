@@ -209,3 +209,14 @@ def test_the_packaged_apps_path_check_runs_against_the_code_it_ships_with(tmp_pa
     out = subprocess.run([sys.executable, "-c", code, str(entry), str(bundle)], cwd=str(repo), env=env,
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     assert out.returncode == 0, (out.stdout + out.stderr)[-2000:]
+
+
+def test_the_mac_app_leaves_out_yaras_own_openssl():
+    """A macOS app built with yara-python (ELI v2.5.40, from the same dependency set) stopped at launch: yara's own
+    libcrypto.3.dylib was bound to
+    Python's _ssl through OpenCV's libssl ("Symbol not found: _CRYPTO_calloc"). The macOS build
+    leaves yara out; the security scan then reports it as not installed."""
+    spec = (ROOT / "ELI.spec").read_text(encoding="utf-8")
+    darwin = spec.split('if sys.platform == "darwin":\n    # yara-python', 1)
+    assert len(darwin) == 2 and 'excludes.append("yara")' in darwin[1].split("\n\n", 1)[0]
+    assert spec.index('excludes.append("yara")') < spec.index("a = Analysis("), "added after the list is used"
