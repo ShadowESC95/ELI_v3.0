@@ -451,6 +451,7 @@ jobs:
           # not carry it. ALSA alone reaches the sound server (PulseAudio, PipeWire) through ALSA's plug-ins.
           src=pa_stable_v190700_20210406.tgz
           curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/$src" "https://files.portaudio.com/archives/$src"
+          # 1,462,695 bytes; this sha256 was checked against the archive files.portaudio.com serves (2026-11-23)
           echo "47efbf42c77c19a05d22e627d42873e991ec0c1357219c0d74ce6a2948cb2def  $RUNNER_TEMP/$src" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$src" -C "$RUNNER_TEMP"
           ( cd "$RUNNER_TEMP/portaudio" && ./configure --prefix=/usr/local --with-alsa --without-jack --without-oss \
