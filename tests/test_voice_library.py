@@ -11,6 +11,7 @@ import pytest
 
 from eli.perception import tts_kokoro
 from eli.runtime import voice_assets as va
+from tests._sparse import sparse_file
 
 
 # ── the pinned files ────────────────────────────────────────────────────────
@@ -135,8 +136,7 @@ def test_a_release_build_reads_the_files_where_the_bundle_keeps_them(monkeypatch
             (path / va._MARKER).write_text(entry.sha256, encoding="utf-8")
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "wb") as fh:
-                fh.truncate(entry.size)           # the size is what is checked on the way in
+            sparse_file(path, entry.size)         # the size is what is checked on the way in
     monkeypatch.setattr(va, "kokoro_dir", lambda: tmp_path / "user" / "models" / "tts" / "kokoro")
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
     files = va.kokoro_files()

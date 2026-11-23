@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from eli.runtime import voice_assets as va
+from tests._sparse import sparse_file
 
 
 def test_the_voice_is_ready_only_with_kokoros_own_files_not_the_systems_voices(monkeypatch, tmp_path):
@@ -23,8 +24,7 @@ def test_the_voice_is_ready_when_its_files_and_the_default_voice_are_on_disk(mon
             (path / va._MARKER).write_text(entry.sha256, encoding="utf-8")
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "wb") as fh:
-                fh.truncate(entry.size)
+            sparse_file(path, entry.size)
     monkeypatch.setattr(va, "_kokoro_roots", lambda: [tmp_path])
     assert va.kokoro_ready() is True
     assert va.kokoro_ready("bm_george") is False, "a voice not fetched is not ready"
