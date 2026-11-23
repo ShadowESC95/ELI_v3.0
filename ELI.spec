@@ -455,6 +455,9 @@ if sys.platform == "darwin":
     # the app stopped at launch ("Symbol not found: _CRYPTO_calloc"). The macOS app ships without
     # YARA, and its security scan says "yara-python is not installed".
     excludes.append("yara")
+    # OpenCV's macOS wheels link an FFmpeg with x264 and x265 (GPL) into cv2; pyproject.toml leaves it out
+    # on a Mac, and the macOS app never carries it even where a build machine has it.
+    excludes.append("cv2")
 
 # PyAutoGUI's GPL dependencies, which the check above found uninstalled: not collected even so
 excludes += gpl_sources.left_out_modules()

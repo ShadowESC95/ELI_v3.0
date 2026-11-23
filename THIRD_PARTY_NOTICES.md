@@ -83,7 +83,7 @@ package whose source it cannot find is not released.
 | **FastAPI** / **Starlette** / **uvicorn** | MIT | Web server |
 | **paho-mqtt** | EPL-2.0 / EDL-1.0 | MQTT device server |
 | **zeroconf** | LGPL-2.1+ | mDNS discovery |
-| **opencv-python** | Apache-2.0 | Vision / gaze |
+| **opencv-python** (Linux and Windows only) | Apache-2.0; its wheels carry FFmpeg built under the **LGPL-2.1** and, on Linux, Qt 5 (**LGPL-3.0**) | Gaze cursor. Not installed or bundled on macOS, where its wheels (and the headless ones) link an FFmpeg with **x264 and x265 (GPL)** into cv2 |
 | **playwright** | Apache-2.0 | Browser automation plugin |
 | **bleak** | MIT | Bluetooth discovery |
 | **openwakeword** | Apache-2.0 code; the **pre-trained wake-word models in its package are CC BY-NC-SA 4.0** (non-commercial), per its own licence note | Wake word. ELI uses only its feature extractor (the melspectrogram and speech-embedding models) and trains its own detector head (`eli/perception/wakeword.py`); every build, wheelhouse and installer leaves the pre-trained models out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |

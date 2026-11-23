@@ -124,7 +124,7 @@ input) — not on a headless server or Android · ➖ N/A on that platform
 | Voice STT / TTS | ✅ | ✅ | ✅ | ⚠️ (audio dev) | ➖ |
 | Media control (play/pause/next) | ✅ (playerctl) | ⚠️ | ⚠️ | ⚠️ (termux) | ➖ |
 | Window management (focus/move/tile) | ✅ (wmctrl) | ⚠️ | ⚠️ | ➖ | ➖ |
-| Gaze cursor / AR avatar | ✅ | ⚠️ | ⚠️ | ➖ | ➖ |
+| Gaze cursor / AR avatar | ✅ | ➖ (no OpenCV: GPL FFmpeg) | ⚠️ | ➖ | ➖ |
 | GUI (PySide6 desktop app) | ✅ | ✅ | ✅ | ➖ | ➖ |
 | Web app / REST API (FastAPI server) | ✅ | ✅ | ✅ | ✅ (client) | ✅ |
 | Scheduling, habits, proactive, reflection, self-improve | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -150,7 +150,7 @@ input) — not on a headless server or Android · ➖ N/A on that platform
   `ELI_ALLOW_MULTI_INSTANCE=1` lifts it.
 - **Window management** (`wmctrl`/`xdotool`) is X11/Linux-centric; on macOS/Windows these actions
   degrade gracefully (return "not available") — they don't crash.
-- **Gaze/AR** needs a camera + display and `opencv`; desktop-only, Linux-tested.
+- **Gaze/AR** needs a camera + display and `opencv`; desktop-only, Linux-tested. ELI does not install OpenCV on macOS: its macOS wheels link an FFmpeg with x264 (GPL) into `cv2`, which ELI may not pass on.
 - These are *guarded* — they never raise; they return a clean unavailable result and ELI says so.
 
 ## The "Flask" (headless / web server) axis

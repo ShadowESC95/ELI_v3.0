@@ -127,8 +127,10 @@ dependencies = [
     "androidtv[async]>=0.0.70",  # Fire TV / Android TV
     "adb-shell>=0.4",         # Fire TV / Android TV pairing keys
     "pyatv>=0.16",            # Apple TV / AirPlay (0.16 read tags with tinytag, not the GPL's mutagen)
-    # Gaze cursor + on-screen OCR.
-    "opencv-python>=4.8",
+    # Gaze cursor + on-screen OCR. Not on macOS: OpenCV's macOS wheels (opencv-python and -headless alike)
+    # link an FFmpeg built with x264, x265 and other GPL parts, loaded with cv2; its Linux and Windows
+    # wheels carry an LGPL FFmpeg. The gaze cursor says so on a Mac.
+    "opencv-python>=4.8; sys_platform != 'darwin'",
     "pytesseract>=0.3",
     # Web search + browser automation plugins.
     "ddgs>=9.0",

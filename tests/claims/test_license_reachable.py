@@ -150,6 +150,17 @@ def test_no_install_route_brings_piper_or_espeak():
         reqs = [line.split("#", 1)[0].strip() for line in text.splitlines()]
         for bad in ("piper-tts", "espeakng-loader", "phonemizer", "misaki[en]", "kokoro-onnx", "g2p-en", "g2p_en"):
             assert not any(r.startswith((bad, f'"{bad}')) or f'"{bad}' in r for r in reqs), f"{bad} in {name}"
+    # OpenCV's macOS wheels link an FFmpeg with x264 and x265 (GPL) into cv2: no Mac route installs it,
+    # and the macOS app leaves it out
+    gs = _gpl_sources()
+    mac = {"sys_platform": "darwin", "platform_system": "Darwin", "os_name": "posix", "extra": "",
+           "python_version": "3.12", "python_full_version": "3.12.0", "platform_machine": "arm64"}
+    declared = [gs._requirement(t) for t in gs._project(REPO)["dependencies"]]
+    assert not [r for r in declared if r.name.startswith("opencv") and (r.marker is None or r.marker.evaluate(mac))]
+    assert not [line for line in gs.requirement_lines(REPO / "requirements-macos.txt") if line.startswith("opencv")]
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    darwin = [block.split("\n\n", 1)[0] for block in spec.split('\nif sys.platform == "darwin":\n')[1:]]
+    assert any('excludes.append("cv2")' in block for block in darwin)
 
 
 def test_the_gpl_source_archive_holds_each_sdist_and_what_its_build_fetches(tmp_path, monkeypatch, capsys):
