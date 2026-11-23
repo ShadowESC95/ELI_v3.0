@@ -234,7 +234,8 @@ def _voices(limit: int = 6) -> List[str]:
     try:
         from eli.perception import tts_kokoro
         from eli.perception.tts_router import list_voices
-        have = [v for v in list_voices() if tts_kokoro.voice_id(v)]
+        have = [v for v in list_voices()       # the phrase is English: English voices only
+                if tts_kokoro.voice_id(v) and tts_kokoro.VOICES[v]["accent"] in tts_kokoro.ENGLISH]
         kinds: dict = {}
         for v in have:                               # VOICES is ordered best grade first per kind
             meta = tts_kokoro.VOICES[v]

@@ -82,6 +82,14 @@ _VOICE_SHA256 = {
     "bm_fable": "f889083196807b4adb15e9204252165f503b8d33d3982e681c52443c49d798f1",
     "bm_george": "c4b235a4c1f2cd3b939fed08b899ce9385638b763f7b73a59616c4fc9bd6c9bc",
     "bm_lewis": "b8f671cef828c30e66fdf0b0756a76bba58f6bb3398cbbf27058642acbcedb97",
+    "zf_xiaobei": "5dde6e1c9c4f12c8b327bc29c0cee361a23b52b952c04636858ba637ec66e640",
+    "zf_xiaoni": "08892b62a39af0a615cd0581238db7e19e44c578e8fa0bfd0e586e93327d9cba",
+    "zf_xiaoxiao": "03adb5d5e3ddd88b047954e974e651cb0a4b524c985057e5d872e962c7be1169",
+    "zf_xiaoyi": "bc1555c5c486099196ac254bae5e0bb543c121952a3092f50b7d8724f1bc36b3",
+    "zm_yunjian": "de48a00bdbf3649f07162269a2b6e0513604389bfac8a2e6c75cb34b323ad6fa",
+    "zm_yunxi": "7243892fb4e560d47014090ddf010f8b8b790f3c6b029ff82b2ac06aa4e27c8b",
+    "zm_yunxia": "6b2b8fc15b3df19a368daebe5c581c7fabf433ee5b8a17ffd6b3d723cff8936d",
+    "zm_yunyang": "261e2c89470534dbbcb8fd98b8fdc495ec94063d9bb6c8277f7be43cccba3f42",
 }
 _VOICE_BYTES = 522_240           # each voice: 510 style vectors of 256 float32
 
@@ -106,7 +114,7 @@ def kokoro_voice_entry(vid: str) -> Optional[KokoroFile]:
 
 
 def kokoro_manifest() -> List[KokoroFile]:
-    """Every file the Kokoro voice uses: the engine's, then each English voice."""
+    """Every file the Kokoro voice uses: the engine's, then each voice (English and Mandarin)."""
     return [*KOKORO_ENGINE_FILES.values(), *(kokoro_voice_entry(v) for v in sorted(_VOICE_SHA256))]
 
 
@@ -239,7 +247,7 @@ def _fetch(entry: KokoroFile, dest_root: Path) -> None:
 
 
 def ensure_kokoro(voices: Optional[List[str]] = None, dest: Optional[Path] = None) -> Dict[str, Any]:
-    """Fetch whichever Kokoro files are missing: the engine's and the named voices (every English
+    """Fetch whichever Kokoro files are missing: the engine's and the named voices (every Kokoro
     voice when none are named), into ELI's models folder or `dest`. Offline-safe: files already
     present are not fetched again, and nothing touches the network when all are here."""
     wanted = list(KOKORO_ENGINE_FILES.values())
@@ -270,8 +278,10 @@ def ensure_kokoro(voices: Optional[List[str]] = None, dest: Optional[Path] = Non
 def _voice_row(vid: str) -> Dict[str, Any]:
     from eli.perception.tts_kokoro import VOICES, describe
     meta = VOICES[vid]
-    return {"id": vid, "name": meta["name"].lower(), "language": "en_US" if meta["accent"] == "a" else "en_GB",
-            "language_name": "English", "country": "United States" if meta["accent"] == "a" else "United Kingdom",
+    code, language, country = {"a": ("en_US", "English", "United States"), "b": ("en_GB", "English", "United Kingdom"),
+                               "z": ("zh_CN", "Chinese", "China")}[meta["accent"]]
+    return {"id": vid, "name": meta["name"].lower(), "language": code,
+            "language_name": language, "country": country,
             "gender": meta["gender"], "quality": meta["grade"], "size_mb": round(_VOICE_BYTES / (1 << 20), 1),
             "present": kokoro_voice_file(vid) is not None, "restricted": False,
             "recommended": meta["grade"][0] in "AB", "desc": describe(vid), "license": "Apache-2.0"}
@@ -321,6 +331,7 @@ _ACCENT_HINTS = {
     "british": "en_GB", "uk": "en_GB", "england": "en_GB", "english accent": "en_GB",
     "scottish": "en_GB", "scotland": "en_GB", "northern": "en_GB",
     "american": "en_US", "us": "en_US", "usa": "en_US", "united states": "en_US",
+    "chinese": "zh_CN", "mandarin": "zh_CN",
 }
 
 

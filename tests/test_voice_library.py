@@ -25,11 +25,13 @@ def test_every_kokoro_file_is_pinned_to_a_revision_and_a_checksum():
     assert {f.rel.split("/")[1][:-4] for f in files if f.rel.startswith("voices/")} == set(tts_kokoro.VOICES)
 
 
-def test_only_english_voices_whose_text_side_needs_no_espeak_are_offered():
-    """misaki reads Kokoro's other languages through espeak-ng (GPL); ELI offers American and
-    British English only."""
-    assert {m["accent"] for m in tts_kokoro.VOICES.values()} == {"a", "b"}
-    assert all(v[:2] in ("af", "am", "bf", "bm") for v in tts_kokoro.VOICES)
+def test_only_voices_whose_text_side_needs_no_espeak_are_offered():
+    """misaki reads Kokoro's Spanish, French, Hindi, Italian and Portuguese through espeak-ng (GPL) and
+    its Japanese through pyopenjtalk (no ready-made build); ELI offers American and British English and
+    Mandarin, whose G2P is misaki's own (jieba, pypinyin)."""
+    assert {m["accent"] for m in tts_kokoro.VOICES.values()} == {"a", "b", "z"}
+    assert all(v[:2] in ("af", "am", "bf", "bm", "zf", "zm") for v in tts_kokoro.VOICES)
+    assert set(tts_kokoro.ACCENT_LANGUAGE) == {"a", "b", "z"}
 
 
 class _Net:

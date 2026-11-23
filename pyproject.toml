@@ -86,6 +86,14 @@ dependencies = [
     "spacy>=3.8,<3.9",
     "num2words>=0.5",
     "python-crfsuite>=0.9; platform_machine != 'ARM64'",
+    # Speaking the reply's language (eli/perception/reply_language.py): langdetect names a Latin-script
+    # reply's language; misaki's Chinese G2P (jieba, pypinyin, cn2an, ordered-set) gives Kokoro's Mandarin
+    # voices their phonemes without espeak-ng. All MIT or Apache-2.0, pure Python.
+    "langdetect>=1.0.9",
+    "jieba>=0.42",
+    "pypinyin>=0.50",
+    "cn2an>=0.5",
+    "ordered-set>=4.1",
     # Voice input. PyAudio has ready-made builds for Windows only; on Linux and macOS it is compiled
     # against PortAudio's headers (portaudio19-dev, portaudio-devel, `brew install portaudio`), which
     # install.sh adds first.

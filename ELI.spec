@@ -297,7 +297,8 @@ for pkg in _NEURAL_PKGS:
     hiddenimports += _optional_collect(pkg)
 # The Kokoro voice (eli/perception/tts_kokoro.py) imports these lazily, on the first reply spoken.
 for pkg in ("misaki", "spacy", "thinc", "srsly", "cymem", "preshed", "murmurhash", "blis",
-            "spacy_legacy", "spacy_loggers", "pycrfsuite", "num2words", "onnxruntime"):
+            "spacy_legacy", "spacy_loggers", "pycrfsuite", "num2words", "onnxruntime",
+            "langdetect", "jieba", "pypinyin", "cn2an", "proces", "ordered_set"):
     hiddenimports += _optional_collect(pkg)
 if sys.platform == "win32":
     hiddenimports += ["pyttsx3.drivers.sapi5", "comtypes.stream"]
@@ -383,7 +384,7 @@ for pkg in ("llama_cpp", "faster_whisper", "openwakeword"):
 # The Kokoro voice's text side: misaki reads its dictionaries (misaki/data/*.json) as package data,
 # spaCy and thinc register their parts through entry points read from the dist-info metadata, and
 # load the tagger's components by name, so all of it is collected whole.
-for pkg in ("misaki", "spacy", "thinc", "num2words"):
+for pkg in ("misaki", "spacy", "thinc", "num2words", "langdetect", "jieba", "pypinyin", "cn2an", "proces"):
     datas += _optional_collect(pkg, data=True)
 for _m in ("spacy", "spacy-legacy", "spacy-loggers", "thinc", "misaki", "confection", "catalogue", "weasel"):
     try:

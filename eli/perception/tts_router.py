@@ -16,6 +16,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -581,6 +582,98 @@ def set_active_voice(voice_name: str) -> None:
         log.debug("suppressed exception", exc_info=True)
 
 
+# ── a voice for the reply's language (eli/perception/reply_language) ─────────
+# The languages Qwen3-TTS speaks (its model cards).
+_QWEN_LANGUAGES = frozenset({"zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"})
+_SPD_PREFIX = "sys:spd:"
+_SYSTEM_BY_LANGUAGE: Optional[Dict[str, List[str]]] = None
+_NO_VOICE_SAID: set = set()
+
+# The operating system's own voices with the languages they speak, read OUT OF PROCESS like the voice list
+# above (_list_system_voices): one "id<TAB>language" line each. SAPI names a language by its Windows LCID
+# (hex), NSSpeechSynthesizer by a locale.
+_LANG_SNIPPET = (
+    "import locale, pyttsx3\n"
+    "e = pyttsx3.init()\n"
+    "for v in (e.getProperty('voices') or []):\n"
+    "    for l in (getattr(v, 'languages', None) or []):\n"
+    "        l = l.decode('utf-8', 'replace') if isinstance(l, bytes) else str(l)\n"
+    "        l = l.strip().lstrip('\\x05')\n"
+    "        try:\n"
+    "            l = locale.windows_locale.get(int(l, 16), l)\n"
+    "        except ValueError:\n"
+    "            pass\n"
+    "        print(f'{v.id}\\t{l[:2].lower()}')\n"
+)
+
+
+def _system_voices_by_language() -> Dict[str, List[str]]:
+    """{language: [sys: voice ids]} of the operating system's own voices, read once a run: on Linux the
+    desktop's speech-dispatcher (spd-say, a program of its own; ELI loads no speech library of the system's
+    into its process), on Windows (SAPI) and macOS their own voices through pyttsx3, in a child process."""
+    global _SYSTEM_BY_LANGUAGE
+    if _SYSTEM_BY_LANGUAGE is not None:
+        return _SYSTEM_BY_LANGUAGE
+    found: Dict[str, List[str]] = {}
+    import subprocess
+    try:
+        if sys.platform.startswith("linux"):
+            if shutil.which("spd-say"):
+                listed = subprocess.run(["spd-say", "-L"], capture_output=True, text=True, timeout=20).stdout
+                for line in listed.splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) >= 2 and re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9-]+)?", parts[-2]):
+                        lang = parts[-2].split("-", 1)[0]
+                        found.setdefault(lang, [f"{_SPD_PREFIX}{lang}"])
+        elif _list_system_voices():
+            listed = subprocess.run([sys.executable, "-c", _LANG_SNIPPET], capture_output=True, text=True,
+                                    timeout=20).stdout
+            for line in listed.splitlines():
+                vid, _, lang = line.partition("\t")
+                if vid and lang:
+                    found.setdefault(lang, []).append(f"{_SYSTEM_VOICE_PREFIX}{vid}")
+    except Exception:
+        log.debug("[TTS] the system's voices by language are unknown", exc_info=True)
+    _SYSTEM_BY_LANGUAGE = found
+    return found
+
+
+def voice_for_reply(text: str, active: str) -> str:
+    """The voice that speaks `text`: `active`, unless the reply is in a language `active` does not speak.
+    Then, in this order: Qwen3-TTS where this machine runs it (ten languages), a Kokoro voice of that
+    language (Mandarin), the operating system's own voice for it, else `active` reading it as best it can
+    (said once per language in the log). A natural, cloned or system voice is kept as chosen."""
+    if str(active).startswith(("natural:", "clone:", "sys:")):
+        return active
+    try:
+        from eli.perception.reply_language import language_of
+        lang = language_of(text)
+    except Exception:
+        log.debug("[TTS] reply language unknown", exc_info=True)
+        return active
+    own = _kokoro.VOICES.get(kokoro_voice(active), {}).get("accent")
+    if lang == _kokoro.ACCENT_LANGUAGE.get(own or "a", "en"):
+        return active
+    try:
+        from eli.perception import tts_qwen3
+        if lang in _QWEN_LANGUAGES and tts_qwen3.usable("custom"):
+            return "natural:serena"
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS check failed", exc_info=True)
+    if lang == "en":
+        return _DEFAULT_VOICE
+    here = [v for v in _kokoro.speaks(lang) if _voice_file(v) is not None]
+    if here:
+        return here[0]
+    system = _system_voices_by_language().get(lang)
+    if system:
+        return system[0]
+    if lang not in _NO_VOICE_SAID:
+        _NO_VOICE_SAID.add(lang)
+        log.warning("[TTS] no voice on this machine speaks '%s'; %s reads the reply as best it can", lang, active)
+    return active
+
+
 def _neural_engine_available() -> bool:
     """True when a natural voice can synthesise: Qwen3-TTS on this GPU, or XTTS-v2 installed."""
     try:
@@ -794,7 +887,17 @@ def _eli_tts_is_unspeakable(text) -> bool:
 
 
 def _speak_pyttsx3(text: str, voice_name: str) -> bool:
-    """Speak via OS TTS (Windows SAPI, macOS NSS, Linux espeak backend in pyttsx3)."""
+    """Speak via OS TTS (Windows SAPI, macOS NSS, Linux espeak backend in pyttsx3). A `sys:spd:<lang>`
+    voice is the desktop's speech-dispatcher, a program of its own (spd-say), in that language."""
+    if str(voice_name or "").startswith(_SPD_PREFIX):
+        import subprocess
+        try:
+            done = subprocess.run(["spd-say", "-w", "-l", voice_name[len(_SPD_PREFIX):], "--", str(text or "")],
+                                  capture_output=True, timeout=300)
+            return done.returncode == 0
+        except Exception:
+            log.debug("[TTS] spd-say failed", exc_info=True)
+            return False
     try:
         import pyttsx3
 
@@ -952,7 +1055,7 @@ def _speak_kokoro(text: str, voice: str) -> Playback:
 def _run_tts_impl(text: str, voice_name: str | None = None) -> bool:
     import os as _os
 
-    active = voice_name or get_active_voice()
+    active = voice_for_reply(text, voice_name or get_active_voice())
     # Character (char:) / cloned (clone:) / natural neural (natural:) voice → render via
     # synthesize_wav (which owns the effect chain / Qwen3-TTS + fallback), then play the WAV.
     if str(active).startswith(("char:", "clone:", "natural:")):
@@ -1170,7 +1273,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     text = _eli_tts_visible_text(text)
     if _eli_tts_is_unspeakable(text):
         return None
-    active = voice_name or get_active_voice()
+    active = voice_for_reply(text, voice_name or get_active_voice())
     # Natural neural voice (natural:<id>): Qwen3-TTS's built-in speaker on a GPU with room for it,
     # steered by the tone; then XTTS-v2's when that extra is installed; else the default voice.
     if str(active).startswith("natural:"):

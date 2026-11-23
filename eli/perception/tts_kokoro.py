@@ -38,9 +38,12 @@ log = get_logger(__name__)
 SAMPLE_RATE = 24_000          # Kokoro's output rate (a property of the model)
 PREFIX = "kokoro:"            # accepted on a voice id; the bare id is the stored form
 
-# The English voices Kokoro ships, with the grade its authors give each (VOICES.md: an estimate of
-# the quality and amount of the voice's training audio). Accent "a" is American English, "b" British.
-# Kokoro's other languages are left out: misaki reads them through espeak-ng.
+# The voices Kokoro ships whose text side needs no espeak-ng, with the grade its authors give each
+# (VOICES.md: an estimate of the quality and amount of the voice's training audio). Accent "a" is American
+# English, "b" British English, "z" Mandarin Chinese (misaki's Chinese G2P: jieba and pypinyin, MIT).
+# Kokoro's Spanish, French, Hindi, Italian and Portuguese are left out: misaki reads them through espeak-ng;
+# its Japanese needs pyopenjtalk, which has no ready-made build. Those languages are spoken by Qwen3-TTS
+# on a GPU, or by the operating system's own voices (tts_router.voice_for_reply).
 VOICES: Dict[str, Dict[str, str]] = {
     "af_heart": {"name": "Heart", "accent": "a", "gender": "female", "grade": "A"},
     "af_bella": {"name": "Bella", "accent": "a", "gender": "female", "grade": "A-"},
@@ -70,7 +73,18 @@ VOICES: Dict[str, Dict[str, str]] = {
     "bm_george": {"name": "George", "accent": "b", "gender": "male", "grade": "C"},
     "bm_lewis": {"name": "Lewis", "accent": "b", "gender": "male", "grade": "D+"},
     "bm_daniel": {"name": "Daniel", "accent": "b", "gender": "male", "grade": "D"},
+    "zf_xiaobei": {"name": "Xiaobei", "accent": "z", "gender": "female", "grade": "D"},
+    "zf_xiaoni": {"name": "Xiaoni", "accent": "z", "gender": "female", "grade": "D"},
+    "zf_xiaoxiao": {"name": "Xiaoxiao", "accent": "z", "gender": "female", "grade": "D"},
+    "zf_xiaoyi": {"name": "Xiaoyi", "accent": "z", "gender": "female", "grade": "D"},
+    "zm_yunjian": {"name": "Yunjian", "accent": "z", "gender": "male", "grade": "D"},
+    "zm_yunxi": {"name": "Yunxi", "accent": "z", "gender": "male", "grade": "D"},
+    "zm_yunxia": {"name": "Yunxia", "accent": "z", "gender": "male", "grade": "D"},
+    "zm_yunyang": {"name": "Yunyang", "accent": "z", "gender": "male", "grade": "D"},
 }
+ENGLISH = ("a", "b")
+# The language each accent speaks (ISO 639-1), for choosing a voice for a reply's language.
+ACCENT_LANGUAGE = {"a": "en", "b": "en", "z": "zh"}
 DEFAULT_VOICE = "af_heart"    # the one voice its authors grade A
 
 # The voices that ELI's earlier engine (Piper) offered, mapped to the nearest Kokoro voice by accent
@@ -126,7 +140,8 @@ def describe(vid: str) -> str:
     meta = VOICES.get(voice_id(vid))
     if not meta:
         return str(vid or "")
-    return f"{meta['name']} ({'US' if meta['accent'] == 'a' else 'UK'} {meta['gender']})"
+    where = {"a": "US", "b": "UK", "z": "Mandarin"}.get(meta["accent"], meta["accent"])
+    return f"{meta['name']} ({where} {meta['gender']})"
 
 
 # ── out-of-dictionary words ───────────────────────────────────────────────────
@@ -283,7 +298,7 @@ class _Engine:
         self.vocab: Dict[str, int] = dict(tok["model"]["vocab"])
         self._files = files
         self._packs: Dict[str, Any] = {}
-        self._g2p: Dict[bool, Any] = {}
+        self._g2p: Dict[str, Any] = {}
         self._nlp = None
         self._crf: Optional[_CrfG2P] = None
         self._lock = threading.Lock()
@@ -298,8 +313,14 @@ class _Engine:
             self._packs[vid] = self._np.fromfile(str(path), dtype=self._np.float32).reshape(-1, 1, 256)
         return self._packs[vid]
 
-    def g2p(self, british: bool):
-        if british not in self._g2p:
+    def g2p(self, accent: str):
+        if accent == "z":
+            if "z" not in self._g2p:
+                from misaki import zh
+                self._g2p["z"] = zh.ZHG2P(version=None)          # the v1.0 model's Chinese frontend
+            return self._g2p["z"]
+        british = accent == "b"
+        if accent not in self._g2p:
             if self._nlp is None:
                 import spacy
                 self._nlp = spacy.load(str(self._files["spacy"]), enable=["tok2vec", "tagger"])
@@ -310,12 +331,12 @@ class _Engine:
                     log.warning("[TTS] the guessing model for unknown words did not load; they are spelt",
                                 exc_info=True)
             crf = self._crf
-            self._g2p[british] = _misaki_g2p(self._nlp, british,
-                                             lambda lex: _OovFallback(lex, crf, british))
-        return self._g2p[british]
+            self._g2p[accent] = _misaki_g2p(self._nlp, british,
+                                            lambda lex: _OovFallback(lex, crf, british))
+        return self._g2p[accent]
 
-    def phonemes(self, text: str, british: bool) -> str:
-        ps, _tokens = self.g2p(british)(str(text or ""))
+    def phonemes(self, text: str, accent: str) -> str:
+        ps, _tokens = self.g2p(accent)(str(text or ""))
         return ps
 
     def ids(self, phonemes: str) -> List[int]:
@@ -381,6 +402,20 @@ def available() -> bool:
         return False
 
 
+def speaks(language: str) -> List[str]:
+    """The Kokoro voices that speak `language` (ISO 639-1) on this machine's packages, best graded
+    first; Chinese needs misaki's Chinese G2P (jieba, pypinyin, cn2an, ordered-set)."""
+    import importlib.util
+    voices = [v for v, m in VOICES.items() if ACCENT_LANGUAGE.get(m["accent"]) == language]
+    if language == "zh":
+        try:
+            if not all(importlib.util.find_spec(m) for m in ("jieba", "pypinyin", "cn2an", "ordered_set")):
+                return []
+        except (ImportError, ValueError):
+            return []
+    return voices if available() else []
+
+
 def _split_phonemes(ps: str, limit: int) -> List[str]:
     """Phonemes in pieces the model takes (at most `limit` each), cut after a sentence or clause mark,
     else at a space, as Kokoro's own pipeline cuts them."""
@@ -406,10 +441,10 @@ def synthesize(text: str, voice: str = DEFAULT_VOICE, *, speed: float = 1.0):
     if eng is None:
         return None
     try:
-        british = VOICES[vid]["accent"] == "b"
+        accent = VOICES[vid]["accent"]
         with eng._lock:
             pack = eng.pack(vid)
-            ps = eng.phonemes(text, british)
+            ps = eng.phonemes(text, accent)
             pieces = [eng.ids(p) for p in _split_phonemes(ps, len(pack))]
             parts = [eng.run(ids, pack, float(speed)) for ids in pieces if ids]
     except Exception:
