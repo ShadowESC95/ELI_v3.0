@@ -59,6 +59,29 @@ print(f"[ELI.spec] building {APP_NAME} {APP_VERSION}")
 if not (ROOT / "eli" / "gui" / "app.py").is_file():
     _fail(f"eli package not found under {ROOT} — run PyInstaller from the repo root.")
 
+# No package under the GPL, checked before anything is collected. ELI v3 is sold under its own
+# licence and passes none on, and PyInstaller collects whatever the environment holds that is
+# imported. PyAutoGUI declares three (MouseInfo, PyMsgBox, python3-xlib) that ELI runs without: the
+# release workflow takes them out with `python packaging/gpl_sources.py --leave-out` after its last
+# install, and their modules are excluded below too. Any GPL package still installed (the build's
+# own tools aside) stops the build, as does a stand-in whose files are not its own: python3-xlib
+# overwrites python-xlib's Xlib package, which is what PyAutoGUI's X11 backend has to find in the
+# frozen app.
+import importlib.util as _ilu  # noqa: E402
+
+_gs_spec = _ilu.spec_from_file_location("eli_gpl_sources", ROOT / "packaging" / "gpl_sources.py")
+gpl_sources = _ilu.module_from_spec(_gs_spec)
+_gs_spec.loader.exec_module(gpl_sources)
+_gpl = gpl_sources.gpl_distributions()
+if _gpl:
+    _fail("packages under the GPL are installed in the build environment, and ELI v3 passes on none: "
+          + ", ".join(f"{p['name']} {p['version']} ({p['licence']})" for p in _gpl)
+          + ". Run `python packaging/gpl_sources.py --leave-out` for the ones packaging/gpl_sources.py "
+          "LEFT_OUT names; any other has to be replaced or taken out of ELI's requirements first.")
+_stand_in_problems = gpl_sources.stand_in_problems()
+if _stand_in_problems:
+    _fail("; ".join(_stand_in_problems))
+
 ICON_ICO = ROOT / "packaging" / "desktop" / "Eli_Icon.ico"
 ICON_PNG = ROOT / "packaging" / "desktop" / "eli-256.png"  # 256px master; Eli_Icon.png is only 175px and renders fuzzy
 for icon in (ICON_ICO, ICON_PNG):
@@ -386,27 +409,7 @@ if sys.platform == "darwin":
     # YARA, and its security scan says "yara-python is not installed".
     excludes.append("yara")
 
-# No package under the GPL. ELI v3 is sold under its own licence and passes none on, and PyInstaller
-# collects whatever the environment holds that is imported. PyAutoGUI declares three (MouseInfo,
-# PyMsgBox, python3-xlib) that ELI runs without: the release workflow takes them out with
-# `python packaging/gpl_sources.py --leave-out` after its last install, and their modules are excluded
-# here too. Any GPL package still installed (the build's own tools aside) stops the build, as does a
-# stand-in whose files are not its own: python3-xlib overwrites python-xlib's Xlib package, which is
-# what PyAutoGUI's X11 backend has to find in the frozen app.
-import importlib.util as _ilu  # noqa: E402
-
-_gs_spec = _ilu.spec_from_file_location("eli_gpl_sources", ROOT / "packaging" / "gpl_sources.py")
-gpl_sources = _ilu.module_from_spec(_gs_spec)
-_gs_spec.loader.exec_module(gpl_sources)
-_gpl = gpl_sources.gpl_distributions()
-if _gpl:
-    _fail("packages under the GPL are installed in the build environment, and ELI v3 passes on none: "
-          + ", ".join(f"{p['name']} {p['version']} ({p['licence']})" for p in _gpl)
-          + ". Run `python packaging/gpl_sources.py --leave-out` for the ones packaging/gpl_sources.py "
-          "LEFT_OUT names; any other has to be replaced or taken out of ELI's requirements first.")
-_stand_in_problems = gpl_sources.stand_in_problems()
-if _stand_in_problems:
-    _fail("; ".join(_stand_in_problems))
+# PyAutoGUI's GPL dependencies, which the check above found uninstalled: not collected even so
 excludes += gpl_sources.left_out_modules()
 
 a = Analysis(
