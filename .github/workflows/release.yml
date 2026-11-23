@@ -144,6 +144,10 @@ jobs:
               || echo "::warning::optional extra '$extra' has no installable wheels on windows — shipped build degrades cleanly without it"
           done
 
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
+
       - name: Generate capability manifests (bundled introspection data)
         shell: bash
         run: |
@@ -305,6 +309,10 @@ jobs:
             pip install ".[$extra]" \
               || echo "::warning::optional extra '$extra' has no installable wheels on macos-arm64 — shipped build degrades cleanly without it"
           done
+
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
 
       - name: Generate capability manifests (bundled introspection data)
         run: |
@@ -486,6 +494,10 @@ jobs:
                   print(f"::warning::{mod} unavailable — {why} will degrade to Piper: {e}")
           PY
 
+      - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
+        shell: bash
+        run: python packaging/gpl_sources.py --leave-out
+
       - name: Generate capability manifests (bundled introspection data)
         run: |
           python -m eli.core.init_data
@@ -630,8 +642,9 @@ jobs:
           mv dist/app_packages/ELI_v3.0-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
-      # GPL-3.0 lets the bundles carry piper-tts (espeak-ng inside it) and the other GPL packages when
-      # their exact source goes with them. This environment installs the extras every build does (and
+      # GPL-3.0 lets the bundles carry piper-tts (espeak-ng inside it) when its exact source goes with
+      # it; SOURCES.md says so plainly when the builds carry no GPL package (PyAutoGUI's are left out
+      # above). This environment installs the extras every build does (and
       # chatterbox, Linux's own). A source that cannot be fetched fails the release. Beside it,
       # LGPL_SOURCES.md says where the source of each LGPL package (Qt for Python and the Qt inside it
       # among them) is, at the version the builds carry; one it cannot find fails it too.
@@ -761,7 +774,7 @@ jobs:
           On an older system use the linux-portable package, which installs from source.
 
           Third-party source: the builds carry packages under the GPL (piper-tts with espeak-ng
-          compiled into it, and PyAutoGUI's helpers; THIRD_PARTY_NOTICES.md names them). Their exact
+          compiled into it; THIRD_PARTY_NOTICES.md names them). Their exact
           source, at the versions these builds carry, is attached here as
           \`ELI_v3-${V}-gpl-sources.tar.gz\`; the SOURCES.md inside lists each file and where it came from.
           The packages under the LGPL (Qt for Python and the Qt libraries inside it, zeroconf,

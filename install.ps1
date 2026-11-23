@@ -455,6 +455,12 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
 }
+# PyAutoGUI declares MouseInfo and PyMsgBox, which are under the GPL and which ELI runs without
+# (packaging\gpl_sources.py, LEFT_OUT): take them out again, as every release build does.
+& $PythonVenv (Join-Path $ScriptDir "packaging\gpl_sources.py") --leave-out
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[WARN] PyAutoGUI's GPL dependencies are still installed (named above); ELI works the same with them." -ForegroundColor Yellow
+}
 
 # Verify core + GUI imports in the project venv (GUI wheels belong in .venv only).
 Write-Host "[..] Verifying installation..."

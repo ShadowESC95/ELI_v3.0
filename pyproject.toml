@@ -40,7 +40,11 @@ dependencies = [
     "requests>=2.28",
     "Pillow>=10.0",
     "mss>=9.0",
+    # Keyboard and mouse where no native tool does. PyAutoGUI declares MouseInfo, PyMsgBox and python3-xlib,
+    # which are under the GPL: no release carries them (packaging/gpl_sources.py, LEFT_OUT), and its X11
+    # backend drives python-xlib's Xlib (LGPL) instead.
     "PyAutoGUI>=0.9.54",
+    "python-xlib>=0.33; sys_platform == 'linux'",
     "pyttsx3>=2.9",
     "sounddevice>=0.4",
     "soundfile>=0.12",

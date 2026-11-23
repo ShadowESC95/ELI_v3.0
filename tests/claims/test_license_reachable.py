@@ -12,6 +12,8 @@ is the only wrapper with a licence pane of its own. These pin the surfaces:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from . import _helpers as H
@@ -311,6 +313,390 @@ def test_the_release_says_where_the_source_of_each_lgpl_package_it_carries_is(tm
     notices = (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     lgpl = notices[notices.index("## Source code of the LGPL components"):]
     assert "LGPL_SOURCES.md" in lgpl and "gpl-sources.tar.gz" in lgpl and "packaging/gpl_sources.py" in lgpl
+
+
+# A package under the GPL that another change is replacing, allowed below only while something still
+# brings it: once nothing does, test_a_release_carries_no_package_under_the_gpl fails until its line goes.
+_BEING_REPLACED = {
+    "piper-tts": "the text-to-speech engine; the change that replaces it takes it out of ELI's requirements",
+}
+
+
+def _release_extras() -> list:
+    import re
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    return sorted({e for line in re.findall(r'^\s*(?:REQUIRED|OPTIONAL)_EXTRAS:\s*"([^"]*)"', release, re.M)
+                   for e in line.split()})
+
+
+def test_a_release_carries_no_package_under_the_gpl():
+    """ELI v3 is sold under its own licence, and a package under the GPL can be passed on only with its
+    source and under the GPL's terms. PyAutoGUI (BSD) brought three into every build and wheelhouse:
+    MouseInfo, PyMsgBox and python3-xlib. What a release installs is read from this environment:
+    pyproject.toml's dependencies and the extras release.yml bundles, through each installed package's
+    own dependencies, less what every build leaves out (LEFT_OUT). None of it is under the GPL, and no
+    requirements file an install route reads, the lock among them, names a package that is."""
+    gs = _gpl_sources()
+    installed = gs.installed_distributions()
+    bundled = gs.bundled_distributions(_release_extras(), installed=installed)
+    assert {"pyside6", "pydantic"} <= set(bundled), sorted(bundled)       # the walk itself works
+    carried = sorted(key for key, dist in bundled.items() if gs.is_gpl(gs.licence_facts(dist)))
+    unexpected = [key for key in carried if key not in _BEING_REPLACED]
+    assert not unexpected, "a release would carry packages under the GPL:\n  " + "\n  ".join(
+        f"{key} {bundled[key].version} ({'; '.join(gs.licence_facts(bundled[key]))})" for key in unexpected)
+    assert not set(gs.LEFT_OUT) & set(bundled)
+
+    tools = gs.build_only(installed)
+    named: dict = {}
+    for path in sorted(REPO.glob("requirements*.txt")):
+        for line in gs.requirement_lines(path):
+            named.setdefault(gs._key(gs._requirement(line).name), set()).add(path.name)
+    wrong = sorted(f"{key} ({', '.join(sorted(where))})" for key, where in named.items()
+                   if key not in _BEING_REPLACED and (key in gs.LEFT_OUT or (
+                       key in installed and key not in tools and gs.is_gpl(gs.licence_facts(installed[key])))))
+    assert not wrong, "an install route's requirements name packages under the GPL:\n  " + "\n  ".join(wrong)
+
+    stale = sorted(key for key in _BEING_REPLACED if key not in carried and key not in named)
+    assert not stale, f"nothing brings these any more; take them out of _BEING_REPLACED: {stale}"
+
+
+def _top_level(dist) -> set:
+    return {str(f).split("/", 1)[0] for f in dist.files or []
+            if str(f).endswith(".py") and "/" in str(f) and ".dist-info" not in str(f) and not str(f).startswith("..")}
+
+
+def _defined(path) -> set:
+    """The names a module (or each class in it, as Class.name) defines at its top level."""
+    import ast
+    names = set()
+    for node in ast.parse(Path(path).read_text(encoding="utf-8")).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            if isinstance(node, ast.ClassDef):
+                names |= {f"{node.name}.{n.name}" for n in node.body if isinstance(n, ast.FunctionDef)}
+        elif isinstance(node, ast.Assign):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    return names
+
+
+def test_what_every_release_leaves_out_eli_runs_without():
+    """LEFT_OUT holds only while ELI uses nothing that needs those packages, PyAutoGUI still imports them
+    as optional (in their place a function that raises only when it is called), and each stand-in is in
+    pyproject.toml's dependencies wherever the package asks for the left-out one, and provides what
+    PyAutoGUI's X11 backend takes from it."""
+    import ast
+    import importlib.util
+    gs = _gpl_sources()
+    needs: dict = {}
+    for entry in gs.LEFT_OUT.values():
+        needs.setdefault(entry.of, set()).update(entry.needs)
+    modules = set(gs.left_out_modules())
+    used = []
+    for root in ("eli", "api"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            alias = {a.asname or a.name: a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+                     for a in n.names if a.name in needs}
+            for node in ast.walk(tree):
+                where = f"{H.rel(path)}:{getattr(node, 'lineno', 0)}"
+                if isinstance(node, ast.Import):
+                    used += [f"{where} imports {a.name}" for a in node.names if a.name.split(".")[0] in modules]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    top = node.module.split(".")[0]
+                    if top in modules:
+                        used.append(f"{where} imports {node.module}")
+                    used += [f"{where} takes {top}.{a.name}" for a in node.names if a.name in needs.get(top, ())]
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                        and node.attr in needs.get(alias.get(node.value.id, ""), ()):
+                    used.append(f"{where} {node.value.id}.{node.attr}")
+    assert not used, "ELI uses what only the packages every release leaves out provide:\n  " + "\n  ".join(used)
+
+    installed = gs.installed_distributions()
+    for name, entry in sorted(gs.LEFT_OUT.items()):
+        spec = importlib.util.find_spec(entry.of)
+        if spec is not None and spec.submodule_search_locations and entry.modules:
+            # read, not imported: on Linux importing PyAutoGUI opens the X display
+            guarded, bound, imports = set(), set(), []
+            for path in sorted(Path(next(iter(spec.submodule_search_locations))).glob("*.py")):
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                    if isinstance(node, ast.Try) and any(
+                            isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "ModuleNotFoundError")
+                            for h in node.handlers):
+                        guarded |= {id(n) for s in node.body for n in ast.walk(s)}
+                        for handler in node.handlers:
+                            for n in ast.walk(handler):
+                                if isinstance(n, ast.FunctionDef):
+                                    bound.add(n.name)
+                                elif isinstance(n, ast.Assign):
+                                    bound |= {t.id for t in n.targets if isinstance(t, ast.Name)}
+                    if isinstance(node, (ast.Import, ast.ImportFrom)):
+                        names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+                        if any(m.split(".")[0] in entry.modules for m in names):
+                            imports.append(node)
+            assert imports and all(id(n) in guarded for n in imports), \
+                f"{entry.of} imports {name} without an ImportError fallback: leaving it out would break it"
+            assert set(entry.needs) <= bound, f"{entry.of} has no stand-in for {sorted(set(entry.needs) - bound)}"
+        if name in installed and entry.modules:
+            assert _top_level(installed[name]) == set(entry.modules), (name, _top_level(installed[name]))
+        if not entry.stand_in:
+            continue
+        declared = [gs._requirement(text) for text in gs._project(REPO)["dependencies"]]
+        stand_in = [r for r in declared if gs._key(r.name) == gs._key(entry.stand_in)]
+        assert stand_in, f"{entry.stand_in} stands in for {name} and is not in pyproject.toml's dependencies"
+        of = installed.get(gs._key(entry.of))
+        for system, platform, os_name in (("linux", "Linux", "posix"), ("win32", "Windows", "nt"),
+                                          ("darwin", "Darwin", "posix")):
+            env = {"sys_platform": system, "platform_system": platform, "os_name": os_name, "extra": "",
+                   "python_version": "3.12", "python_full_version": "3.12.0"}
+            asked = of is not None and any(
+                gs._key(gs._requirement(line).name) == name and (
+                    gs._requirement(line).marker is None or gs._requirement(line).marker.evaluate(env))
+                for line in of.requires or [])
+            assert not asked or any(r.marker is None or r.marker.evaluate(env) for r in stand_in), \
+                f"{entry.of} asks for {name} on {platform}, where pyproject.toml does not bring {entry.stand_in}"
+        kept = installed.get(gs._key(entry.stand_in))
+        if name in installed and kept is not None:
+            assert _top_level(installed[name]) == _top_level(kept), "the stand-in provides another package"
+        if kept is None or spec is None or not spec.submodule_search_locations or not gs.intact(kept):
+            continue
+        # what the package takes from the stand-in's import package (PyAutoGUI's X11 backend from Xlib),
+        # read against the stand-in's own files
+        packages = _top_level(kept)
+        provided = {str(f)[:-3].replace("/", "."): Path(kept.locate_file(f)) for f in kept.files or []
+                    if str(f).endswith(".py")}
+        for backend in sorted(Path(next(iter(spec.submodule_search_locations))).glob("*.py")):
+            tree = ast.parse(backend.read_text(encoding="utf-8"))
+            taken = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in packages:
+                    for a in node.names:
+                        sub = f"{node.module}.{a.name}"
+                        taken.append((sub, None) if sub in provided or f"{sub}.__init__" in provided
+                                     else (node.module, a.name))
+                elif isinstance(node, ast.Import):
+                    taken += [(a.name, None) for a in node.names if a.name.split(".")[0] in packages]
+            if taken:
+                _check_taken(backend, tree, taken, provided, kept)
+
+
+def _check_taken(backend, tree, taken, provided, kept):
+    """Every module and name `backend` takes from the stand-in's package, each attribute it reads off
+    those modules, and each method it calls on an object made from a class it takes (the X11 backend's
+    `_display = Display(...)`), defined in the stand-in's own source."""
+    import ast
+    uses = {(n.value.id, n.attr) for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
+    uses |= {(f"{n.value.value.id}.{n.value.attr}", n.attr) for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Attribute) and isinstance(n.value.value, ast.Name)}
+    missing, classes = [], {}
+    for module, attr in taken:
+        path = provided.get(module) or provided.get(f"{module}.__init__")
+        if path is None:
+            missing.append(module)
+            continue
+        defined = _defined(path)
+        if attr:
+            if attr not in defined:
+                missing.append(f"{module}.{attr}")
+            else:
+                classes[attr] = {n.split(".", 1)[1] for n in defined if n.startswith(f"{attr}.")}
+            continue
+        # a module taken whole: read as `X.MotionNotify` (from Xlib import X) or `Xlib.XK.string_to_keysym`
+        names = {module} | ({module.rsplit(".", 1)[-1]} if module.count(".") == 1 else set())
+        missing += [f"{module}.{a}" for owner, a in uses if owner in names and a not in defined and not a.startswith("_")]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Name) and node.value.func.id in classes:
+            made = node.value.func.id
+            for target in (t for t in node.targets if isinstance(t, ast.Name)):
+                missing += [f"{made}.{a}" for owner, a in uses if owner == target.id and a not in classes[made]]
+    assert not missing, f"{kept.metadata['Name']} lacks what {backend.name} uses: {sorted(set(missing))}"
+
+
+def test_every_build_leaves_them_out_and_stops_on_a_gpl_package():
+    """pip installs what a package declares, so each route that bundles packages takes LEFT_OUT out again:
+    each frozen build, and the full suite, which installs what a release ships, after its last install
+    and before PyInstaller; ELI.spec stops on any GPL package still installed (the build's own tools
+    aside) and excludes the left-out modules; every wheelhouse a release ships is checked, and PyAutoGUI
+    goes into the Windows one without its declared dependencies; the installers take them out of the
+    environment they make."""
+    import re
+    step = "python packaging/gpl_sources.py --leave-out"
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for job in ("build-windows", "build-macos", "build-linux"):
+        text = release.split(f"\n  {job}:", 1)[1].split("\n  build-", 1)[0]
+        build = text.index("pyinstaller --noconfirm")
+        installs = [m.start() for m in re.finditer(r"\bpip install\b", text[:build])]
+        assert step in text and max(installs) < text.index(step) < build, job
+    suite = (REPO / ".github" / "workflows" / "full-suite.yml").read_text(encoding="utf-8")
+    assert step in suite and suite.rindex("pip install") < suite.index(step) < suite.rindex("python -m pytest")
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    before = spec[:spec.index("a = Analysis(")]
+    for needed in ('ROOT / "packaging" / "gpl_sources.py"', "_gpl = gpl_sources.gpl_distributions()",
+                   "gpl_sources.stand_in_problems()", "excludes += gpl_sources.left_out_modules()"):
+        assert needed in before, needed
+    assert re.search(r"if _gpl:\s*\n\s*_fail\(", before)
+
+    def joined(name):        # each command on one line
+        return re.sub(r"\\\n\s*", " ", (REPO / name).read_text(encoding="utf-8"))
+
+    build = joined("build_packages.sh")
+    wheelhouse = build.split("build_windows_wheelhouse_for() {", 1)[1].split("\n}\n", 1)[0]
+    assert '--check-wheels "$OUT_DIR"' in wheelhouse and "--kept-dependencies" in wheelhouse
+    commands = [c for line in build.splitlines() if not line.lstrip().startswith("#") for c in line.split("&&")]
+    pyautogui = [c for c in commands if re.search(r"pip (?:wheel|download)\b.*PyAutoGUI", c)]
+    assert pyautogui and all("--no-deps" in c for c in pyautogui), pyautogui
+    stage = build.split("_stage_windows_common() {", 1)[1].split("\n}\n", 1)[0]
+    assert '--check-wheels "$STAGING/wheelhouse"' in stage
+    portable = joined("scripts/package_desktop_app.sh")
+    assert '--check-wheels "$STAGING/wheelhouse"' in portable
+    lock = [line for line in portable.splitlines()
+            if not line.lstrip().startswith("#") and re.search(r"pip download\b.*requirements\.lock\.txt", line)]
+    assert lock and all("--no-deps" in line for line in lock), lock
+
+    for name in ("install.sh", "install.ps1"):
+        text = (REPO / name).read_text(encoding="utf-8-sig")
+        assert "gpl_sources.py" in text and text.index("--leave-out") > text.rindex("install-each"), name
+
+
+def _invented_dist(site, name, version, files, meta=""):
+    """An installed distribution, invented: its files, and the RECORD pip writes for them."""
+    import base64
+    import hashlib
+    info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{meta}", encoding="utf-8")
+    rows = []
+    for rel, body in files.items():
+        path = site / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b"=").decode()
+        rows.append(f"{rel},sha256={digest},{len(body)}")
+    rows += [f"{info.name}/METADATA,,", f"{info.name}/RECORD,,"]
+    (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def _invented_left_out(gs):
+    return {"example-boxes": gs.LeftOut("example-gui", ("exampleboxes",), ("box",), ""),
+            "example-x11-old": gs.LeftOut("example-gui", (), (), "example-x11")}
+
+
+def test_leaving_them_out_puts_back_what_shared_their_files(tmp_path, monkeypatch, capsys):
+    """python3-xlib and python-xlib install the same Xlib package, and pip's uninstall of the GPL copy
+    takes the files of the other with it. Whatever shared a file with a left-out package is reinstalled
+    and checked against its RECORD. Invented packages, with pip replaced."""
+    import platform
+    import shutil
+    import subprocess
+    gs = _gpl_sources()
+    monkeypatch.setattr(gs, "LEFT_OUT", _invented_left_out(gs))
+    site = tmp_path / "site"
+    x11 = {"examplex11/__init__.py": b"new = True\n", "examplex11/display.py": b"class Display: pass\n"}
+    _invented_dist(site, "example-gui", "1.0", {"examplegui/__init__.py": b""},
+                   "Requires-Dist: example-boxes\nRequires-Dist: example-x11-old; platform_system == 'Linux'\n")
+    _invented_dist(site, "example-boxes", "2.0", {"exampleboxes/__init__.py": b""}, "License: GPLv3+\n")
+    _invented_dist(site, "example-x11", "0.3", x11, "License: LGPLv2+\n")
+    _invented_dist(site, "example-x11-old", "0.1", {"examplex11/__init__.py": b"old = True\n"}, "License: GPLv2\n")
+    path = [str(site)]
+    assert gs.stand_in_problems(path) and "not its own" in gs.stand_in_problems(path)[0]
+    ran = []
+
+    def pip(cmd, check, restore=True):
+        ran.append(cmd[3:])
+        if cmd[3] == "uninstall":             # each file its RECORD lists goes, the shared ones too
+            for name in cmd[5:]:
+                dist = gs.installed_distributions(path)[gs._key(name)]
+                info = site / f"{name.replace('-', '_')}-{dist.version}.dist-info"
+                for f in dist.files:
+                    Path(dist.locate_file(f)).unlink(missing_ok=True)
+                shutil.rmtree(info)
+        elif restore:                         # --force-reinstall writes its own files back
+            for rel, body in x11.items():
+                (site / rel).write_bytes(body)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    assert gs.leave_out(path, run=pip) == 0
+    assert ran == [["uninstall", "-y", "example-boxes", "example-x11-old"],
+                   ["install", "--no-deps", "--force-reinstall", "example-x11==0.3"]]
+    assert sorted(gs.installed_distributions(path)) == ["example-gui", "example-x11"]
+    assert gs.stand_in_problems(path) == [] and gs.intact(gs.installed_distributions(path)["example-x11"])
+    assert gs.leave_out(path, run=pip) == 0 and len(ran) == 2        # nothing left to do
+
+    _invented_dist(site, "example-x11-old", "0.1", {"examplex11/__init__.py": b"old = True\n"}, "License: GPLv2\n")
+    assert gs.leave_out(path, run=lambda cmd, check: pip(cmd, check, restore=False)) == 1
+    assert "not intact after reinstalling: example-x11" in capsys.readouterr().err
+
+    shutil.rmtree(site / "example_x11-0.3.dist-info")                    # no stand-in where one is needed
+    needed = platform.system() == "Linux"                                 # where example-gui asks for one
+    assert gs.stand_in_problems(path) == (
+        ["example-x11 is not installed: example-gui needs it in place of example-x11-old"] if needed else [])
+
+
+def test_a_wheelhouse_holding_a_gpl_package_is_refused_and_pyautogui_goes_in_without_them(tmp_path, monkeypatch, capsys):
+    """The Windows wheelhouse took PyAutoGUI with everything it declares (`pip wheel PyAutoGUI` on the
+    Linux build machine, python3-xlib included). It now takes PyAutoGUI alone and what it needs on the
+    platform less LEFT_OUT, and a wheel or sdist under the GPL in any wheelhouse a release ships stops
+    the build. Invented packages."""
+    import io
+    import tarfile
+    import zipfile
+    gs = _gpl_sources()
+
+    def wheel(where, name, version, meta):
+        path = where / f"{name}-{version}-py3-none-any.whl"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(f"{name}/__init__.py", "")
+            z.writestr(f"{name}-{version}.dist-info/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{meta}")
+        return path
+
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+    wheel(house, "example_plain", "1.0", "License: MIT\n")
+    wheel(house, "example_qt", "6.0", "License-Expression: LGPL-3.0-only OR GPL-3.0-only\n")
+    assert gs.gpl_archives(house) == [] and gs.main(["--check-wheels", str(house)]) == 0
+    wheel(house, "example_boxes", "2.0",
+          "Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)\n")
+    body = b"Metadata-Version: 1.1\nName: example-speech\nVersion: 1.0\nLicense: GPL-3.0-or-later\n"
+    with tarfile.open(house / "example-speech-1.0.tar.gz", "w:gz") as tar:
+        info = tarfile.TarInfo("example-speech-1.0/PKG-INFO")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+    assert [line.split(" ", 1)[0] for line in gs.gpl_archives(house)] == \
+        ["example-speech-1.0.tar.gz", "example_boxes-2.0-py3-none-any.whl"]
+    assert gs.main(["--check-wheels", str(house)]) == 1
+    assert "example_boxes-2.0-py3-none-any.whl" in capsys.readouterr().err
+
+    monkeypatch.setattr(gs, "LEFT_OUT", _invented_left_out(gs))
+    gui = wheel(tmp_path, "example_gui", "1.0",
+                "Requires-Dist: example-boxes\nRequires-Dist: example-tween>=1.0\n"
+                'Requires-Dist: example-x11-old; platform_system == "Linux" and python_version >= "3.0"\n'
+                'Requires-Dist: example-objc; platform_system == "Darwin"\n'
+                'Requires-Dist: example-legacy; python_version < "3.0"\n')
+    assert gs.kept_dependencies(gui, "win_amd64", ["3.11", "3.12"]) == ["example-tween>=1.0"]
+    assert gs.kept_dependencies(gui, "macosx_11_0_arm64", ["3.12"]) == ["example-tween>=1.0", "example-objc"]
+    assert gs.kept_dependencies(gui, "manylinux2014_x86_64", ["3.12"]) == ["example-tween>=1.0"]
+
+
+def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):
+    """With PyAutoGUI's three left out, SOURCES.md listed nothing and said nothing. The build's own tools
+    (PyInstaller, under the GPL with its bootloader exception) were fetched as if a build carried them."""
+    gs = _gpl_sources()
+    site = tmp_path / "site"
+    _invented_dist(site, "pyinstaller", "6.0", {"PyInstaller/__init__.py": b""},
+                   "License: GPLv2-or-later with a special exception\n")
+    _invented_dist(site, "example-speech", "1.0", {"examplespeech/__init__.py": b""}, "License: GPL-3.0-or-later\n")
+    installed = gs.installed_distributions([str(site)])
+    monkeypatch.setattr(gs, "installed_distributions", lambda path=None: dict(installed))
+    assert [p["name"] for p in gs.gpl_distributions()] == ["example-speech"]
+    installed.pop("example-speech")
+    assert gs.gpl_distributions() == []
+    monkeypatch.setattr(gs, "lgpl_distributions", lambda: [])
+    out = tmp_path / "gpl-sources"
+    assert gs.fetch_all(out) == 0
+    assert sorted(p.name for p in out.iterdir()) == [gs.LGPL_LISTING, "SOURCES.md"]
+    assert "carry no package under the GPL" in (out / "SOURCES.md").read_text(encoding="utf-8")
 
 
 def test_the_third_party_notices_name_this_product():
