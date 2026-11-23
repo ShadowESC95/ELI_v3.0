@@ -366,7 +366,10 @@ def voices_dir() -> Path:
     return data_dir() / "voices"
 
 def plugins_dir() -> Path:
-    """User-installed plugins."""
+    """User-installed plugins. Override: ELI_PLUGINS_DIR (read at each use)."""
+    override = os.environ.get("ELI_PLUGINS_DIR")
+    if override:
+        return Path(override).expanduser()
     if _is_dev_mode():
         return project_root() / "plugins"
     return data_dir() / "plugins"

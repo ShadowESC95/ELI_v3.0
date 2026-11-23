@@ -223,6 +223,15 @@ def test_agent_db_env_override(monkeypatch, tmp_path):
     from eli.core.paths import agent_db_path as _adb
     assert str(tmp_path) in str(_adb())
 
+def test_plugins_dir_env_override(monkeypatch, tmp_path):
+    """The downloaded plugins' folder had its override only in the plugin manager, so everything else
+    (the folder list, path_info) named the checkout's plugins/ in a source checkout."""
+    monkeypatch.setenv("ELI_PLUGINS_DIR", str(tmp_path / "plugins"))
+    assert plugins_dir() == tmp_path / "plugins"
+    assert path_info()["plugins_dir"] == str(tmp_path / "plugins")
+    monkeypatch.delenv("ELI_PLUGINS_DIR")
+    assert plugins_dir() in (project_root() / "plugins", data_dir() / "plugins")
+
 
 # ── Models directories ────────────────────────────────────────────────────
 

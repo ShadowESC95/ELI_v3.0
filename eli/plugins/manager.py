@@ -56,24 +56,15 @@ def _plugins_dir() -> Path:
     "what did I install" unanswerable.
 
     Falls back to the bundled directory only if the paths module is unavailable, so
-    a dev checkout with no data dir configured still behaves as before.
+    a dev checkout with no data dir configured still behaves as before. Finding it makes nothing:
+    the installer makes the plugin's folder when it writes one (marketplace.install), so listing or
+    loading plugins no longer left an empty plugins/ folder in a source checkout.
     """
-    override = os.environ.get("ELI_PLUGINS_DIR")
-    if override:
-        d = Path(override).expanduser()
-    else:
-        try:
-            from eli.core.paths import plugins_dir as _pd
-            d = Path(_pd())
-        except Exception:
-            d = _bundled_plugins_dir()
     try:
-        d.mkdir(parents=True, exist_ok=True)
+        from eli.core.paths import plugins_dir as _pd
+        return Path(_pd())
     except Exception:
-        log.debug("[PLUGIN] could not create the plugin directory", exc_info=True)
-        d = _bundled_plugins_dir()
-        d.mkdir(parents=True, exist_ok=True)
-    return d
+        return _bundled_plugins_dir()
 
 
 def _plugin_search_dirs() -> List[Path]:

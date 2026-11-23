@@ -29,6 +29,7 @@ def state_env(root: Path) -> Dict[str, str]:
         "ELI_GPU_PACK_LOG": str(root / "gpu-pack.log"),          # beside the checkout's runtime/ otherwise
         "ELI_VOICE_REFS_DIR": str(root / "voice_profiles"),      # and a cloned voice beside its models/
         "ELI_KEYS_DIR": str(root / "eli-keys"),                  # licence keys every ELI product shares
+        "ELI_PLUGINS_DIR": str(root / "plugins"),                # downloaded plugins (the checkout's plugins/)
         # starting an engine regenerates the capabilities table (data_dir() otherwise; never the blueprint)
         "ELI_CAPABILITIES_DOC": str(root / "capabilities_and_actions.md"),
         # the user DB is resolved by user_db_path(), which honours ELI_USER_DB/ELI_MEMORY_DB before
@@ -86,6 +87,7 @@ def stores() -> Dict[str, Path]:
         "agenda DB": paths.agenda_db_path(), "calendar": paths.calendar_ics_path(),
         "persona overlay": paths.persona_auto_path(), "persona overlay (persona module)": persona.auto_path(),
         "notebook": paths.notebook_dir(), "settings": _settings_file(), "goal store": _default_goal_store(),
+        "downloaded plugins": paths.plugins_dir(),
         "evidence ledger": _default_db_path(), "world state": storage.state_file(), "world folder": storage.world_dir(),
     }
     found.update({f"vector index {Path(p).name}": p for p in _get_index_paths(create=False)})

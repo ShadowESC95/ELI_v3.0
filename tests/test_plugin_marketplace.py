@@ -95,6 +95,20 @@ def test_install_leaves_the_plugin_disabled(env, served):
     assert "converter" not in state.get("enabled", [])
 
 
+def test_finding_the_plugins_folder_makes_nothing_and_installing_makes_it(env, served):
+    """Every lookup of the downloaded-plugins folder made it, so listing the plugins left an empty
+    plugins/ in a source checkout (the checkout's own folder there); the installer makes it when it
+    writes a plugin."""
+    from eli.plugins import manager
+    folder = env / "plugins"
+    assert manager._plugins_dir() == folder
+    assert folder in manager._plugin_search_dirs()
+    assert not folder.exists()
+    served(BENIGN_SOURCE)
+    assert M.install(_listing(BENIGN_SOURCE), confirm=lambda p: True)["ok"]
+    assert (folder / "converter" / "plugin.py").is_file()
+
+
 def test_install_does_not_execute_the_plugin(env, served):
     """Module-level code in a freshly downloaded plugin must not run at install."""
     import sys
