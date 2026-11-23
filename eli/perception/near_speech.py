@@ -243,6 +243,33 @@ class NearSpeech:
         return False
 
 
+class BargeIn:
+    """The user starting to speak while ELI speaks (conversation mode): judge(x, t_end, near, onsets)
+    with each 16 kHz mic chunk heard while ELI's voice plays gives the stamp of the onset, or None.
+
+    Where the mic hears the output and NearSpeech has learnt its share there (speakers), its onsets
+    decide: speech the output does not explain, ELI's voice and any music alike. Where the mic does
+    not hear the output (headphones), or before that is known, the level at the mic decides, over a
+    background learnt only from what the mic hears while ELI speaks (noise_floor.LevelOnset): with
+    headphones that is the room, with speakers ELI's own voice there, so its own syllables are not
+    taken for the user's until the output's share is learnt."""
+
+    def __init__(self):
+        from eli.perception.noise_floor import LevelOnset
+        self._level = LevelOnset(hop_s=HOP_S)
+        self._frames = _Frames()
+
+    def judge(self, x, t_end: float, near: Optional["NearSpeech"], onsets: List[float]) -> Optional[float]:
+        decided = near is not None and near.active
+        hit = None
+        for t, e in self._frames.push(x, t_end):
+            if self._level.frame(float(np.log(e.sum() + 1e-12))) and hit is None and not decided:
+                hit = t
+        if decided:
+            return onsets[0] if onsets else None
+        return hit
+
+
 def _tap_commands() -> List[list]:
     """The system recorders that read the default sink's monitor as 16 kHz mono 16-bit samples."""
     cmds = []

@@ -184,24 +184,46 @@ class ConversationMixin:
                     break
 
     def _apply_stt_sensitivity(self):
-        """Push energy threshold / dynamic flag into the live recognizer and env."""
-        import os as _os
-        dynamic = self.dynamic_energy_checkbox.isChecked()
+        """Automatic sensitivity (the room's gate) or the number set by hand, saved and applied to
+        the listener at once when it is running (never started for it)."""
+        auto = self.dynamic_energy_checkbox.isChecked()
         threshold = self.energy_threshold_input.value()
-        _os.environ["ELI_STT_DYNAMIC_ENERGY"] = "1" if dynamic else "0"
-        _os.environ["ELI_STT_ENERGY_THRESHOLD"] = str(threshold)
-        # Apply to live recognizer if STT is running
+        self.energy_threshold_input.setEnabled(not auto)
         try:
-            from eli.perception.audio_stt import _get_recognizer
-            rec = _get_recognizer()
-            if rec is not None:
-                rec.dynamic_energy_threshold = dynamic
-                if not dynamic:
-                    rec.energy_threshold = float(threshold)
+            from eli.perception import audio_stt as _ast
+            stt = _ast._AUDIO_STT
+            if stt is not None:
+                stt.set_sensitivity(auto, float(threshold))
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            log.debug("[STT] sensitivity not applied to the listener", exc_info=True)
         if getattr(self, "_first_run_complete", False):
             self.save_settings(silent=True)
+
+    def _refresh_mic_meter(self):
+        """The live level meter: the mic's level now against the gate, and the room's level."""
+        bar = getattr(self, "mic_level_bar", None)
+        if bar is None or not bar.isVisible():
+            return
+        try:
+            from eli.perception import audio_stt as _ast
+            stt = _ast._AUDIO_STT
+            meter = stt.level_meter() if stt is not None and getattr(stt, "is_listening", False) else None
+        except Exception:
+            log.debug("[STT] level meter unreadable", exc_info=True)
+            meter = None
+        if not meter or not meter.get("level"):
+            bar.setValue(0)
+            self.mic_level_label.setText("Microphone off")
+            return
+        import math as _m
+        level, gate = float(meter.get("level") or 1.0), float(meter.get("gate") or 1.0)
+        # on a log scale, the gate at the middle of the bar
+        bar.setValue(int(max(0.0, min(1.0, 0.5 + _m.log10(max(level, 1.0) / max(gate, 1.0)) / 2.0)) * 1000))
+        floor = meter.get("floor")
+        how = f"set by hand at {meter['manual']:.0f}" if meter.get("manual") else "automatic"
+        self.mic_level_label.setText(
+            f"now {level:.0f} · room {floor:.0f} · speech above {gate:.0f} ({how})" if floor
+            else f"now {level:.0f} · measuring the room… ({how})")
 
     def _on_mic_device_changed(self, _save: bool = True):
         """Apply mic device selection to env vars immediately."""

@@ -1354,31 +1354,48 @@ class SettingsModelMixin:
         refresh_mic_btn.clicked.connect(lambda: self._populate_mic_device_combo(restore=True))
         mic_card.addRow("", refresh_mic_btn)
 
-        # Sensitivity
-        self.dynamic_energy_checkbox = QCheckBox("Dynamic energy threshold (auto-adjusts to ambient noise)")
+        # Sensitivity: the room's own gate (eli/perception/noise_floor.py), or a number set by hand
+        self.dynamic_energy_checkbox = QCheckBox("Automatic sensitivity (follows the room's noise)")
+        self.dynamic_energy_checkbox.setChecked(True)
         self.dynamic_energy_checkbox.setToolTip(
-            "Continuously adapts the voice detection threshold to ambient noise.\n"
-            "Enable this if you have to shout or if ELI mishears background noise.\n"
-            "Env: ELI_STT_DYNAMIC_ENERGY"
+            "ON: the level speech must reach is measured from the room all the time — just above a\n"
+            "fan, above the loudest stretch of a television or music — and comes back down when the\n"
+            "room goes quiet.\nOFF (advanced): the number below, whatever the room does."
         )
         self.dynamic_energy_checkbox.stateChanged.connect(self._apply_stt_sensitivity)
         mic_card.addRow(self.dynamic_energy_checkbox)
 
         _thresh_row = QHBoxLayout()
         self.energy_threshold_input = QSpinBox()
-        self.energy_threshold_input.setRange(50, 10000)
+        self.energy_threshold_input.setRange(1, 32767)
         self.energy_threshold_input.setValue(1200)
         self.energy_threshold_input.setSingleStep(50)
+        self.energy_threshold_input.setEnabled(False)
         self.energy_threshold_input.setToolTip(
-            "Minimum audio energy to register as speech.\n"
-            "Lower = more sensitive (picks up quiet speech).\n"
-            "Higher = less sensitive (ignores background noise).\n"
-            "Only used when dynamic threshold is OFF. Env: ELI_STT_ENERGY_THRESHOLD"
+            "Advanced: the level (RMS of the 16-bit samples) speech must reach, used only with\n"
+            "Automatic sensitivity off. Lower hears quieter speech and more of the room."
         )
         self.energy_threshold_input.valueChanged.connect(self._apply_stt_sensitivity)
         _thresh_row.addWidget(self.energy_threshold_input)
         _thresh_row.addStretch()
-        mic_card.addRow(self._field_label("Energy threshold"), _thresh_row)
+        mic_card.addRow(self._field_label("Speech level (manual)"), _thresh_row)
+
+        # The live meter: what the mic hears now, the room's level and the gate over it
+        self.mic_level_bar = QProgressBar()
+        self.mic_level_bar.setRange(0, 1000)
+        self.mic_level_bar.setTextVisible(False)
+        self.mic_level_bar.setMaximumHeight(10)
+        self.mic_level_label = QLabel("Microphone off")
+        self.mic_level_label.setStyleSheet("color:#8a93a6; font-size:10px;")
+        mic_card.addRow(self._field_label("Level"), self.mic_level_bar)
+        mic_card.addRow("", self.mic_level_label)
+        try:
+            self._mic_meter_timer = QTimer(self)
+            self._mic_meter_timer.setInterval(250)
+            self._mic_meter_timer.timeout.connect(self._refresh_mic_meter)
+            self._mic_meter_timer.start()
+        except Exception:
+            log.debug("mic meter timer not started", exc_info=True)
 
         # ── Wake word / listen mode ───────────────────────────────────────
         wake_card = self._section_card(vbox, "STT — WAKE WORD SETTINGS")
@@ -2630,19 +2647,17 @@ class SettingsModelMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # STT sensitivity (energy threshold)
+        # STT sensitivity: automatic (the room's gate) unless set by hand
         try:
-            _dynamic = bool(s.get("stt_dynamic_energy", False))
+            _auto = bool(s.get("stt_sensitivity_auto", True))
             _threshold = int(s.get("stt_energy_threshold", 1200))
             self.dynamic_energy_checkbox.blockSignals(True)
-            self.dynamic_energy_checkbox.setChecked(_dynamic)
+            self.dynamic_energy_checkbox.setChecked(_auto)
             self.dynamic_energy_checkbox.blockSignals(False)
             self.energy_threshold_input.blockSignals(True)
             self.energy_threshold_input.setValue(_threshold)
+            self.energy_threshold_input.setEnabled(not _auto)
             self.energy_threshold_input.blockSignals(False)
-            import os as _os_e
-            _os_e.environ["ELI_STT_DYNAMIC_ENERGY"] = "1" if _dynamic else "0"
-            _os_e.environ["ELI_STT_ENERGY_THRESHOLD"] = str(_threshold)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -2846,7 +2861,7 @@ class SettingsModelMixin:
             "image_use_proactive_context": bool(self.image_use_proactive_context_checkbox.isChecked()),
             "allow_direct_chat_without_wake": bool(self.allow_direct_chat_checkbox.isChecked()),
             "mic_device": list(self.mic_device_combo.currentData()) if self.mic_device_combo.currentData() else None,
-            "stt_dynamic_energy": bool(self.dynamic_energy_checkbox.isChecked()),
+            "stt_sensitivity_auto": bool(self.dynamic_energy_checkbox.isChecked()),
             "stt_energy_threshold": int(self.energy_threshold_input.value()),
             "gaze_engine_enabled": bool(getattr(self, "gaze_enabled_checkbox", None) and self.gaze_enabled_checkbox.isChecked()),
             "gaze_camera": str(self.gaze_camera_input.text().strip() if hasattr(self, "gaze_camera_input") else "auto"),

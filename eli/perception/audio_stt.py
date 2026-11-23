@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 # numpy is required by the acoustic wake-word scoring and tone classification
@@ -712,17 +713,26 @@ REQUIRE_WAKE_FOR_SAFE_DIRECT = os.environ.get(
 # command-lifecycle events (wake word detected, Command, armed) always show.
 _STT_VERBOSE = os.environ.get("ELI_STT_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
 
-# Runtime noise adaptation. Deliberately not gated on ELI_STT_CALIBRATE: that means "measure ambient
-# at startup", and people turn it off because a noisy launch gave a wild reading. Coupling them
-# disabled adaptation for exactly the setups that need it.
-_STT_ADAPTIVE = os.environ.get("ELI_STT_ADAPTIVE", "1").lower() not in ("0", "false", "no", "off")
-# Ceiling for the noise-driven lift. Separate from ELI_STT_CAL_CAP (2000): that caps a
-# STARTUP ambient reading, whereas real speaker bleed measures ~8000 RMS, so a 2000 cap
-# could never gate it out and the mic would stay drowned.
-_STT_ADAPTIVE_CAP = float(os.environ.get("ELI_STT_ADAPTIVE_CAP", "12000"))
-# Consecutive drowned cycles before lifting the gate — one long noise capture can just
-# be a door slamming; three in a row is a room that is not going to get quiet by itself.
-_STT_NOISE_STUCK_CYCLES = int(os.environ.get("ELI_STT_NOISE_STUCK_CYCLES", "3"))
+# The speech gate is set by the room (noise_floor.NoiseFloor), measured every chunk, unless the
+# owner sets a number of their own (Settings ▸ Audio: Automatic sensitivity off, or
+# ELI_STT_SENSITIVITY=manual with ELI_STT_ENERGY_THRESHOLD).
+def _manual_gate() -> Optional[float]:
+    """The speech gate the owner set by hand, or None for the automatic one."""
+    env = os.environ.get("ELI_STT_SENSITIVITY", "").strip().lower()
+    try:
+        from eli.core.runtime_settings import load_settings
+        s = load_settings() or {}
+    except Exception:
+        log.debug("[AUDIO] sensitivity settings unreadable; automatic", exc_info=True)
+        s = {}
+    auto = (env != "manual") if env in ("manual", "auto") else bool(s.get("stt_sensitivity_auto", True))
+    if auto:
+        return None
+    try:
+        return float(os.environ.get("ELI_STT_ENERGY_THRESHOLD") or s.get("stt_energy_threshold") or 0) or None
+    except (TypeError, ValueError):
+        log.debug("[AUDIO] manual threshold unreadable; automatic", exc_info=True)
+        return None
 
 
 def _vprint(*a, **k):
@@ -983,6 +993,21 @@ def _is_incomplete_command(text: str) -> bool:
     return t in _INCOMPLETE_COMMAND_VERBS
 
 
+# Words a spoken sentence does not end on: someone who stops after "and", "the" or "because" is
+# thinking, not done. In conversation the voice gate waits for the rest (VoiceGate.classify).
+_TRAILING_WORDS = {"and", "but", "or", "because", "the", "a", "an", "my", "your", "our", "their",
+                   "his", "um", "uh", "erm"}
+
+
+def _trails_off(text: str) -> bool:
+    """What was said stops mid-sentence: on a word above, a comma or a dash, or trailing dots."""
+    raw = str(text or "").rstrip()
+    if raw.endswith((",", "...", "\u2026", "-", "\u2014")):
+        return True
+    words = _cleanup(raw).split()
+    return bool(words) and words[-1] in _TRAILING_WORDS
+
+
 # "play … on <service>" — when the service is named, dispatch immediately (router handles it).
 _MEDIA_PLAY_ON_SERVICE_RE = re.compile(
     r"\s+on\s+(?:"
@@ -1225,12 +1250,14 @@ class _ContinuousMic:
     ("computer, tell me the time" said in one go, the command while the wake word was being read)
     was lost. A thread reads every chunk as it is captured, hands it to `on_chunk(data, t_end)`
     (near speech, in real time), and keeps it for the loop's read(); flush() drops what the loop
-    must not hear (ELI's own voice while it spoke)."""
+    must not hear (ELI's own voice while it spoke), all of it or what came before a moment (the user
+    spoke over ELI then: that is kept for the loop)."""
 
     def __init__(self, stream, chunk: int, width: int, on_chunk=None):
         self._stream, self._chunk, self._width = stream, int(chunk), int(width)
         self._on_chunk = on_chunk
         self._buf = bytearray()
+        self._marks: "deque" = deque()       # (t_end, bytes) of each chunk the buffer holds, oldest first
         self._cv = threading.Condition()
         self._error: Optional[BaseException] = None
         self._stop = threading.Event()
@@ -1259,10 +1286,22 @@ class _ContinuousMic:
                     log.debug("[AUDIO] a microphone chunk was not judged", exc_info=True)
             with self._cv:
                 self._buf += data
+                self._marks.append([t_end, len(data)])
                 most = int(_MIC_BACKLOG_S * max(1, self._rate)) * self._width
                 if len(self._buf) > most > 0:
-                    del self._buf[: len(self._buf) - most]
+                    self._drop(len(self._buf) - most)
                 self._cv.notify_all()
+
+    def _drop(self, n: int) -> None:
+        """The oldest `n` bytes go (under the condition's lock)."""
+        n = min(int(n), len(self._buf))
+        del self._buf[:n]
+        while n > 0 and self._marks:
+            take = min(n, self._marks[0][1])
+            self._marks[0][1] -= take
+            n -= take
+            if self._marks[0][1] <= 0:
+                self._marks.popleft()
 
     def read(self, size: int) -> bytes:
         want = int(size) * self._width
@@ -1272,12 +1311,22 @@ class _ContinuousMic:
             if len(self._buf) < want and self._error is not None:
                 raise self._error
             out = bytes(self._buf[:want])
-            del self._buf[:want]
+            self._drop(len(out))
             return out
 
-    def flush(self) -> None:
+    def flush(self, keep_from: Optional[float] = None) -> None:
+        """Drop what the buffer holds; with `keep_from`, only the chunks heard before that moment."""
         with self._cv:
-            self._buf.clear()
+            if keep_from is None:
+                self._buf.clear()
+                self._marks.clear()
+                return
+            n = 0
+            for t_end, size in self._marks:
+                if t_end >= keep_from:
+                    break
+                n += size
+            self._drop(n)
 
     def close(self) -> None:
         self._stop.set()
@@ -1307,6 +1356,37 @@ class VoiceGate:
         self._pending_started = 0.0
         self._released = ""        # a held command a follow-up could not complete, to go on as it stands
         self._continuations: list = []   # seconds from a held command to the words that finished it
+        self._inner: list = []           # seconds of the pauses this person made inside a turn and went on from
+        self._conversing = False         # conversation mode: every turn is for ELI, no wake word each time
+        self._hold_prior = float("inf")
+
+    def set_conversing(self, on: bool, hold_prior_s: float = float("inf")) -> None:
+        """Conversation mode on or off. On, the gate stays armed (no wake word for each turn), a
+        sentence that trails off is held for the rest of it, and a held one goes on after
+        `hold_prior_s` of quiet until this person's own pauses have been seen."""
+        self._conversing = bool(on)
+        self._hold_prior = float(hold_prior_s)
+        if on:
+            self._guarded_until = float("inf")
+        else:
+            self._guarded_until = 0.0
+            self.clear()
+
+    @property
+    def conversing(self) -> bool:
+        return self._conversing
+
+    def note_inner_pause(self, seconds: float) -> None:
+        if seconds > 0:
+            self._inner = (self._inner + [float(seconds)])[-self.CONTINUATIONS_KEPT:]
+
+    def end_of_phrase_pause(self, prior: float) -> float:
+        """The silence that ends what is being said. In conversation, half again as long as the
+        longest pause this person recently made and went on from, so a thinking pause is waited
+        out; `prior` (the configured pause) until one has been seen, and outside conversation."""
+        if not self._conversing or not self._inner:
+            return float(prior)
+        return max(float(prior), max(self._inner) * self.CONTINUATION_SLACK)
 
     def _hold(self, text: str) -> None:
         self._pending_prefix = text
@@ -1328,7 +1408,7 @@ class VoiceGate:
         """How long after a held command this user may still finish it, from their own pauses before
         finishing one; until one has been seen, the armed window alone decides."""
         if not self._continuations:
-            return float("inf")
+            return self._hold_prior if self._conversing else float("inf")
         return max(self._continuations) * self.CONTINUATION_SLACK
 
     def release_due(self) -> Optional[str]:
@@ -1352,7 +1432,7 @@ class VoiceGate:
         self._armed_at = time.monotonic()
 
     def clear(self) -> None:
-        self._guarded_until = 0.0
+        self._guarded_until = float("inf") if self._conversing else 0.0
         self._pending_prefix = ""
         self._pending_started = 0.0
 
@@ -1361,7 +1441,7 @@ class VoiceGate:
 
     def touch_arm(self, extra_sec: float = 4.0) -> None:
         """Extend the armed window while the user is still in a ducked wake session."""
-        if not self.armed():
+        if not self.armed() or self._conversing:
             return
         cap = getattr(self, "_armed_at", 0.0) + (self.wake_timeout_sec * 1.5)
         self._guarded_until = min(time.monotonic() + max(1.0, float(extra_sec)), cap)
@@ -1456,9 +1536,17 @@ class VoiceGate:
                 print(f"🔗 [AUDIO] Combined: '{self._pending_prefix}' + '{text}' → '{combined}'")
                 self._pending_prefix = ""
                 self.clear()
+                if self._conversing and _trails_off(raw_text):
+                    self._hold(combined)              # still mid-sentence: wait for the rest
+                    return "arm_incomplete", None, None
                 return "dispatch", combined, None
+            # In conversation a guarded command still needs the wake word ("computer, delete it"):
+            # a television or another person is in the room as well.
+            if self._conversing and _is_guarded_command(text):
+                return "guarded_without_wake", None, None
             # Check if this utterance itself is an incomplete command
-            if _is_incomplete_command(text) or _is_potentially_incomplete_media_play(text):
+            if (_is_incomplete_command(text) or _is_potentially_incomplete_media_play(text)
+                    or (self._conversing and _trails_off(raw_text))):
                 print(f"🔄 [AUDIO] Incomplete command '{text}' — waiting for target/service...")
                 self._hold(text)
                 # Stay armed, don't clear
@@ -1564,12 +1652,11 @@ class ELIAudioSTT:
         # has to exist first or the resolver would pin the raw, bleed-carrying one.
         ensure_echo_cancel()
 
-        # Local Whisper needs a more sensitive capture front-end than Google STT.
-        # These values control when SpeechRecognition decides speech has started/stopped.
-        self.recognizer.energy_threshold = int(os.environ.get("ELI_STT_ENERGY_THRESHOLD", "1200"))
-        self.recognizer.dynamic_energy_threshold = os.environ.get(
-            "ELI_STT_DYNAMIC_ENERGY", "0"
-        ).lower() in {"1", "true", "yes", "on"}
+        # When SpeechRecognition takes speech to have started and stopped. The energy gate is the
+        # room's (noise_floor, measured every chunk the mic delivers); the configured start is used
+        # only until the room has been heard for non_speaking_duration.
+        self.recognizer.energy_threshold = float(os.environ.get("ELI_STT_ENERGY_THRESHOLD", "1200"))
+        self.recognizer.dynamic_energy_threshold = False
         self.recognizer.pause_threshold = float(os.environ.get("ELI_STT_PAUSE_THRESHOLD", "1.20"))
         self.recognizer.non_speaking_duration = float(
             os.environ.get("ELI_STT_NON_SPEAKING_DURATION", "0.35")
@@ -1578,12 +1665,9 @@ class ELIAudioSTT:
         # counts as a phrase. 0.2s is enough to distinguish a real word from a
         # brief transient; 0.5s was silently dropping short commands like "next".
         self.recognizer.phrase_threshold = float(os.environ.get("ELI_STT_PHRASE_THRESHOLD", "0.2"))
-        log.debug(
-            f"[STT_CONFIG] energy={self.recognizer.energy_threshold} "
-            f"dynamic={self.recognizer.dynamic_energy_threshold} "
-            f"pause={self.recognizer.pause_threshold} "
-            f"non_speaking={self.recognizer.non_speaking_duration}",
-        )
+        from eli.perception.noise_floor import NoiseFloor
+        self._floor = NoiseFloor()
+        self._gate_manual = _manual_gate()
 
         device_index = _resolve_input_device_index()
         # Every sr.Microphone() builds its own PyAudio instance, and PortAudio prints
@@ -1615,71 +1699,13 @@ class ELIAudioSTT:
         self._eli_ignore_until = 0.0
         self._eli_ignore_reason = ""
 
-        # Voice profile state: runtime statistics on the user's speech volume so the energy
-        # threshold is biased toward how the local user sounds, not the SpeechRecognition library's
-        # ambient estimate alone.
+        # Voice profile state: the level and length of the owner's speech (the diagnostics, and the
+        # level the wake clips are checked against).
         self._voice_profile = self._load_voice_profile()
         self._voice_profile_uid = self._voice_profile_user_id()
-
-        # Ambient calibration sets the energy threshold above the room noise. With echo cancel on
-        # (ELI_STT_ECHO_CANCEL=1) that's safe. Without it a raw mic next to speakers reads 800-8000 and
-        # calibration spikes, so speech becomes undetectable. Off by default (ELI_STT_CALIBRATE=0) with
-        # a fixed ELI_STT_ENERGY_THRESHOLD; drift is handled by the noise self-heal in _listen_loop.
-        _do_calibrate = os.environ.get("ELI_STT_CALIBRATE", "0").lower() not in {"0", "false", "no", "off"}
-        if _do_calibrate:
-            log.debug("[AUDIO] Calibrating microphone for ambient noise...")
-            cal_duration = float(os.environ.get("ELI_STT_AMBIENT_CAL_SEC", "1.5"))
-            # Watchdog: a dead or misconfigured capture device (raw ALSA "default" through dead JACK PCMs,
-            # a stale Bluetooth default source delivering no frames) makes adjust_for_ambient_noise block on
-            # read forever. Run it in a daemon thread and abandon it on overrun so startup falls back to the
-            # fixed threshold instead of hanging. Headroom = calibration duration + open/IO slack.
-            _cal_timeout = float(os.environ.get("ELI_STT_CAL_TIMEOUT", "0")) or (cal_duration + 4.0)
-
-            def _calibrate():
-                with self.microphone as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=cal_duration)
-
-            _suppress_alsa()
-            try:
-                _cal_thread = threading.Thread(target=_calibrate, name="eli-mic-calibrate", daemon=True)
-                _cal_thread.start()
-                _cal_thread.join(_cal_timeout)
-            finally:
-                _restore_stderr()
-
-            if _cal_thread.is_alive():
-                log.warning(
-                    f"[AUDIO] Ambient calibration timed out after {_cal_timeout:.1f}s — the "
-                    f"capture device is not delivering audio. Using fixed threshold "
-                    f"{self.recognizer.energy_threshold:.0f}. Check the system default input "
-                    f"source (e.g. a stale Bluetooth mic) or set ELI_MIC_DEVICE_INDEX to a "
-                    f"working device.",
-                )
-            else:
-                # Hard cap so loud startup noise can't push threshold into shouting range.
-                _cal_cap = float(os.environ.get("ELI_STT_CAL_CAP", "2000"))
-                if self.recognizer.energy_threshold > _cal_cap:
-                    log.debug(
-                        f"[AUDIO] Calibration capped {self.recognizer.energy_threshold:.0f}"
-                        f" → {_cal_cap:.0f} (ELI_STT_CAL_CAP)",
-                    )
-                    self.recognizer.energy_threshold = _cal_cap
-        else:
-            log.debug(
-                f"[AUDIO] Ambient calibration skipped (ELI_STT_CALIBRATE=0). "
-                f"Fixed threshold={self.recognizer.energy_threshold:.0f}",
-            )
-            self._probe_startup_threshold()
-        # Bias against picked-up profile, if any history exists.
-        self._apply_voice_profile_bias()
-        # Baseline the runtime noise adaptation returns to once a room goes quiet.
-        # Captured AFTER calibration and the profile bias so it reflects the threshold
-        # actually in force, not the raw configured value.
-        self._threshold_base = float(self.recognizer.energy_threshold)
-        self._noise_stuck_streak = 0
         log.debug(
             f"[AUDIO] Microphone ready "
-            f"(energy={self.recognizer.energy_threshold:.0f}, "
+            f"(gate {'set by hand at ' + str(self._gate_manual) if self._gate_manual else 'automatic'}, "
             f"voice_profile_n={self._voice_profile.get('count', 0)})"
         )
         self._verify_mic_delivers_audio()
@@ -1716,8 +1742,9 @@ class ELIAudioSTT:
     # ── Hearing the owner over ELI's own media ───────────────────────────
     def _start_near_speech(self) -> None:
         """Read what the default sink plays (near_speech.OutputTap) so speech the output does not
-        explain can be told from the music at the mic; nothing when there is no sound server or no
-        recorder for it, or with ELI_STT_ONSET_DUCK=0."""
+        explain can be told from the music at the mic. Where no recorder reads the sink (no sound
+        server, Windows, macOS) ELI's own voice is the output it knows: the voice hands what it
+        plays to reference_output. Nothing with ELI_STT_ONSET_DUCK=0."""
         self._near, self._tap = None, None
         if not _ONSET_DUCK:
             return
@@ -1725,10 +1752,45 @@ class ELIAudioSTT:
             from eli.perception.near_speech import NearSpeech, OutputTap
             near = NearSpeech()
             tap = OutputTap(near.reference)
-            if tap.start():
-                self._near, self._tap = near, tap
+            self._near, self._tap = near, (tap if tap.start() else None)
         except Exception:
             log.debug("[AUDIO] near-speech detection unavailable", exc_info=True)
+
+    def reference_output(self, samples, rate: int, t_end: float) -> None:
+        """What ELI's voice hands the output device, stamped with when it will be heard: the
+        output's reference where no recorder reads the sink (with one, the sink's monitor holds it
+        already, music included)."""
+        near = getattr(self, "_near", None)
+        if near is None or getattr(self, "_tap", None) is not None or np is None:
+            return
+        x = np.asarray(samples, dtype=np.float32).ravel()
+        if rate and rate != 16000:
+            from eli.perception.audio_samples import resample
+            x = resample(x, rate, 16000)
+        near.reference(x, t_end)
+
+    # ── Conversation mode: no wake word for each turn, and the user may speak over ELI ────────────
+    def set_conversing(self, on: bool, on_barge_in: Optional[Callable[[float], None]] = None) -> None:
+        """Conversation mode on or off. On, every turn is for ELI (VoiceGate.set_conversing) and
+        speech that starts while ELI speaks calls `on_barge_in(t)` at once (the voice stops there)
+        and is kept for the listener, from its onset."""
+        from eli.perception.near_speech import BargeIn
+        self._on_barge_in = on_barge_in if on else None
+        self._barge_at = None
+        if on and getattr(self, "_barge", None) is None:
+            self._barge = BargeIn()
+        hold = float(os.environ.get("ELI_STT_ARMED_PAUSE", "1.4")) * VoiceGate.CONTINUATION_SLACK
+        self._voice_gate.set_conversing(on, hold_prior_s=hold)
+
+    def _barge_keep_from(self) -> Optional[float]:
+        """Where the audio to keep starts after a barge-in (the onset, less the frames it took to be
+        sure of it and the listener's own lead-in), None when there was none."""
+        at = getattr(self, "_barge_at", None)
+        if at is None:
+            return None
+        from eli.perception.near_speech import HOP_S, NEED_FRAMES
+        lead = NEED_FRAMES * HOP_S + float(getattr(self.recognizer, "non_speaking_duration", 0.0) or 0.0)
+        return at - lead
 
     def _stop_near_speech(self) -> None:
         tap = getattr(self, "_tap", None)
@@ -1744,15 +1806,42 @@ class ELIAudioSTT:
         source.stream = _ContinuousMic(stream, source.CHUNK, source.SAMPLE_WIDTH,
                                        self._on_mic_chunk).bind_rate(source.SAMPLE_RATE)
 
+    def _own_voice_now(self) -> bool:
+        """ELI is speaking, or its voice's tail is still in the room (the listen loop's drain)."""
+        last = getattr(self, "_tts_mon_last", None)
+        drain = float(getattr(self, "_post_tts_drain_s", 0.0) or 0.0)
+        return bool(last and last[0] > 0 and time.monotonic() - last[0] < drain)
+
     def _on_mic_chunk(self, data: bytes, rate: int, t_end: float) -> None:
-        near = getattr(self, "_near", None)
-        if near is None or np is None or not data:
+        """Every chunk as it is captured: its level for the room's gate (noise_floor), then speech the
+        output does not explain (near_speech)."""
+        if np is None or not data:
             return
-        x = np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+        pcm = np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")
+        if not pcm.size:
+            return
+        own = self._own_voice_now()
+        floor = getattr(self, "_floor", None)
+        if floor is not None:
+            floor.push(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))), pcm.size / float(rate or 16000),
+                       t_end, own_voice=own, samples=pcm.size)
+        near = getattr(self, "_near", None)
+        barge = getattr(self, "_on_barge_in", None)
+        if near is None and barge is None:
+            return
+        x = pcm.astype(np.float32) / 32768.0
         if rate and rate != 16000:
             from eli.perception.audio_samples import resample
             x = resample(x, rate, 16000)
-        if near.mic(x, t_end):
+        onsets = near.mic(x, t_end) if near is not None else []
+        if barge is not None and own:
+            hit = self._barge.judge(x, t_end, near, onsets)
+            if hit is not None and getattr(self, "_barge_at", None) is None:
+                self._barge_at = hit
+                log.debug(f"[VOICE_BARGE_IN] the user spoke over ELI at {hit:.3f}")
+                threading.Thread(target=barge, args=(hit,), daemon=True, name="eli-barge-in").start()
+            return
+        if onsets:
             threading.Thread(target=self._duck_at_onset, daemon=True, name="eli-onset-duck").start()
 
     def _duck_at_onset(self) -> None:
@@ -1821,7 +1910,6 @@ class ELIAudioSTT:
         self._save_voice_profile()
         self._voice_profile_uid = uid
         self._voice_profile = self._load_voice_profile()
-        self._apply_voice_profile_bias()
 
     def _load_voice_profile(self) -> dict:
         """The profile at _voice_profile_path. One written before it learnt from the owner's accepted
@@ -1849,140 +1937,55 @@ class ELIAudioSTT:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    def _apply_voice_profile_bias(self) -> None:
-        """Bias energy_threshold toward the user's known speech volume range.
-        The bias can only LOWER the threshold toward the user's voice level —
-        it must never raise it above what was already set, so a polluted profile
-        (built from shouting sessions) cannot make ELI deaf to normal speech."""
-        if self._voice_profile.get("count", 0) < 5:
-            return  # Not enough data yet.
-        mean = float(self._voice_profile.get("energy_mean") or 0.0)
-        if mean <= 0:
-            return
-        ambient_thr = float(self.recognizer.energy_threshold)
-        # Target: 45% of mean energy (centre of expected voice range).
-        # Hard cap at 2000 so a shout-polluted profile can't push this above
-        # the point where normal speech becomes inaudible.
-        target = min(max(60.0, mean * 0.45), 2000.0)
-        # Only apply if it would LOWER the threshold, never raise it.
-        if target < ambient_thr:
-            self.recognizer.energy_threshold = float(target)
+    def _apply_gate(self) -> float:
+        """The speech gate for the next capture: the owner's own number when they set one, else the
+        room's (noise_floor), else the configured start until the room has been heard."""
+        rec = self.recognizer
+        manual = getattr(self, "_gate_manual", None)
+        floor = getattr(self, "_floor", None)
+        gate = manual or (floor.threshold(float(getattr(rec, "non_speaking_duration", 0.0) or 0.0),
+                                          *self._phrase_rule()) if floor is not None else None)
+        if gate:
+            rec.energy_threshold = float(gate)
+        return float(rec.energy_threshold)
 
-    def _probe_startup_threshold(self, duration: float = 0.4) -> None:
-        """Brief ambient read when full calibration is off.
+    def _phrase_rule(self) -> tuple:
+        """(phrase_s, gap_s): how long a phrase is, and the silence that ends one, as the listener
+        will take them on the next capture."""
+        rec = self.recognizer
+        gate = getattr(self, "_voice_gate", None)
+        gap = float(os.environ.get("ELI_STT_SHORT_PAUSE", "0.5"))
+        if gate is not None:
+            gap = gate.end_of_phrase_pause(gap)
+        return float(getattr(rec, "phrase_threshold", 0.2) or 0.2), gap
 
-        A fixed ELI_STT_ENERGY_THRESHOLD (default 1200) is too high for many quiet
-        mics — speech never crosses the gate and the listener spins silently on
-        WaitTimeoutError. Full adjust_for_ambient_noise is off by default because
-        without echo cancellation a raw mic next to speakers can read 800–8000 RMS
-        and spike the threshold instead. This probe is capped like calibration so
-        it helps quiet mics without the loud-room failure mode.
-        """
-        if os.environ.get("ELI_STT_STARTUP_PROBE", "1").lower() in {"0", "false", "no", "off"}:
-            return
-        try:
-            import audioop as _audioop
+    def set_sensitivity(self, automatic: bool, threshold: Optional[float] = None) -> None:
+        """The Settings ▸ Audio choice, at once: the room's gate, or the owner's number."""
+        self._gate_manual = None if automatic else (float(threshold) if threshold else None)
+        self._apply_gate()
 
-            floor = int(os.environ.get("ELI_STT_ENERGY_FLOOR", "300"))
-            cap = float(os.environ.get("ELI_STT_CAL_CAP", "2000"))
-            _suppress_alsa()
-            try:
-                with self.microphone as source:
-                    reads = max(1, int(duration * source.SAMPLE_RATE / source.CHUNK))
-                    vals: list[int] = []
-                    for _ in range(reads):
-                        buf = source.stream.read(source.CHUNK)
-                        if len(buf) == 0:
-                            break
-                        vals.append(_audioop.rms(buf, source.SAMPLE_WIDTH))
-            finally:
-                _restore_stderr()
-            if not vals:
-                log.warning(
-                    "[AUDIO] Mic probe returned no audio frames — the capture device "
-                    "may be silent or misconfigured. Check the system default input "
-                    "(pactl get-default-source) or run eli/tools/mic_diag.py.",
-                )
-                return
-            ambient_avg = sum(vals) // len(vals)
-            ambient_max = max(vals)
-            configured = float(self.recognizer.energy_threshold)
-            target = max(float(floor), ambient_max * 1.5)
-            target = min(target, cap, configured)  # never raise above configured default
-            if target < configured - 1:
-                log.info(
-                    f"[AUDIO] Startup mic probe: ambient_avg={ambient_avg} "
-                    f"ambient_max={ambient_max} → energy_threshold={target:.0f} "
-                    f"(was {configured:.0f})",
-                )
-                self.recognizer.energy_threshold = target
-            else:
-                log.debug(
-                    f"[AUDIO] Startup mic probe: ambient_avg={ambient_avg} "
-                    f"ambient_max={ambient_max} — keeping threshold={configured:.0f}",
-                )
-        except Exception:
-            log.debug("[AUDIO] Startup mic probe failed", exc_info=True)
-
-    def _adapt_threshold_to_noise(self, cap_rms: int) -> bool:
-        """Lift energy_threshold above a noise floor that has swallowed the mic.
-
-        The failure this exists for: when the room's noise floor sits ABOVE
-        energy_threshold, `_listen_adaptive_pause` can never observe the silence it
-        needs to END a phrase. Every cycle runs to the phrase cap, captures seconds of
-        noise, transcribes to nothing, and repeats — ELI is stone deaf and says nothing
-        about it. Measured on this machine: speaker bleed from music lifts the mic from
-        456 RMS to 7924, putting 85% of frames over the 1200 threshold.
-
-        Raising the gate above the noise is the only remedy that restores service: the
-        phrase then never STARTS on noise alone, and speech louder than the room (which
-        it has to be anyway, to be intelligible) opens and closes a phrase normally.
-        Returns True when the threshold was changed.
-        """
-        if not _STT_ADAPTIVE or cap_rms <= 0:
-            return False
-        target = min(float(_STT_ADAPTIVE_CAP), cap_rms * 1.2)
-        # Only ever raise here, and only if it is a meaningful move — otherwise a
-        # marginal noise reading would ratchet the gate up on every cycle.
-        if target <= self.recognizer.energy_threshold * 1.1:
-            return False
-        prev = self.recognizer.energy_threshold
-        self.recognizer.energy_threshold = target
-        log.warning(
-            f"[AUDIO_ADAPT] mic drowning (noise rms={cap_rms}, phrases never ending) — "
-            f"energy threshold {prev:.0f} → {target:.0f}. Speak above the background, "
-            f"or silence it, to be heard."
-        )
-        return True
-
-    def _decay_threshold_toward_base(self) -> bool:
-        """Walk the threshold back down once the room goes quiet again.
-
-        Without this, one noisy episode would leave ELI permanently hard of hearing —
-        a self-heal that only ever tightens is just a slower way to go deaf.
-        """
-        if not _STT_ADAPTIVE:
-            return False
-        base = float(getattr(self, "_threshold_base", 0.0) or 0.0)
-        cur = float(self.recognizer.energy_threshold)
-        if base <= 0 or cur <= base * 1.05:
-            return False
-        nxt = max(base, cur * 0.7)
-        self.recognizer.energy_threshold = nxt
-        log.debug(f"[AUDIO_ADAPT] room quiet again — threshold {cur:.0f} → {nxt:.0f} (base {base:.0f})")
-        return True
+    def level_meter(self) -> dict:
+        """{level, floor, threshold, manual, near_heard, speaking} for the live meter."""
+        floor = getattr(self, "_floor", None)
+        out = (dict(floor.snapshot(*self._phrase_rule())) if floor is not None
+               else {"level": None, "floor": None, "threshold": None})
+        out["manual"] = getattr(self, "_gate_manual", None)
+        out["gate"] = float(getattr(self.recognizer, "energy_threshold", 0.0) or 0.0)
+        near = getattr(self, "_near", None)
+        out["near_heard"] = bool(near is not None and getattr(near, "_heard", False))
+        return out
 
     def _learn_voice(self, audio) -> None:
         """An utterance the gate took as the owner's (the wake word, a command it sent on) goes into
         the voice profile, unless what the mic heard was more than the voice: ELI's media playing, or
-        a room loud enough that the noise self-heal holds the gate above its base. Its level then
+        a room clearly louder than the quietest it has been heard (noise_floor). Its level then
         measures the music: learnt from every capture, the profile's 95 samples averaged 9,129 RMS,
-        the level the self-heal measured for the music alone (9,544)."""
+        the level measured for the music alone (9,544)."""
         if audio is None:
             return
-        base = float(getattr(self, "_threshold_base", 0.0) or 0.0)
-        if base > 0 and float(self.recognizer.energy_threshold) > base * 1.05:
-            log.debug("[AUDIO] voice profile not updated: the room is louder than the gate's base")
+        floor = getattr(self, "_floor", None)
+        if floor is not None and floor.louder_than_usual():
+            log.debug("[AUDIO] voice profile not updated: the room is louder than it usually is")
             return
         if _eli_media_probably_audible():
             log.debug("[AUDIO] voice profile not updated: media is playing")
@@ -2051,8 +2054,10 @@ class ELIAudioSTT:
         """speech_recognition's listen() with a DURATION-ADAPTIVE end-of-phrase pause.
 
         Faithful copy of sr.Recognizer._listen (sr 3.16) — same energy detection,
-        non-speaking trimming, phrase cap, and WaitTimeoutError — with ONE change:
-        the silence required to END a phrase grows once the utterance gets long.
+        non-speaking trimming, phrase cap, and WaitTimeoutError, without its dynamic threshold (the
+        room's gate is set before each capture, noise_floor) — with ONE change: the silence required
+        to END a phrase grows once the utterance gets long. Each pause the user makes and then goes
+        on from is told to the voice gate (note_inner_pause), which sets `short_pause` from them.
           • a short command finalises after `short_pause`s of silence (snappy — no
             more 1.4 s wait between commands);
           • a long dictated prompt that has been speaking for `long_after`s needs
@@ -2087,10 +2092,6 @@ class ELIAudioSTT:
                 energy = _audioop.rms(buffer, source.SAMPLE_WIDTH)
                 if energy > rec.energy_threshold:
                     break
-                if rec.dynamic_energy_threshold:
-                    damping = rec.dynamic_energy_adjustment_damping ** seconds_per_buffer
-                    target_energy = energy * rec.dynamic_energy_ratio
-                    rec.energy_threshold = rec.energy_threshold * damping + target_energy * (1 - damping)
 
             # read audio input until the phrase ends
             pause_count, phrase_count = 0, 0
@@ -2106,6 +2107,9 @@ class ELIAudioSTT:
                 phrase_count += 1
                 energy = _audioop.rms(buffer, source.SAMPLE_WIDTH)
                 if energy > rec.energy_threshold:
+                    if pause_count:
+                        # the user paused and went on: how long this person pauses inside a turn
+                        self._voice_gate.note_inner_pause(pause_count * seconds_per_buffer)
                     pause_count = 0
                 else:
                     pause_count += 1
@@ -2115,10 +2119,6 @@ class ELIAudioSTT:
                 cur_pause_count = long_count if speech_elapsed >= long_after else short_count
                 if pause_count > cur_pause_count:
                     break
-                if rec.dynamic_energy_threshold:
-                    damping = rec.dynamic_energy_adjustment_damping ** seconds_per_buffer
-                    target_energy = energy * rec.dynamic_energy_ratio
-                    rec.energy_threshold = rec.energy_threshold * damping + target_energy * (1 - damping)
 
             phrase_count -= pause_count
             if phrase_count >= phrase_buffer_count or len(buffer) == 0:
@@ -2130,10 +2130,10 @@ class ELIAudioSTT:
         return _sr.AudioData(b"".join(frames), source.SAMPLE_RATE, source.SAMPLE_WIDTH)
 
     @staticmethod
-    def _flush_mic(source) -> None:
+    def _flush_mic(source, keep_from: Optional[float] = None) -> None:
         stream = getattr(source, "stream", None)
         if isinstance(stream, _ContinuousMic):
-            stream.flush()
+            stream.flush(keep_from=keep_from)
 
     def _speak_prompt(self, text: str):
         try:
@@ -2285,6 +2285,12 @@ class ELIAudioSTT:
         action, payload, wake = self._voice_gate.classify(transcript_route)
         self._emit_released()
 
+        if action in ("arm", "arm_incomplete", "dispatch"):
+            span, self._capture_span = getattr(self, "_capture_span", None), None
+            room = getattr(self, "_floor", None)
+            if span and room is not None:
+                room.mark_speech(*span)            # the owner's words, not the room
+
         # Lowered (at the wake word, or at the onset of this utterance) and nothing for ELI followed
         # (arm → arm_incomplete → the user went silent, or speech that was not to ELI): back up.
         if action not in ("arm", "arm_incomplete", "dispatch") and not self._voice_gate.armed():
@@ -2381,15 +2387,6 @@ class ELIAudioSTT:
                 log.debug("[AUDIO] Microphone ready")
                 self._start_near_speech()
                 self._hear_continuously(source)
-                # Adaptive recalibration: every ELI_STT_RECALIBRATE_EVERY cycles
-                # of silence, redo ambient_noise to follow drifting fan/HVAC noise.
-                _recal_every = int(os.environ.get("ELI_STT_RECALIBRATE_EVERY", "60"))
-                _silent_streak = 0
-                # Consecutive listen() timeouts mean no phrase even started, the only clean evidence
-                # the room is quiet. (_silent_streak can't serve: it also counts the drowning case,
-                # where captures keep arriving and transcribe to nothing.)
-                _quiet_streak = 0
-                _decay_after = int(os.environ.get("ELI_STT_NOISE_DECAY_CYCLES", "10"))
 
                 from eli.core.paths import temp_path as _temp_path
                 # Must match tts_router's lock default (same process writes it there,
@@ -2416,6 +2413,8 @@ class ELIAudioSTT:
                 _post_tts_drain_s = float(
                     os.environ.get("ELI_STT_POST_TTS_DRAIN_SEC", "1.5")
                 )
+                # the mic reader's thread reads these too: ELI's own voice is not the room
+                self._tts_mon_last, self._post_tts_drain_s = _tts_mon_last, _post_tts_drain_s
 
                 def _tts_monitor_fn():
                     while not _tts_mon_stop.is_set():
@@ -2438,14 +2437,17 @@ class ELIAudioSTT:
                         # own voice and triggers a chain of repeat commands.
                         if _eli_is_speaking():
                             _tts_mon_last[0] = time.monotonic()
-                            self._flush_mic(source)          # ELI's own voice is not for the mic
+                            # ELI's own voice is not for the mic; what the user said from the moment
+                            # they spoke over it is (a barge-in, conversation mode)
+                            self._flush_mic(source, keep_from=self._barge_keep_from())
                             time.sleep(0.15)
                             continue
 
                         # Post-TTS drain cooldown: if TTS ended less than _post_tts_drain_s ago,
                         # skip listen() and let PyAudio's ring buffer cycle out stale TTS frames
-                        # before accepting mic input. Override: ELI_STT_POST_TTS_DRAIN_SEC.
-                        if _tts_mon_last[0] > 0:
+                        # before accepting mic input. Override: ELI_STT_POST_TTS_DRAIN_SEC. Not
+                        # after a barge-in: the user is speaking, and ELI stopped for them.
+                        if _tts_mon_last[0] > 0 and self._barge_keep_from() is None:
                             _drain_elapsed = time.monotonic() - _tts_mon_last[0]
                             if _drain_elapsed < _post_tts_drain_s:
                                 self._flush_mic(source)
@@ -2494,28 +2496,8 @@ class ELIAudioSTT:
                                 os.environ.get("ELI_STT_UNARMED_PHRASE_LIMIT", "3.0")
                             )
 
-                        # Periodic recalibration during quiet periods so the
-                        # energy threshold tracks ambient noise drift.
-                        _do_recal = os.environ.get("ELI_STT_CALIBRATE", "0").lower() not in {"0", "false", "no", "off"}
-                        if _do_recal and _silent_streak >= _recal_every and _recal_every > 0:
-                            try:
-                                _pre_recal = self.recognizer.energy_threshold
-                                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                                _recal_cap = float(os.environ.get("ELI_STT_CAL_CAP", "2000"))
-                                if self.recognizer.energy_threshold > _recal_cap:
-                                    self.recognizer.energy_threshold = _recal_cap
-                                self._apply_voice_profile_bias()
-                                print(
-                                    f"🎚️ [AUDIO] Recalibrated ambient: "
-                                    f"energy={self.recognizer.energy_threshold:.0f}",
-                                    flush=True,
-                                )
-                            except Exception as _recal_err:
-                                log.debug(f"[AUDIO] Recal failed: {_recal_err}")
-                            _silent_streak = 0
-                        elif not _do_recal and _silent_streak >= _recal_every and _recal_every > 0:
-                            _silent_streak = 0  # reset counter even when calibration is off
-
+                        # The gate the room sets now (noise_floor), or the owner's own number.
+                        self._apply_gate()
                         _listen_start = time.monotonic()
                         _active_main_timeout = (
                             ARMED_MAIN_TIMEOUT if self._voice_gate.armed() else MAIN_TIMEOUT
@@ -2532,7 +2514,8 @@ class ELIAudioSTT:
                             try:
                                 audio = self._listen_adaptive_pause(
                                     source, timeout=_active_main_timeout, phrase_time_limit=_ad_limit,
-                                    short_pause=float(os.environ.get("ELI_STT_SHORT_PAUSE", "0.5")),
+                                    short_pause=self._voice_gate.end_of_phrase_pause(
+                                        float(os.environ.get("ELI_STT_SHORT_PAUSE", "0.5"))),
                                     long_pause=float(os.environ.get("ELI_STT_LONG_PAUSE", "2.0")),
                                     long_after=float(os.environ.get("ELI_STT_LONG_AFTER", "12.0")),
                                 )
@@ -2588,13 +2571,6 @@ class ELIAudioSTT:
                                         log.debug(f"[AUDIO] mic re-open failed: {_reopen_err}")
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
-                        # Nothing crossed the gate: the room is quiet. If an earlier noise episode
-                        # lifted the threshold, walk it back down so the mic recovers its
-                        # sensitivity instead of staying deafened after the music stops.
-                        _quiet_streak += 1
-                        if _decay_after > 0 and _quiet_streak >= _decay_after:
-                            self._decay_threshold_toward_base()
-                            _quiet_streak = 0
                         continue
                     except Exception as e:
                         if not self.is_listening or self._stop_event.is_set():
@@ -2626,28 +2602,17 @@ class ELIAudioSTT:
                         time.sleep(0.1)
                         continue
 
-                    _quiet_streak = 0          # a phrase started; room is not quiet
                     transcript = self._recognize(audio)
-
-                    # Noise self-heal. A capture that ran to the phrase cap never saw silence, so the noise floor
-                    # sits above energy_threshold and the phrase can't finalise. With an empty transcript that isn't
-                    # someone talking for six seconds, the mic is drowning. Left alone it spins forever
-                    # transcribing noise into nothing, and the only sign is ELI going quiet.
+                    # The capture's span, for the room's gate: marked as the owner's speech, not the
+                    # room, once the voice gate takes it as theirs (_act_on_transcript). A capture
+                    # that ran to its cap never ended in silence: it is the room, whatever words the
+                    # music or the television put in it.
                     try:
-                        import audioop as _aop
-                        _raw = audio.get_raw_data()
-                        _cap_dur = len(_raw) / float(audio.sample_width * audio.sample_rate)
-                        _ran_to_cap = _used_limit and _cap_dur >= float(_used_limit) * 0.95
-                        if _ran_to_cap and not (transcript or "").strip():
-                            self._noise_stuck_streak += 1
-                            if self._noise_stuck_streak >= _STT_NOISE_STUCK_CYCLES:
-                                if self._adapt_threshold_to_noise(_aop.rms(_raw, audio.sample_width)):
-                                    self._noise_stuck_streak = 0
-                        elif (transcript or "").strip():
-                            # Real speech got through — the gate is where it should be.
-                            self._noise_stuck_streak = 0
+                        _cap_s = len(audio.get_raw_data()) / float(audio.sample_width * audio.sample_rate)
                     except Exception:
-                        log.debug("[AUDIO_ADAPT] noise check failed", exc_info=True)
+                        _cap_s = 0.0
+                    self._capture_span = (None if _used_limit and _cap_s >= float(_used_limit) * 0.95
+                                          else (_listen_start, time.monotonic()))
 
                     # Acoustic wake-word detector (self-trained, robust over music). When unarmed and a local model
                     # is trained, score the captured audio directly: it catches "computer" even when whisper
@@ -2675,15 +2640,15 @@ class ELIAudioSTT:
                             log.debug("suppressed exception", exc_info=True)
 
                     if not transcript:
-                        _silent_streak += 1
                         continue
-                    _silent_streak = 0
 
                     # TTS window overlap check. The background monitor stamps _tts_mon_last[0] whenever TTS is
                     # active; if that stamp is at or after _listen_start (0.2s pre-roll tolerance), TTS was playing
                     # with the mic open and the transcript is ELI's own voice. Drop it and restart the drain
                     # cooldown so the next listen() waits for fresh frames.
-                    if _tts_mon_last[0] >= _listen_start - 0.2:
+                    _barged = self._barge_keep_from() is not None
+                    self._barge_at = None                     # what was said over ELI has been heard
+                    if _tts_mon_last[0] >= _listen_start - 0.2 and not _barged:
                         _tts_mon_last[0] = time.monotonic()   # restart drain timer
                         _vprint(
                             f"🔇 [AUDIO_ECHO_GATE] TTS active during listen window — dropped: "
@@ -2693,7 +2658,7 @@ class ELIAudioSTT:
                         continue
 
                     # If TTS is active, allow barge-in commands through; drop echo otherwise.
-                    if _eli_is_speaking():
+                    if _eli_is_speaking() and not _barged:
                         try:
                             from eli.perception.voice_intent import on_partial_transcript
                             _pre = _collapse_repeated_phrase(

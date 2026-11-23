@@ -1,132 +1,173 @@
-"""Locks for the STT noise self-heal.
+"""The microphone's speech gate follows the room, and ELI hears its owner over its own music.
 
-The failure being guarded: when the room's noise floor sits ABOVE
-`energy_threshold`, the phrase detector can never observe the silence it needs to END
-a phrase. Every cycle runs to the phrase cap, captures seconds of noise, transcribes
-to nothing, and repeats — the microphone is functionally dead and nothing anywhere
-says so. Measured on a real machine: speaker bleed from music lifted the mic from
-456 RMS to 7924, putting 85% of frames over the 1200 threshold.
+The failure first guarded here: when the room's noise floor sat ABOVE the energy threshold, the
+phrase detector could never observe the silence it needs to END a phrase. Every cycle ran to the
+phrase cap, captured seconds of noise, transcribed to nothing, and repeated — the microphone was
+functionally dead and nothing anywhere said so. Measured on a real machine: speaker bleed from
+music lifted the mic from 456 RMS to 7924, putting 85% of frames over the fixed 1200 threshold.
 
-Before this, there was no way out of that state: the only recalibration path required
-`_silent_streak >= 60`, which cannot accumulate while noise keeps producing captures,
-AND was gated on ELI_STT_CALIBRATE, which defaults to "0".
+A self-heal raised the gate after three such captures and walked it back after ten quiet ones,
+beside a recalibration every 60 silent cycles and a fixed start. The gate is now the room's own
+level (eli/perception/noise_floor.py), measured from every chunk the microphone delivers: the
+median plus Z robust deviations of the room's log level over its last LEARN_S, without the words
+the owner said to ELI or ELI's own voice in it.
 """
+import math
 import types
 
 import numpy as np
 import pytest
 
 from eli.perception import audio_stt
+from eli.perception.noise_floor import NoiseFloor
+from tests import _audio_fixtures as fx
+
+_CHUNK = 1024                       # the listener's capture chunk at 16 kHz: 64 ms
+_CHUNK_S = _CHUNK / fx.SR
+_PHRASE_CHUNKS = math.ceil(0.2 / _CHUNK_S)       # SpeechRecognition's phrase_threshold, 0.2 s
 
 
-class _Recognizer:
-    def __init__(self, threshold):
-        self.energy_threshold = float(threshold)
+def _chunk_rms(x):
+    n = len(x) // _CHUNK
+    return np.sqrt(np.mean(x[: n * _CHUNK].reshape(n, _CHUNK) ** 2, axis=1))
 
 
-def _stt(threshold=1200.0, base=1200.0):
-    """A stand-in carrying only what the adaptation methods touch — no microphone."""
-    obj = types.SimpleNamespace()
-    obj.recognizer = _Recognizer(threshold)
-    obj._threshold_base = base
-    obj._noise_stuck_streak = 0
-    obj._adapt_threshold_to_noise = types.MethodType(
-        audio_stt.ELIAudioSTT._adapt_threshold_to_noise, obj)
-    obj._decay_threshold_toward_base = types.MethodType(
-        audio_stt.ELIAudioSTT._decay_threshold_toward_base, obj)
-    return obj
+def _hear(floor, x, t0=0.0, *, own=False):
+    """Every chunk of `x` (16-bit units) into the tracker, as the mic reader hands them over; the gate
+    the listener would have applied at each chunk."""
+    gates = []
+    for i, rms in enumerate(_chunk_rms(x)):
+        floor.push(rms, _CHUNK_S, t0 + (i + 1) * _CHUNK_S, own_voice=own, samples=_CHUNK)
+        gates.append(floor.threshold(0.35) or 1200.0)
+    return np.array(gates)
 
 
-# ── lifting the gate out of the noise ───────────────────────────────────────
-def test_threshold_lifts_above_measured_noise():
-    """The real numbers from the incident: 1200 threshold, 7924 RMS of bleed."""
-    s = _stt(threshold=1200.0)
-
-    assert s._adapt_threshold_to_noise(7924) is True
-    # Must clear the noise, or the phrase still never ends.
-    assert s.recognizer.energy_threshold > 7924
+_GAP_CHUNKS = math.ceil(0.5 / _CHUNK_S)          # the silence that ends a phrase, ELI_STT_SHORT_PAUSE
 
 
-def test_lift_is_bounded_by_the_adaptive_cap(monkeypatch):
-    monkeypatch.setattr(audio_stt, "_STT_ADAPTIVE_CAP", 12000.0)
-    s = _stt(threshold=1200.0)
-
-    s._adapt_threshold_to_noise(500000)
-
-    assert s.recognizer.energy_threshold == 12000.0
-
-
-def test_marginal_noise_does_not_ratchet_the_gate():
-    """Without this, a noise reading barely above the gate would creep it upward on
-    every cycle until nothing could ever be heard."""
-    s = _stt(threshold=1200.0)
-
-    assert s._adapt_threshold_to_noise(1005) is False
-    assert s.recognizer.energy_threshold == 1200.0
+def _phrase_starts(levels, gates):
+    """Phrases SpeechRecognition would have kept: begun on a chunk over the gate, ended by a silence
+    longer than the end-of-phrase pause, with a phrase's worth of chunks over the gate in them."""
+    starts, loud, quiet, counted, open_ = 0, 0, 0, False, False
+    for lv, g in zip(levels, gates):
+        if lv > g:
+            open_, loud, quiet = True, loud + 1, 0
+            if loud >= _PHRASE_CHUNKS and not counted:
+                starts, counted = starts + 1, True
+        elif open_:
+            quiet += 1
+            if quiet > _GAP_CHUNKS:
+                open_, loud, quiet, counted = False, 0, 0, False
+    return starts
 
 
-def test_lift_is_a_noop_when_adaptation_is_disabled(monkeypatch):
-    monkeypatch.setattr(audio_stt, "_STT_ADAPTIVE", False)
-    s = _stt(threshold=1200.0)
-
-    assert s._adapt_threshold_to_noise(7924) is False
-    assert s.recognizer.energy_threshold == 1200.0
-
-
-@pytest.mark.parametrize("bad_rms", [0, -1])
-def test_nonsense_noise_reading_is_ignored(bad_rms):
-    s = _stt(threshold=1200.0)
-
-    assert s._adapt_threshold_to_noise(bad_rms) is False
-    assert s.recognizer.energy_threshold == 1200.0
+def test_the_gate_rises_above_the_music_the_mic_hears():
+    """The incident's numbers: the mic at 456 RMS in a quiet room, then music's bleed at 7924."""
+    floor = NoiseFloor()
+    rng = np.random.default_rng(0)
+    _hear(floor, rng.standard_normal(fx.SR * 12) * 456)
+    quiet_gate = floor.threshold()
+    bleed = fx.int16_rms(fx.through_the_room(fx.music(40.0, 1), 1), 7924)
+    gates = _hear(floor, bleed, 12.0)
+    assert floor.threshold() > 7924 > quiet_gate
+    after = int(12 / _CHUNK_S)            # once the music has filled the room's history
+    starts = _phrase_starts(_chunk_rms(bleed)[after:], gates[after:])
+    assert starts <= 2, f"{starts} phrases started on music alone in {40 - 12:.0f} s"
 
 
-# ── and coming back down again ──────────────────────────────────────────────
-def test_threshold_decays_back_toward_base():
-    """A self-heal that only ever tightens is just a slower way to go deaf."""
-    s = _stt(threshold=9600.0, base=1200.0)
-
-    assert s._decay_threshold_toward_base() is True
-    assert s.recognizer.energy_threshold < 9600.0
-
-
-def test_decay_never_goes_below_base():
-    s = _stt(threshold=1300.0, base=1200.0)
-
-    for _ in range(50):
-        s._decay_threshold_toward_base()
-
-    assert s.recognizer.energy_threshold == pytest.approx(1200.0)
+def test_the_gate_comes_back_down_when_the_room_goes_quiet():
+    floor = NoiseFloor()
+    rng = np.random.default_rng(1)
+    _hear(floor, rng.standard_normal(fx.SR * 12) * 456)
+    quiet_gate = floor.threshold()
+    _hear(floor, fx.int16_rms(fx.music(20.0, 2), 7924), 12.0)
+    _hear(floor, rng.standard_normal(fx.SR * 14) * 456, 32.0)
+    assert floor.threshold() == pytest.approx(quiet_gate, rel=0.25)
+    assert not floor.louder_than_usual()
 
 
-def test_decay_is_a_noop_once_already_at_base():
-    s = _stt(threshold=1200.0, base=1200.0)
-
-    assert s._decay_threshold_toward_base() is False
-
-
-def test_repeated_decay_fully_recovers_from_a_noise_episode():
-    """End to end: drowned by music, then the music stops — sensitivity must return."""
-    s = _stt(threshold=1200.0, base=1200.0)
-    s._adapt_threshold_to_noise(7924)
-    assert s.recognizer.energy_threshold > 7924
-
-    for _ in range(50):
-        s._decay_threshold_toward_base()
-
-    assert s.recognizer.energy_threshold == pytest.approx(1200.0)
+def test_a_level_just_above_the_gate_does_not_ratchet_it_up():
+    """A steady room a little louder than before moves the gate to it, once, and no further."""
+    floor = NoiseFloor()
+    rng = np.random.default_rng(2)
+    _hear(floor, rng.standard_normal(fx.SR * 12) * 456)
+    gates = _hear(floor, rng.standard_normal(fx.SR * 30) * 600, 12.0)
+    assert gates[-1] == pytest.approx(gates[-int(5 / _CHUNK_S)], rel=0.05)
 
 
-# ── wiring ──────────────────────────────────────────────────────────────────
-def test_adaptation_is_on_by_default_and_decoupled_from_startup_calibration():
-    """ELI_STT_CALIBRATE means 'measure ambient at startup' and is off by default.
-    Gating runtime adaptation on it meant the configuration that most needs to adapt
-    was the one that could not."""
-    assert audio_stt._STT_ADAPTIVE is True
-    assert audio_stt._STT_ADAPTIVE_CAP > 2000, (
-        "the startup cap of 2000 cannot gate out ~8000 RMS speaker bleed"
-    )
-    assert audio_stt._STT_NOISE_STUCK_CYCLES >= 2, "one loud bang must not retune the mic"
+def test_the_owners_words_and_elis_voice_are_not_the_room():
+    floor = NoiseFloor()
+    rng = np.random.default_rng(3)
+    _hear(floor, rng.standard_normal(fx.SR * 12) * 300)
+    gate = floor.threshold()
+    talk = fx.int16_rms(fx.voice(rng, 6.0, 118.0, (0.15, 0.25)), 3000)
+    _hear(floor, talk, 12.0)
+    floor.mark_speech(12.0, 18.0)                       # the listener took it as the owner's words
+    _hear(floor, fx.int16_rms(fx.voice(rng, 6.0, 190.0, (0.12, 0.2)), 3000), 18.0, own=True)   # ELI
+    assert floor.threshold() == pytest.approx(gate, rel=0.1)
+    assert floor.level() > gate
+
+
+def test_before_the_room_is_heard_the_configured_start_holds_and_a_hand_set_gate_is_kept(monkeypatch):
+    stt = audio_stt.ELIAudioSTT.__new__(audio_stt.ELIAudioSTT)
+    stt.recognizer = types.SimpleNamespace(energy_threshold=1200.0, non_speaking_duration=0.35)
+    stt._floor, stt._gate_manual = NoiseFloor(), None
+    assert stt._apply_gate() == 1200.0
+    _hear(stt._floor, np.random.default_rng(4).standard_normal(fx.SR * 2) * 200)
+    assert stt._apply_gate() < 1200.0
+    stt.set_sensitivity(False, 2500)
+    assert stt._apply_gate() == 2500.0 and stt.level_meter()["manual"] == 2500.0
+    stt.set_sensitivity(True)
+    assert stt._apply_gate() < 1200.0
+    monkeypatch.setenv("ELI_STT_SENSITIVITY", "manual")
+    monkeypatch.setenv("ELI_STT_ENERGY_THRESHOLD", "1800")
+    assert audio_stt._manual_gate() == 1800.0
+    monkeypatch.setenv("ELI_STT_SENSITIVITY", "auto")
+    assert audio_stt._manual_gate() is None
+
+
+# Each room's level at the mic (16-bit RMS); the owner speaks 6 and 12 dB louder than the room.
+_ROOMS = {
+    "quiet room": (lambda s: np.random.default_rng(s).standard_normal(fx.SR * 60), 120),
+    "fan": (lambda s: fx.fan(60.0, s), 600),
+    "television": (lambda s: fx.through_the_room(fx.television(60.0, s), s), 1500),
+    "music": (lambda s: fx.through_the_room(fx.music(60.0, s), s), 7924),
+}
+def _room_measurement(name, owner_db, seed=5):
+    make, level = _ROOMS[name]
+    room = fx.int16_rms(make(seed), level)
+    floor = NoiseFloor()
+    gates = _hear(floor, room)
+    settled = int(12 / _CHUNK_S)
+    false_starts = _phrase_starts(_chunk_rms(room)[settled:], gates[settled:])
+    rng = np.random.default_rng(seed + 100)
+    heard = said = 0
+    for k in range(10):
+        start = int((14 + 4.5 * k) * fx.SR)
+        u = fx.int16_rms(fx.voice(rng, 1.6, 118.0, (0.15, 0.25)), level * 10 ** (owner_db / 20))
+        mix = room[start:start + len(u)] + u
+        n = len(u) // _CHUNK
+        gate = gates[start // _CHUNK: start // _CHUNK + n]
+        heard += _phrase_starts(_chunk_rms(mix), gate) > 0
+        said += 1
+    minutes = (len(room) / fx.SR - 12) / 60.0
+    return false_starts / minutes, heard, said
+
+
+@pytest.mark.parametrize("name", list(_ROOMS))
+def test_the_gate_in_each_room(name):
+    """Measured (tests/_audio_fixtures): phrases started on the room alone, per minute, and the
+    owner's utterances that started one, said 6 and 12 dB louder than the room's average. A
+    television or music has stretches louder than its average: a voice not louder than those is
+    not told from them by level (near_speech does it over ELI's own music)."""
+    per_min, heard6, said = _room_measurement(name, 6)
+    _, heard12, _ = _room_measurement(name, 12)
+    print(f"[ROOM] {name}: {per_min:.1f} false phrase starts/min; owner heard {heard6}/{said} at +6 dB, "
+          f"{heard12}/{said} at +12 dB")
+    assert per_min <= 2.0, name
+    assert heard12 >= said - 1, name
+    if name in ("quiet room", "fan"):
+        assert heard6 >= said - 1, name
 
 
 def test_the_speaking_lock_holds_for_as_long_as_the_voice_speaks(tmp_path):
@@ -248,7 +289,11 @@ def _scripted_listener(monkeypatch, said, *, threshold=1200.0, base=1200.0, medi
     stt._thread, stt.callback, stt.audio_queue = None, None, __import__("queue").Queue()
     stt._voice_gate = audio_stt.VoiceGate()
     stt._eli_duck_snapshot, stt._eli_ignore_until, stt._eli_ignore_reason = None, 0.0, ""
-    stt._threshold_base, stt._noise_stuck_streak = base, 0
+    stt._floor = NoiseFloor()
+    if threshold > base:              # a room louder than the quietest it has been heard
+        rng = np.random.default_rng(0)
+        _hear(stt._floor, rng.standard_normal(fx.SR * 12) * base / 3)
+        _hear(stt._floor, rng.standard_normal(fx.SR * 12) * threshold / 3, 12.0)
     stt._voice_profile = {"learned_from": getattr(audio_stt, "_VOICE_PROFILE_SOURCE", ""), "count": 0, "energy_mean": 0.0}
     stt._save_voice_profile = lambda: None
     return stt
@@ -292,67 +337,8 @@ def test_a_profile_learnt_from_every_capture_starts_over(tmp_path, monkeypatch):
 
 
 # ── hearing the owner over ELI's own music ───────────────────────────────────
-_SR = 16000
-
-
-def _voice(rng, seconds, f0, syll_s, formant_scale=1.0):
-    """Speech-like sound: syllables of a voice's harmonics under vowel formants, with pauses."""
-    vowels = [(730, 1090, 2440), (530, 1840, 2480), (270, 2290, 3010), (570, 840, 2410), (300, 870, 2240)]
-    out = np.zeros(int(seconds * _SR))
-    pos = 0
-    while pos < len(out):
-        n = int(rng.uniform(*syll_s) * _SR)
-        t = np.arange(n) / _SR
-        pitch = f0 * (1 + 0.08 * np.sin(2 * np.pi * rng.uniform(1, 2) * t))
-        phase = 2 * np.pi * np.cumsum(pitch) / _SR
-        formants = np.array(vowels[rng.integers(len(vowels))]) * formant_scale
-        syl = np.zeros(n)
-        for h in range(1, int(4000 / f0)):
-            amp = sum(1.0 / (1 + ((h * f0 - f) / 90.0) ** 2) for f in formants) / h ** 0.5
-            syl += amp * np.sin(h * phase)
-        syl *= np.sin(np.pi * np.linspace(0, 1, n)) ** 0.5
-        e = min(len(out), pos + n)
-        out[pos:e] = syl[: e - pos]
-        pos = e + int(rng.uniform(0.02, 0.08) * _SR)
-    return out / (np.sqrt(np.mean(out ** 2)) + 1e-12)
-
-
-def _music(seconds, seed):
-    """Drums, a chord and a rap-like vocal, as ELI's sink would play them."""
-    rng = np.random.default_rng(seed)
-    n = int(seconds * _SR)
-    x = np.zeros(n)
-    beat = int(0.65 * _SR)
-    for k, start in enumerate(range(0, n, beat)):
-        m = min(int(0.25 * _SR), n - start)
-        decay = np.exp(-np.arange(m) / (0.05 * _SR))
-        hit = rng.standard_normal(m) if k % 2 else np.sin(2 * np.pi * 55 * np.arange(m) / _SR) * 3
-        x[start:start + m] += hit * decay
-    t = np.arange(n) / _SR
-    x += 0.3 * sum(np.sin(2 * np.pi * f * t) for f in (220.0, 277.2, 329.6))
-    x = x / np.sqrt(np.mean(x ** 2))
-    return x + _voice(rng, seconds, 170.0, (0.10, 0.18), formant_scale=1.12)
-
-
-def _through_the_room(x, seed, delay_s=0.045, ppm=80.0):
-    """The speakers and the room to the mic: a reverberant tail, a delay and another clock."""
-    rng = np.random.default_rng(seed)
-    ir = rng.standard_normal(int(0.4 * _SR)) * np.exp(-np.arange(int(0.4 * _SR)) / (0.06 * _SR)) * 0.2
-    ir[0] = 1.0
-    y = np.fft.irfft(np.fft.rfft(x, 2 * len(x)) * np.fft.rfft(ir, 2 * len(x)))[: len(x)]
-    idx = np.arange(len(y)) * (1 + ppm * 1e-6)
-    y = np.interp(idx[idx < len(y) - 1], np.arange(len(y)), y)
-    y = np.concatenate([np.zeros(int(delay_s * _SR)), y])[: len(x)]
-    return np.pad(y, (0, len(x) - len(y))) / (np.sqrt(np.mean(y ** 2)) + 1e-12)
-
-
-def _feed(det, ref, mic, chunk=1024):
-    onsets = []
-    for pos in range(0, len(mic) - chunk, chunk):
-        t = (pos + chunk) / _SR
-        det.reference(ref[pos:pos + chunk], t)
-        onsets += det.mic(mic[pos:pos + chunk], t)
-    return onsets
+_SR = fx.SR
+_voice, _music, _through_the_room, _feed = fx.voice, fx.music, fx.through_the_room, fx.feed
 
 
 def test_speech_over_the_music_is_found_where_loudness_cannot_tell_it():
@@ -421,7 +407,7 @@ def _onset_listener(monkeypatch, media_playing=True):
     stt._voice_gate = audio_stt.VoiceGate()
     stt._eli_duck_snapshot, stt._eli_ignore_until = None, 0.0
     stt.recognizer = types.SimpleNamespace(energy_threshold=1200.0)
-    stt._threshold_base, stt.audio_queue, stt.callback = 1200.0, __import__("queue").Queue(), None
+    stt.audio_queue, stt.callback = __import__("queue").Queue(), None
     calls = []
     changed = []
     stt._near = types.SimpleNamespace(mic=lambda x, t: [t], output_changed=lambda lowered: changed.append(lowered))
