@@ -294,7 +294,7 @@ def leave_out(path: Optional[List[str]] = None, run: Callable = subprocess.run) 
         return 0
     gone = {_path_of(dist, f) for dist in present.values() for f, _ in _record(dist)}
     names = sorted(str(dist.metadata["Name"]) for dist in present.values())
-    print(f"[gpl] leaving out {', '.join(names)} (GPL; ELI runs without them, see LEFT_OUT)")
+    print(f"[gpl] leaving out {', '.join(names)} (GPL; ELI runs without them, see LEFT_OUT)", flush=True)
     pip = [sys.executable, "-m", "pip"]
     try:
         run(pip + ["uninstall", "-y", *names], check=True)
@@ -306,7 +306,7 @@ def leave_out(path: Optional[List[str]] = None, run: Callable = subprocess.run) 
         shared = {key: (str(dist.metadata["Name"]), str(dist.version)) for key, dist in after.items()
                   if any(_path_of(dist, f) in gone for f, _ in _record(dist))}
         for _, (name, version) in sorted(shared.items()):
-            print(f"[gpl] {name} {version} shared files with them: reinstalling it")
+            print(f"[gpl] {name} {version} shared files with them: reinstalling it", flush=True)
             run(pip + ["install", "--no-deps", "--force-reinstall", f"{name}=={version}"], check=True)
     except subprocess.CalledProcessError as exc:
         print(f"::error::{' '.join(map(str, exc.cmd))} failed ({exc.returncode})", file=sys.stderr)
