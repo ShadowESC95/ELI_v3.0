@@ -262,3 +262,25 @@ def test_mac_shortcuts_carry_the_products_name_and_only_its_own_old_ones_go(tmp_
     assert not (apps / "ELI Uninstall.command").exists(), "this product's old shared shortcut is gone"
     assert (apps / "ELI Setup.command").read_text() == others, "another product's is left as it is"
     assert f'"{runner}" uninstall' in (apps / "Uninstall ELI v3.0.command").read_text()
+
+
+def test_an_installed_v3_names_its_folder_and_launchers_for_v3(tmp_path, monkeypatch):
+    """The version was read from the pyproject.toml of the root in use and was v2 wherever there was
+    none: an installed ELI v3 (a wheel carries no pyproject.toml) put its install pointer in ELI v2's
+    folder and wrote ELI v2's launchers. The setup check looked for ELI v2's menu entry, not v3's."""
+    from eli.setup.status import has_desktop_launcher
+    home = tmp_path / "home"
+    site = tmp_path / "site-packages"
+    (site / "eli").mkdir(parents=True)                       # an installed package: no pyproject.toml
+    monkeypatch.delenv("ELI_PRODUCT_LINE", raising=False)
+    monkeypatch.setattr(dl, "_discover_root", lambda explicit=None: site)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    assert dl.product_line() == "v3"
+    assert dl.stable_user_root().name == "ELI_v3" and dl._desktop_stem() == "eli-v3"
+    apps = home / ".local" / "share" / "applications"
+    apps.mkdir(parents=True)
+    (apps / "eli-v2.desktop").write_text("[Desktop Entry]\nName=ELI v2.0\n", encoding="utf-8")
+    assert not has_desktop_launcher()                        # another version's entry is not v3's
+    (apps / "eli-v3.desktop").write_text("[Desktop Entry]\nName=ELI v3.0\n", encoding="utf-8")
+    assert has_desktop_launcher()
