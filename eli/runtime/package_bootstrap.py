@@ -18,7 +18,7 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-# Keep in sync with pyproject.toml [project.optional-dependencies] server / test.
+# Keep in sync with pyproject.toml: the server's packages are in its dependencies, the tests' in the test extra.
 _SERVER_MODULES = (
     "fastapi",
     "uvicorn",

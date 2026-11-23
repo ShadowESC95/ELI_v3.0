@@ -382,8 +382,8 @@ The known weak seam is internal state leaking into spoken output on the plain CH
 - **YouTube playback** lives in `eli/integrations/media/youtube_playback.py`; the media
   effector delegates to it. `yt-dlp` and `mpv` fetch the stream themselves, past ELI's own
   socket guard, so with the Net toggle off they are not started and the play is reported as
-  not played (`reason: offline`). `yt-dlp` comes with the `media` extra in `pyproject.toml`,
-  which release builds install.
+  not played (`reason: offline`). `yt-dlp` is one of the dependencies in `pyproject.toml`,
+  so every install and every release build has it.
 
 ### Plugins (`eli/plugins`)
 
