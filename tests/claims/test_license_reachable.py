@@ -337,6 +337,57 @@ def test_the_release_says_where_the_source_of_each_lgpl_package_it_carries_is(tm
     assert "LGPL_SOURCES.md" in lgpl and "gpl-sources.tar.gz" in lgpl and "packaging/gpl_sources.py" in lgpl
 
 
+def test_the_release_says_where_the_source_of_each_native_lgpl_library_it_carries_is(tmp_path, monkeypatch):
+    """LGPL_SOURCES.md named the LGPL Python packages only, from their metadata, while the AppImage carried
+    LGPL libraries those packages do not declare (OpenCV's FFmpeg and Qt 5, soundfile's libsndfile) and
+    others its build machine gave it (GLib, alsa-lib, libgcrypt, libsystemd). Each LGPL family
+    NATIVE_LIBRARIES knows is listed at the version the library itself reports, with its source, and each
+    library from the build machine with its distribution's source package. Invented files; the version
+    probe, dpkg and the network replaced."""
+    import subprocess
+    gs = _gpl_sources()
+    bundle = tmp_path / "ELI" / "_internal"
+    for rel in ("example_video.libs/libavutil-0a1b.so.60.8.100", "example_video.libs/libavcodec-0a1b.so.62.11.100",
+                "example_video.libs/libQt5Core-0a1b.so.5.15.18", "_example_data/libsndfile_x86_64.so",
+                "libglib-2.0.so.0", "libz.so.1", "PySide6/Qt/lib/libQt6Core.so.6", "examplemod.cpython-312.so"):
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_bytes(b"\x7fELF")
+    probed = {"av_version_info": "8.0.1", "sf_version_string": "1.2.2"}
+    monkeypatch.setattr(gs, "_probe_version", lambda path, function: probed[function] if "avcodec" not in path.name else "")
+    native = {lib["name"]: lib for lib in gs.native_lgpl([p for p in bundle.rglob("*") if p.is_file()], bundle.parent,
+                                                         skip={"libQt6Core.so.6"})}
+    assert sorted(native) == ["FFmpeg", "Qt", "libsndfile"]
+    assert native["FFmpeg"]["version"] == "8.0.1" and len(native["FFmpeg"]["files"]) == 2
+    assert native["FFmpeg"]["sources"] == ["https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"]
+    assert native["Qt"]["version"] == "5.15.18" and "/5.15/5.15.18/" in native["Qt"]["sources"][0]
+    assert native["libsndfile"]["version"] == "1.2.2"
+
+    copyright_dir = tmp_path / "doc"
+    def dpkg(cmd, capture_output, text):
+        if cmd[:2] == ["dpkg", "-S"]:
+            return subprocess.CompletedProcess(cmd, 1, "libglib2.0-0t64:amd64: /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0\n"
+                                                       "zlib1g:amd64: /usr/lib/x86_64-linux-gnu/libz.so.1\n", "")
+        return subprocess.CompletedProcess(cmd, 0, {"libglib2.0-0t64:amd64": "glib2.0\t2.80.0-6ubuntu3\n",
+                                                    "zlib1g:amd64": "zlib\t1:1.3\n"}[cmd[-1]], "")
+    monkeypatch.setattr(gs.shutil, "which", lambda name: "/usr/bin/dpkg")
+    monkeypatch.setattr(gs, "_os_release", lambda: {"ID": "ubuntu"})
+    texts = {"libglib2.0-0t64": "License: LGPL-2.1+\n", "zlib1g": "License: Zlib\n"}
+    monkeypatch.setattr(gs, "_copyright_text", lambda package: texts.get(package, ""))
+    hosts = gs.host_libraries([p for p in bundle.rglob("*") if p.is_file()],
+                              provided={"examplemod.cpython-312.so"}, run=dpkg)
+    assert [(h["name"], h["version"], h["files"]) for h in hosts] == [("glib2.0", "2.80.0-6ubuntu3", ["libglib-2.0.so.0"])]
+    assert hosts[0]["sources"] == ["https://launchpad.net/ubuntu/+source/glib2.0/2.80.0-6ubuntu3"]
+
+    monkeypatch.setattr(gs, "first_answering", lambda urls: urls[0] if urls else None)
+    lines, failed = gs.lgpl_listing([], list(native.values()) + hosts)
+    assert not failed and any("FFmpeg 8.0.1" in line and "ffmpeg-8.0.1.tar.xz" in line for line in lines)
+    assert any(line.startswith("- glib2.0 2.80.0-6ubuntu3") for line in lines)
+    _, failed = gs.lgpl_listing([], [dict(native["FFmpeg"], version="", sources=[])])
+    assert failed and "no source address" in failed[0]                 # a library it cannot place stops the release
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "python packaging/gpl_sources.py dist/gpl-sources --bundle dist/ELI" in release
+
+
 def _release_extras() -> list:
     import re
     release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

@@ -39,8 +39,10 @@ dependencies onto that user's machine; ELI passes none of them on.
 The release workflow runs this in the Linux build's environment, which holds every package the Windows
 and macOS builds carry plus a few for Linux alone, and attaches what it wrote to the release:
 
-    python packaging/gpl_sources.py OUT_DIR    # SOURCES.md (the GPL sources, or that there are none)
-                                               # and LGPL_SOURCES.md beside it
+    python packaging/gpl_sources.py OUT_DIR [--bundle DIR]
+                                               # SOURCES.md (the GPL sources, or that there are none)
+                                               # and LGPL_SOURCES.md beside it; with --bundle, the native
+                                               # LGPL libraries the built bundle carries too
 
 GPL packages: every installed distribution a release would carry whose licence metadata names the GPL
 or AGPL and offers no LGPL choice. SOURCES.md says plainly when there is none. For each there is, the
@@ -72,6 +74,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -629,22 +632,47 @@ KNOWN_LICENCES: Dict[str, Tuple[str, str]] = {
                                                     "take the CPU torch and carry none (release.yml)"),
 }
 
-# Native libraries and programs that wheels and build machines bring in under a strong copyleft, by
-# file name, whatever the package's own metadata says: PyAV's wheels (BSD-3-Clause) link x264 and x265
-# (GPL-2.0) into their FFmpeg on every platform, Python's readline module links GNU Readline (GPL-3.0)
-# and PortAudio built with JACK links Berkeley DB (Sleepycat) on a Linux build machine.
-NATIVE_LIBRARIES: Tuple[Tuple[str, str], ...] = (
-    (r"^(?:lib)?x264(?:[-.]|$)", "GPL-2.0-or-later (x264)"),
-    (r"^(?:lib)?x265(?:[-.]|$)", "GPL-2.0-or-later (x265)"),
-    (r"^(?:lib)?postproc(?:[-.]|$)", "GPL-2.0-or-later (FFmpeg's libpostproc)"),
-    (r"^(?:lib)?(?:xvidcore|rubberband|vidstab|frei0r)", "GPL-2.0-or-later"),
-    (r"^libreadline\.|^libhistory\.", "GPL-3.0-or-later (GNU Readline)"),
-    (r"^libdb(?:-[\d.]+)?\.(?:so|dylib)|^libdb[\d_]*\.dll$", "Sleepycat (Berkeley DB)"),
-    (r"^libgdbm", "GPL-3.0-or-later (GNU dbm)"),
-    (r"^libfftw3", "GPL-2.0-or-later (FFTW)"),
-    (r"^libgsl\.", "GPL-3.0-or-later (GNU Scientific Library)"),
-    (r"^(?:lib)?espeak(?:-ng)?(?:[-.]|$)|^espeakbridge\.|^(?:lib)?piper_phonemize", "GPL-3.0-or-later (eSpeak NG)"),
-    (r"^flac(?:-[\w.-]+)?(?:\.exe)?$", "GPL-2.0-or-later (the FLAC command-line programs)"),
+# Native libraries and programs that wheels and build machines bring in, by file name, whatever the
+# package's own metadata says, with their class: PyAV's wheels (BSD-3-Clause) link x264 and x265 (GPL-2.0)
+# into their FFmpeg on every platform, Python's readline module links GNU Readline (GPL-3.0) and PortAudio
+# built with JACK links Berkeley DB (Sleepycat) on a Linux build machine: strong copyleft, a breach. The
+# LGPL ones (FFmpeg built without its GPL parts, Qt, libsndfile) may go with a release when their source is
+# offered: LGPL_SOURCES.md says where, at the version read from the library itself (`probe`, a C function
+# returning its version string; else the version in its file name), from `sources`. The libraries a Linux
+# build takes from its build machine are found by the system's package manager instead (host_libraries).
+class NativeFamily(NamedTuple):
+    pattern: str                      # the file name
+    licence: str
+    klass: str                        # STRONG (no release carries it) or WEAK (its source is listed)
+    project: str = ""
+    probe: str = ""                   # e.g. av_version_info
+    sources: Tuple[str, ...] = ()     # templates: {version}, {minor}
+    note: str = ""
+
+
+NATIVE_LIBRARIES: Tuple[NativeFamily, ...] = (
+    NativeFamily(r"^(?:lib)?x264(?:[-.]|$)", "GPL-2.0-or-later (x264)", STRONG),
+    NativeFamily(r"^(?:lib)?x265(?:[-.]|$)", "GPL-2.0-or-later (x265)", STRONG),
+    NativeFamily(r"^(?:lib)?postproc(?:[-.]|$)", "GPL-2.0-or-later (FFmpeg's libpostproc)", STRONG),
+    NativeFamily(r"^(?:lib)?(?:xvidcore|rubberband|vidstab|frei0r)", "GPL-2.0-or-later", STRONG),
+    NativeFamily(r"^libreadline\.|^libhistory\.", "GPL-3.0-or-later (GNU Readline)", STRONG),
+    NativeFamily(r"^libdb(?:-[\d.]+)?\.(?:so|dylib)|^libdb[\d_]*\.dll$", "Sleepycat (Berkeley DB)", STRONG),
+    NativeFamily(r"^libgdbm", "GPL-3.0-or-later (GNU dbm)", STRONG),
+    NativeFamily(r"^libfftw3", "GPL-2.0-or-later (FFTW)", STRONG),
+    NativeFamily(r"^libgsl\.", "GPL-3.0-or-later (GNU Scientific Library)", STRONG),
+    NativeFamily(r"^(?:lib)?espeak(?:-ng)?(?:[-.]|$)|^espeakbridge\.|^(?:lib)?piper_phonemize",
+                 "GPL-3.0-or-later (eSpeak NG)", STRONG),
+    NativeFamily(r"^flac(?:-[\w.-]+)?(?:\.exe)?$", "GPL-2.0-or-later (the FLAC command-line programs)", STRONG),
+    NativeFamily(r"^(?:lib)?(?:avutil|avcodec|avformat|avfilter|avdevice|swresample|swscale)[-.\d]",
+                 "LGPL-2.1-or-later", WEAK, "FFmpeg", "av_version_info",
+                 ("https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz",)),
+    NativeFamily(r"^(?:lib)?Qt[56]Core(?:[-.]|$)", "LGPL-3.0-only", WEAK, "Qt", "",
+                 ("https://download.qt.io/archive/qt/{minor}/{version}/single/qt-everywhere-opensource-src-{version}.tar.xz",
+                  "https://download.qt.io/archive/qt/{minor}/{version}/single/qt-everywhere-src-{version}.tar.xz")),
+    NativeFamily(r"^libsndfile", "LGPL-2.1-or-later", WEAK, "libsndfile", "sf_version_string",
+                 ("https://github.com/libsndfile/libsndfile/releases/download/{version}/libsndfile-{version}.tar.xz",),
+                 "soundfile's build compiles libogg, libvorbis, libFLAC, libopus (BSD), mpg123 and LAME (LGPL) into it: "
+                 "https://github.com/bastibe/libsndfile-binaries"),
 )
 # Source, stubs and text that name such a library are not the library (pyttsx3's espeak.py driver).
 _NOT_NATIVE = (".py", ".pyc", ".pyi", ".pyx", ".pxd", ".h", ".txt", ".md", ".rst", ".json", ".html")
@@ -759,11 +787,17 @@ def native_breaches(names: Iterable[str]) -> List[Tuple[str, str]]:
         base = re.split(r"[\\/]", str(name))[-1]
         if base.lower().endswith(_NOT_NATIVE):
             continue
-        for pattern, licence in NATIVE_LIBRARIES:
-            if re.search(pattern, base):
-                found.append((str(name), licence))
-                break
+        family = native_family(base)
+        if family is not None and family.klass == STRONG:
+            found.append((str(name), family.licence))
     return found
+
+
+def native_family(base: str) -> Optional[NativeFamily]:
+    """The NATIVE_LIBRARIES entry a file name belongs to, or None."""
+    if base.lower().endswith(_NOT_NATIVE):
+        return None
+    return next((f for f in NATIVE_LIBRARIES if re.search(f.pattern, base)), None)
 
 
 def classify(dist: metadata.Distribution) -> Tuple[str, str]:
@@ -896,7 +930,116 @@ def lgpl_source(pkg: Dict[str, object]) -> str:
     return url
 
 
-def lgpl_listing(packages: List[Dict[str, object]]) -> Tuple[List[str], List[str]]:
+_SHARED = re.compile(r"\.(?:so(?:\.\d+)*|dylib|dll)$", re.I)
+_VERSION = re.compile(r"\d+(?:\.\d+)+")
+
+
+def _probe_version(path: Path, function: str) -> str:
+    """The version string a library's own C function returns, asked in a process of its own with the
+    library's folder on the loader's path (the neighbours it was built with)."""
+    code = ("import ctypes, sys; f = getattr(ctypes.CDLL(sys.argv[1]), sys.argv[2]); "
+            "f.restype = ctypes.c_char_p; print(f().decode())")
+    var = "PATH" if sys.platform == "win32" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
+    env = dict(os.environ)
+    env[var] = os.pathsep.join(x for x in (str(Path(path).parent), env.get(var, "")) if x)
+    try:
+        ran = subprocess.run([sys.executable, "-c", code, str(path), function], capture_output=True, text=True,
+                             timeout=120, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[lgpl-sources] {path}: {function}() not asked: {exc}", file=sys.stderr)
+        return ""
+    found = _VERSION.search(ran.stdout) if ran.returncode == 0 else None
+    return found.group(0) if found else ""
+
+
+def native_lgpl(files: Iterable[Path], root: Path, skip: Iterable[str] = ()) -> List[Dict[str, object]]:
+    """Each LGPL library family (NATIVE_LIBRARIES, WEAK) among `files` (paths under `root`), by folder: its
+    project, licence, the version read from the library itself, its files and where that version's source
+    is to be found. Libraries whose names are in `skip` (a package already listed carries them) are not."""
+    skip = set(skip)
+    groups: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for path in sorted(Path(f) for f in files):
+        family = native_family(path.name)
+        if family is None or family.klass != WEAK or path.name in skip:
+            continue
+        where = path.parent.relative_to(root).as_posix() if Path(root) in path.parents else str(path.parent)
+        group = groups.setdefault((family.project, where), {"family": family, "where": where, "files": [], "version": ""})
+        group["files"].append(path.name)
+        if not group["version"]:
+            # the library's own answer (FFmpeg's sonames number its libraries, not its release), else the
+            # version in its file name (Qt's libQt5Core.so.5.15.18)
+            if family.probe:
+                group["version"] = _probe_version(path, family.probe)
+            else:
+                named = _VERSION.search(path.name.split(".so.", 1)[-1])
+                group["version"] = named.group(0) if named else ""
+    out = []
+    for group in groups.values():
+        family, version = group["family"], str(group["version"])
+        minor = ".".join(version.split(".")[:2])
+        out.append({"name": family.project, "version": version, "licence": family.licence, "where": group["where"],
+                    "files": group["files"], "note": family.note,
+                    "sources": [t.format(version=version, minor=minor) for t in family.sources] if version else []})
+    return out
+
+
+def _os_release() -> Dict[str, str]:
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
+def _copyright_text(package: str) -> str:
+    """A Debian or Ubuntu package's copyright file ("" when it has none here)."""
+    try:
+        return Path(f"/usr/share/doc/{package}/copyright").read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"[lgpl-sources] no copyright file for {package}: {exc}", file=sys.stderr)
+        return ""
+
+
+def host_libraries(files: Iterable[Path], provided: Iterable[str], run: Callable = subprocess.run) -> List[Dict[str, object]]:
+    """The shared libraries among `files` that no installed package provides (`provided`: file names
+    from their RECORDs) and that the build machine's own packages do (Debian, Ubuntu: dpkg), whose
+    package's copyright names the LGPL or the GPL: each source package, its version, its files and
+    where the distribution publishes that version's source."""
+    provided = set(provided)
+    names = sorted({Path(f).name for f in files if _SHARED.search(Path(f).name) and Path(f).name not in provided})
+    if not names or not shutil.which("dpkg"):
+        return []
+    owners = run(["dpkg", "-S", *[f"*/{n}" for n in names]], capture_output=True, text=True)
+    by_package: Dict[str, set] = {}
+    for line in (owners.stdout or "").splitlines():
+        package, _, path = line.partition(": ")
+        if path and Path(path.strip()).name in names:
+            for pkg in package.split(", "):
+                by_package.setdefault(pkg.strip(), set()).add(Path(path.strip()).name)
+    distro = _os_release().get("ID", "").strip('"')
+    out: Dict[str, Dict[str, object]] = {}
+    for package, libs in sorted(by_package.items()):
+        query = run(["dpkg-query", "-W", "-f", "${source:Package}\t${source:Version}\n", package],
+                    capture_output=True, text=True)
+        first = (query.stdout or "").splitlines()[:1]
+        if query.returncode != 0 or not first or "\t" not in first[0]:
+            continue
+        source, version = first[0].split("\t", 1)
+        copyright_text = _copyright_text(package.split(":")[0])
+        if not (_LGPL.search(copyright_text) or _GPL.search(copyright_text)):
+            continue
+        licences = sorted({m.strip() for m in re.findall(r"^License:\s*(.+)$", copyright_text, re.M)
+                           if _LGPL.search(m) or _GPL.search(m)}) or ["the LGPL or the GPL, per its copyright file"]
+        url = (f"https://launchpad.net/ubuntu/+source/{source}/{version}" if distro == "ubuntu"
+               else f"https://snapshot.debian.org/package/{source}/{version}/")
+        entry = out.setdefault(source, {"name": source, "version": version, "licence": ", ".join(licences),
+                                        "where": f"the build machine's {package.split(':')[0]}", "files": [],
+                                        "note": "", "sources": [url]})
+        entry["files"] = sorted(set(entry["files"]) | libs)
+    return [out[k] for k in sorted(out)]
+
+
+def lgpl_listing(packages: List[Dict[str, object]], native: Iterable[Dict[str, object]] = ()) -> Tuple[List[str], List[str]]:
     """The lines of LGPL_SOURCES.md, and what could not be found."""
     lines = ["# Where the source of the LGPL components in this release's builds is", "",
              "The builds carry these packages under the GNU Lesser General Public License, at the versions",
@@ -924,6 +1067,17 @@ def lgpl_listing(packages: List[Dict[str, object]]) -> Tuple[List[str], List[str
             lines.append(f"- Qt {version}, the libraries inside {names} (under their licence): {url}")
         except Exception as exc:
             failed.append(f"Qt, the libraries inside {names}: {exc}")
+    native = list(native)
+    if native:
+        lines += ["", "Native libraries under the LGPL that the builds carry, each at the version read from the library",
+                  "itself (or from its distribution's package), with where that version's source is:", ""]
+    for lib in native:
+        label = f"{lib['name']} {lib['version'] or '(version unknown)'} ({lib['licence']}), {', '.join(lib['files'])} in {lib['where']}"
+        url = first_answering(list(lib["sources"])) if lib["sources"] else None
+        if not url:
+            failed.append(f"{label}: no source address answers ({', '.join(lib['sources']) or 'no version read'})")
+            continue
+        lines.append(f"- {label}: {url}" + (f" ({lib['note']})" if lib.get("note") else ""))
     return lines, failed
 
 
@@ -996,7 +1150,21 @@ def _tagged_archive(home: str, version: str) -> Tuple[bytes, str]:
     raise ValueError(f"no tag v{version} / {version} at {home or 'an unknown home page'}")
 
 
-def fetch_all(out_dir: Path) -> int:
+def bundle_native_lgpl(bundle: Optional[Path]) -> List[Dict[str, object]]:
+    """The native LGPL libraries a built bundle carries (native_lgpl, host_libraries), none without one.
+    Libraries an LGPL package already listed holds (Qt for Python's) are left to that package's line."""
+    if bundle is None:
+        return []
+    installed = installed_distributions()
+    listed = {Path(str(f)).name for pkg in lgpl_distributions()
+              for f in (installed.get(_key(str(pkg["name"]))).files or [] if installed.get(_key(str(pkg["name"]))) else [])}
+    root = Path(bundle)
+    files = [p for p in root.rglob("*") if p.is_file() and _SHARED.search(p.name)]
+    provided = {Path(str(f)).name for d in installed.values() for f in d.files or []}
+    return native_lgpl(files, root, listed) + host_libraries(files, provided)
+
+
+def fetch_all(out_dir: Path, bundle: Optional[Path] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     carried = gpl_distributions()
     lines = ["# Source of the GPL components in this release's builds", ""]
@@ -1044,7 +1212,7 @@ def fetch_all(out_dir: Path) -> int:
         except Exception as exc:
             failed.append(f"{name} {version}: {exc}")
     (out_dir / "SOURCES.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    lgpl_lines, lgpl_failed = lgpl_listing(lgpl_distributions())
+    lgpl_lines, lgpl_failed = lgpl_listing(lgpl_distributions(), bundle_native_lgpl(bundle))
     (out_dir / LGPL_LISTING).write_text("\n".join(lgpl_lines) + "\n", encoding="utf-8")
     for problem in failed:
         print(f"::error::GPL source not fetched: {problem}", file=sys.stderr)
@@ -1091,6 +1259,8 @@ def main(argv: List[str]) -> int:
             qt = "  carries Qt libraries" if pkg["qt_libraries"] else ""
             print(f"{pkg['name']}=={pkg['version']}  ({pkg['licence']}, source not attached: {LGPL_LISTING}){qt}")
         return 0
+    if len(argv) == 3 and argv[1] == "--bundle" and not argv[0].startswith("-"):
+        return fetch_all(Path(argv[0]), Path(argv[2]))
     if len(argv) != 1 or argv[0].startswith("-"):
         print(__doc__, file=sys.stderr)
         return 2

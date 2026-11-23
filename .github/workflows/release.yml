@@ -628,7 +628,8 @@ jobs:
       # among them) is, at the version the builds carry; one it cannot find fails it too.
       - name: Source of the GPL packages the bundles carry (attached to the release)
         run: |
-          python packaging/gpl_sources.py dist/gpl-sources
+          # the native LGPL libraries inside the AppImage's bundle too (Ubuntu's, OpenCV's FFmpeg and Qt 5, libsndfile)
+          python packaging/gpl_sources.py dist/gpl-sources --bundle dist/ELI
           cat dist/gpl-sources/SOURCES.md
           cat dist/gpl-sources/LGPL_SOURCES.md
           tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-gpl-sources.tar.gz" -C dist gpl-sources

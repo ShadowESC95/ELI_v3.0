@@ -70,10 +70,12 @@ applies, lets it be offered from another server when clear directions next to th
 code say where: **`LGPL_SOURCES.md`**, inside `ELI_v3-<version>-gpl-sources.tar.gz` next to
 the binaries on each release, names each of those packages, the version the builds carry
 and the address of that version's source (its sdist on PyPI with its sha256, or the source
-archive its project publishes, and Qt's source at the Qt version the wheels carry).
-`packaging/gpl_sources.py` writes it in the release workflow from the packages the build
-installed; an address PyPI does not list is used only once it answers, and a build with a
-package whose source it cannot find is not released.
+archive its project publishes, and Qt's source at the Qt version the wheels carry), and each
+native LGPL library inside the AppImage's bundle: FFmpeg, Qt 5 and libsndfile inside permissive
+wheels, at the version each library reports, and the libraries the build machine gave it, by their
+Ubuntu source package. `packaging/gpl_sources.py` writes it in the release workflow from the packages
+the build installed and the bundle it built; an address PyPI does not list is used only once it
+answers, and a build with a package or library whose source it cannot find is not released.
 
 ---
 
@@ -124,14 +126,14 @@ offered: none is changed, linked statically into ELI's code or merged into it.
   Python, LGPL-3.0, with the Qt libraries inside them), zeroconf (LGPL-2.1+), python-xlib (LGPL-2.1+,
   Linux), num2words (LGPL-2.1); soxr (LGPL-2.1) only in Qwen3-TTS's own runtime, never in a release.
 - **LGPL shared libraries inside permissive wheels**: opencv-python's FFmpeg (LGPL-2.1) and, on Linux, Qt 5
-  (LGPL-3.0); soundfile's libsndfile (LGPL-2.1, with libmpg123 and libmp3lame). Their source is published
-  with each project's release of that wheel (opencv-python's repository at its tag, which names the FFmpeg
-  and Qt versions it builds; libsndfile's release). `LGPL_SOURCES.md` does not list these yet: it reads the
-  Python packages' own metadata only.
-- **LGPL system libraries** the Linux AppImage takes from its Ubuntu 24.04 build machine: GLib, alsa-lib,
-  libgcrypt, libgpg-error, libsystemd, libquadmath, libkeyutils. Each is Ubuntu's package of that library,
-  whose source Ubuntu publishes at that version (`apt-get source <package>`); not yet listed in
-  `LGPL_SOURCES.md` either.
+  (LGPL-3.0); soundfile's libsndfile (LGPL-2.1, with mpg123 and LAME compiled in). `LGPL_SOURCES.md` lists
+  each at the version the library itself reports (FFmpeg's `av_version_info`, libsndfile's
+  `sf_version_string`, Qt's own file name) with that version's source (`NATIVE_LIBRARIES` in
+  `packaging/gpl_sources.py`, read from the AppImage's bundle).
+- **LGPL system libraries** the Linux AppImage takes from its Ubuntu build machine (GLib, alsa-lib,
+  libgcrypt, libgpg-error, libsystemd, libquadmath and any other whose package's copyright names the LGPL
+  or the GPL): `LGPL_SOURCES.md` lists each Ubuntu source package at the version the build machine had,
+  with Ubuntu's page for that version's source (found by dpkg, not by a list).
 - **MPL-2.0 files** (certifi, tqdm, pyttsx3): file-level copyleft, kept as their own unmodified files.
 
 ## Vendor runtimes (their own licence lets an application carry them)
