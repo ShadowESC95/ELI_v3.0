@@ -75,12 +75,13 @@ dependencies = [
     # Kokoro's phonemes; it is declared WITHOUT its [en] extra, which brings espeak-ng (GPL) through
     # espeakng-loader and phonemizer-fork. Its English needs spaCy (the tagger; the en_core_web_sm 3.8.0
     # fetched with the voice needs spaCy 3.8) and num2words (LGPL-2.1, numbers as words), declared here;
-    # python-crfsuite runs the guess for words its dictionaries lack.
+    # python-crfsuite runs the guess for words its dictionaries lack; it has no build for Windows on ARM,
+    # where those words are spelt instead (tts_kokoro.available does not need it).
     "onnxruntime>=1.15",
     "misaki>=0.9.4,<0.10",
     "spacy>=3.8,<3.9",
     "num2words>=0.5",
-    "python-crfsuite>=0.9",
+    "python-crfsuite>=0.9; platform_machine != 'ARM64'",
     # Voice input. PyAudio has ready-made builds for Windows only; on Linux and macOS it is compiled
     # against PortAudio's headers (portaudio19-dev, portaudio-devel, `brew install portaudio`), which
     # install.sh adds first.

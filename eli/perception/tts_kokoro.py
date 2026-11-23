@@ -371,11 +371,12 @@ def load_error() -> str:
 
 
 def available() -> bool:
-    """True when the engine's packages are installed (its files may still have to be fetched)."""
+    """True when the engine's packages are installed (its files may still have to be fetched).
+    python-crfsuite is not among them: where it has no build (Windows on ARM) the words misaki's
+    dictionaries lack are spelt instead of guessed, and the voice still speaks."""
     import importlib.util
     try:
-        return all(importlib.util.find_spec(m) is not None
-                   for m in ("onnxruntime", "misaki", "spacy", "pycrfsuite"))
+        return all(importlib.util.find_spec(m) is not None for m in ("onnxruntime", "misaki", "spacy"))
     except (ImportError, ValueError):
         return False
 
