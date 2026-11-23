@@ -37,8 +37,8 @@ def test_conversation_keeps_its_words():
 # Nor are the words that only open a request: "okay, well play <song> by <artist>" searched for "well play
 # <song>", and when the right song did play it was refused, the extra words not being in its name.
 @pytest.mark.parametrize("text,query", [
-    ("okay, well play soldiers logic by orlo", "soldiers logic by orlo"),
-    ("well play soldiers logic by orlo", "soldiers logic by orlo"),
+    ("okay, well play sailors lantern by orlo", "sailors lantern by orlo"),
+    ("well play sailors lantern by orlo", "sailors lantern by orlo"),
     ("um play evil by quiet machine", "evil by quiet machine"),
 ])
 def test_the_words_that_open_a_request_are_not_its_target(text, query):

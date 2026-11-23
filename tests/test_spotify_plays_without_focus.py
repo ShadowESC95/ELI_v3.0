@@ -184,7 +184,7 @@ def test_the_reply_names_what_is_playing_and_never_asks_the_user_to_press_play(m
     ("trouble", "orlo", "Orlo", "Crack the Bottle", False),      # the artist's best-known song
     ("evil", "orlo", "Orlo", "Evil Deeds", False),               # a title that holds the words and more
     ("evil", "orlo", "Orlo", "Evil - Remastered 2011", True),    # what a version adds is not more
-    ("soldiers logic", "orlo", "Orlo", "Soldier's Logic", True),
+    ("sailors lantern", "orlo", "Orlo", "Sailor's Lantern", True),
     ("north and south", "veridian", "Veridian", "North & South (feat. Red tamsin)", True),
     ("trouble", "orlo", "Coldplay", "Trouble", False),
     ("music", "orlo", "Orlo", "Music", True),                    # a title that is a kind word

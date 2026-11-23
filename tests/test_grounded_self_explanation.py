@@ -1303,7 +1303,7 @@ def test_a_source_tag_or_a_written_call_the_user_asked_for_is_not_a_tool_call():
 
 
 def test_a_reply_is_judged_once_and_never_its_own_notes(period):
-    """Live: the spoken copy of "Playing “Eminem — Evil” on Spotify." was judged again with no turn of its
+    """Live: the spoken copy of "Playing “Orlo — Ember” on Spotify." was judged again with no turn of its
     own, and "Nothing was carried out in this turn." was read aloud instead; the check's own note
     ("Nothing is recorded on Wednesday 7 October.") was judged again by the passes that stored it."""
     served = "".join(self_claims.gate_stream([REPLY[:50], REPLY[50:]]))
@@ -1347,7 +1347,7 @@ def test_what_one_turn_settled_is_judged_afresh_in_the_next():
 
 
 def test_done_and_an_act_on_a_name_in_emphasis_is_a_claim_of_acting():
-    """Live: told "go for it" to an offer nothing had kept, the model wrote "Done. Queueing *The 4th Branch*
+    """Live: told "go for it" to an offer nothing had kept, the model wrote "Done. Queueing *The 9th Harbour*
     and letting it rip." and it was served, with nothing run. A name in Markdown emphasis is pointed at
     like a quoted one."""
     reply = "Done. Queueing *The Long Road* and letting it rip."

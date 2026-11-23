@@ -73,7 +73,7 @@ _DAY_WORDS = re.compile(
 
 
 # What a question about the weather says after the place, which is no part of its name: "what's the
-# weather in Wexford like", "how's the weather in Cork looking", "in Lyon going to be like", "in Galway
+# weather in Porto like", "how's the weather in Leeds looking", "in Lyon going to be like", "in Bergen
 # right now", "in Oslo at the moment, please". Taken off the end only, so a name is never cut inside.
 _AFTER_THE_PLACE = re.compile(
     r"(?i)(?:[\s,]+(?:like|looking|doing|(?:(?:is|it'?s|going|gonna)\s+)?(?:going\s+to\s+be|gonna\s+be|to\s+be|be)|"
@@ -84,7 +84,7 @@ _AFTER_THE_PLACE = re.compile(
 def clean_place(text: str) -> str:
     """A place name with any day words taken out: "tomorrow in Dublin" is Dublin, and
     "tomorrow" on its own is no place at all. What a question says after the place ("like",
-    "looking", "going to be like", "right now") goes too: "Wexford like" was looked up as a place."""
+    "looking", "going to be like", "right now") goes too: "Porto like" was looked up as a place."""
     out = _DAY_WORDS.sub(" ", str(text or ""))
     out = re.sub(r"(?i)^\s*(?:in|at|for|near)\s+", "", re.sub(r"\s+", " ", out).strip(" ,?.!"))
     out = out.strip(" ,?.!")

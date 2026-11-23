@@ -270,7 +270,7 @@ def _eli_weather_prepass(user_text: str):
         user_text,
         re.I)
     if m:
-        # "weather for tomorrow" is a day, not a place, and "in Wexford like" is Wexford: the weather
+        # "weather for tomorrow" is a day, not a place, and "in Porto like" is Porto: the weather
         # plugin's own reading of a place (clean_place), here and in the handler alike
         from eli.plugins.weather.plugin import clean_place
         loc = clean_place(m.group(1)) or None

@@ -465,8 +465,8 @@ def implied_song_by_artist(raw: str, norm: str = "") -> str:
     queen"), or "" when it is a sentence with "by" in it. The one test of that shape: a copy of it
     ran on every message after routing, so "my car was hit by a truck" played Spotify."""
     raw = str(raw or "").strip()
-    # What opens the message is not the title when "play" follows it: "okay, well play soldiers logic by
-    # orlo" searched for "well play soldiers logic" (command_splitter.after_lead). Before another verb it
+    # What opens the message is not the title when "play" follows it: "okay, well play sailors lantern by
+    # orlo" searched for "well play sailors lantern" (command_splitter.after_lead). Before another verb it
     # stays: a title may open on a lead and a verb ("hey look ma i made it").
     from eli.runtime.command_splitter import after_lead
     told = after_lead(raw)
