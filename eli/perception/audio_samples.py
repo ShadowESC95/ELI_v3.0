@@ -5,12 +5,14 @@ the same resampler), and what two more needed:
 
   * speech recognition: faster-whisper decodes a file with PyAV, whose argument list changed under
     it (PyAV 18 dropped `metadata_errors`, which faster-whisper 1.2.1 still passes), and every
-    transcription in the packaged app failed. Handed samples at 16 kHz it never opens a file.
+    transcription in the packaged app failed; and PyAV's wheels carry x264 (GPL), so no release
+    carries PyAV at all. Handed samples at 16 kHz faster-whisper never opens a file.
   * playback: a USB headset's ALSA device took only its own rate, and opening it at the voice's
     22,050 Hz failed ("Invalid sample rate").
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -53,18 +55,48 @@ def _read_pcm_wav(path):
     return x, int(rate), int(channels)
 
 
+# The rate a file only the system's ffmpeg reads is decoded at when the caller names none: Opus, which
+# browsers record in, is always 48 kHz.
+_FFMPEG_RATE = 48000
+
+
+def _read_with_ffmpeg(path, rate: int):
+    """(samples, rate) of a file the system's ffmpeg program reads, decoded to one channel at `rate`.
+    ELI carries no FFmpeg of its own (PyAV's holds x264, under the GPL); an ffmpeg installed on the
+    system is a program apart, run here."""
+    import shutil
+    import subprocess
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        raise FileNotFoundError("no ffmpeg program is installed")
+    ran = subprocess.run([exe, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
+                          "-f", "f32le", "-ac", "1", "-ar", str(int(rate)), "-"], capture_output=True, check=False)
+    if ran.returncode != 0:
+        raise ValueError(ran.stderr.decode("utf-8", "replace").strip() or f"ffmpeg exited {ran.returncode}")
+    return np.frombuffer(ran.stdout, dtype="<f4").astype(np.float32), int(rate)
+
+
 def read_mono(path, sr_out: Optional[int] = None):
     """(samples, rate): the file's channels averaged into one, as float32, at sr_out when given.
-    A PCM WAV is read with the standard library; other formats with soundfile."""
+    A PCM WAV is read with the standard library; other formats libsndfile reads (FLAC, Ogg Vorbis and
+    Opus, MP3) with soundfile; anything else (WebM, MP4) with the system's ffmpeg program when it has
+    one. Raises, saying so, when none of them reads it."""
     try:
         data, sr, channels = _read_pcm_wav(path)
         if channels > 1:
             data = data[: data.size - data.size % channels].reshape(-1, channels).mean(axis=1)
     except Exception:
-        import soundfile as sf
-        data, sr = sf.read(str(path), dtype="float32", always_2d=False)
-        if getattr(data, "ndim", 1) > 1:
-            data = data.mean(axis=1)
+        try:
+            import soundfile as sf
+            data, sr = sf.read(str(path), dtype="float32", always_2d=False)
+            if getattr(data, "ndim", 1) > 1:
+                data = data.mean(axis=1)
+        except Exception as unread:
+            try:
+                return _read_with_ffmpeg(path, sr_out or _FFMPEG_RATE)
+            except (OSError, ValueError) as failure:
+                raise ValueError(f"{Path(str(path)).name}: not a format ELI reads itself (WAV, FLAC, Ogg, MP3: "
+                                 f"{unread}), and the system's ffmpeg did not read it ({failure})") from unread
     data = np.asarray(data, dtype=np.float32).reshape(-1)
     if sr_out and int(sr_out) != int(sr):
         return resample(data, int(sr), int(sr_out)), int(sr_out)

@@ -112,23 +112,31 @@ _LGPL = re.compile(r"(?<![A-Za-z])LGPL|GNU (?:LESSER|LIBRARY) (?:GENERAL )?PUBLI
 
 
 class LeftOut(NamedTuple):
-    """A GPL distribution that a package ELI uses declares, which no release carries."""
+    """A distribution under the GPL, or carrying a library that is, that a package ELI uses declares and
+    no release carries."""
     of: str                       # the package that declares it
     modules: Tuple[str, ...]      # its import packages, which ELI.spec leaves out of the frozen apps
     needs: Tuple[str, ...]        # what of that package needs it; ELI calls none of these
     stand_in: str                 # what provides the same import package instead, or ""
+    held_by: str = ""             # where the package imports it unguarded: ELI's function that imports
+                                  # the package with a placeholder for it ("module:function")
 
 
 # PyAutoGUI 0.9.54 imports mouseinfo and pymsgbox inside try/except ImportError and in their place puts
 # a function that raises only when it is called: pyautogui.mouseInfo() and its alert, confirm, prompt
 # and password boxes are all that need them, and ELI calls none of those. Its X11 backend drives the
 # Xlib package, which python-xlib (LGPL, in pyproject.toml's dependencies on Linux) provides;
-# python3-xlib is an old copy of the same package under the GPL. tests/claims/test_license_reachable.py
-# holds each of these to the code.
+# python3-xlib is an old copy of the same package under the GPL. PyAV (BSD-3-Clause) carries an FFmpeg
+# with x264 and x265 (GPL-2.0) linked in, on every platform: faster-whisper imports it unguarded at the
+# top of its audio module, only for decode_audio(), which opens a file; ELI hands faster-whisper samples
+# it decoded itself and imports it through local_whisper_stt.faster_whisper(), which puts a placeholder
+# where PyAV is missing. tests/claims/test_license_reachable.py holds each of these to the code.
 LEFT_OUT: Dict[str, LeftOut] = {
     "mouseinfo": LeftOut("pyautogui", ("mouseinfo",), ("mouseInfo",), ""),
     "pymsgbox": LeftOut("pyautogui", ("pymsgbox",), ("alert", "confirm", "prompt", "password"), ""),
     "python3-xlib": LeftOut("pyautogui", (), (), "python-xlib"),
+    "av": LeftOut("faster-whisper", ("av",), ("decode_audio",), "",
+                  "eli.perception.local_whisper_stt:faster_whisper"),
 }
 
 
@@ -456,9 +464,14 @@ def archive_left_out(path: Path, meta=None) -> List[str]:
 
 
 def leave_out_of_wheels(directory: Path) -> int:
-    """Rewrite each wheel in `directory` without the files LEFT_OUT_FILES names, and without their rows in
-    its RECORD, as every install leaves them out of the environment. An sdist holding them is not
-    rewritten: --check-wheels refuses it."""
+    """Take out of `directory` the wheels and sdists of what LEFT_OUT names, and rewrite each wheel without
+    the files LEFT_OUT_FILES names and their rows in its RECORD, as every install leaves them out of the
+    environment. An sdist holding such files is not rewritten: --check-wheels refuses it."""
+    for path in sorted(p for p in Path(directory).iterdir() if p.is_file()):
+        meta = archive_metadata(path)
+        if meta is not None and _key(str(meta.get("Name") or "")) in LEFT_OUT:
+            print(f"[gpl] {path.name}: left out (packaging/gpl_sources.py, LEFT_OUT)", flush=True)
+            path.unlink()
     for path in sorted(Path(directory).glob("*.whl")):
         gone = set(archive_left_out(path))
         if not gone:
@@ -480,13 +493,20 @@ def leave_out_of_wheels(directory: Path) -> int:
 
 
 def gpl_archives(directory: Path) -> List[str]:
-    """Each wheel or sdist in `directory` whose metadata puts it under the GPL, or that holds files no
-    release carries (LEFT_OUT_FILES), with what it says."""
+    """Each wheel or sdist in `directory` whose metadata puts it under the GPL, that LEFT_OUT names, that
+    carries a library NATIVE_LIBRARIES puts under a strong copyleft, or that holds files no release
+    carries (LEFT_OUT_FILES), with what it says."""
     found = []
     for path in sorted(p for p in Path(directory).iterdir() if p.is_file()):
         meta = archive_metadata(path)
+        carried = native_breaches(_archive_names(path)) if meta is not None else []
         if meta is not None and is_gpl(licence_facts(meta)):
             found.append(f"{path.name} ({'; '.join(licence_facts(meta))})")
+        elif meta is not None and _key(str(meta.get("Name") or "")) in LEFT_OUT:
+            found.append(f"{path.name} (left out of every release: packaging/gpl_sources.py, LEFT_OUT)")
+        elif carried:
+            found.append(f"{path.name} (carries {', '.join(sorted({Path(f).name for f, _ in carried}))}: "
+                         f"{'; '.join(sorted({lic for _, lic in carried}))})")
         elif meta is not None and archive_left_out(path, meta):
             entry = LEFT_OUT_FILES[_key(str(meta.get("Name")))]
             found.append(f"{path.name} (holds {len(archive_left_out(path, meta))} file(s) under {entry.licence}, "
@@ -614,6 +634,9 @@ _RANK = {c: i for i, c in enumerate(CLASSES)}
 KNOWN_LICENCES: Dict[str, Tuple[str, str]] = {
     "pypiwin32": ("PSF-2.0", "a stub that installs pywin32 (PSF-2.0), published by pywin32's maintainers: "
                              "https://github.com/mhammond/pywin32"),
+    "cuda-toolkit": ("LicenseRef-NVIDIA-CUDA-EULA", "NVIDIA's metapackage for the CUDA wheels PyPI's Linux torch "
+                                                    "pulls in, under the CUDA Toolkit EULA; the release builds "
+                                                    "take the CPU torch and carry none (release.yml)"),
 }
 
 # Native libraries and programs that wheels and build machines bring in under a strong copyleft, by
@@ -744,15 +767,17 @@ def native_breaches(names: Iterable[str]) -> List[Tuple[str, str]]:
 
 
 def classify(dist: metadata.Distribution) -> Tuple[str, str]:
-    """(class, what it is under) of an installed distribution: KNOWN_LICENCES first, else its metadata,
-    and strong copyleft whatever that says when it carries a library NATIVE_LIBRARIES names."""
+    """(class, what it is under) of an installed distribution as a release carries it: KNOWN_LICENCES
+    first, else its metadata, and strong copyleft whatever that says when it carries a library
+    NATIVE_LIBRARIES names (but for the files every build leaves out of it, LEFT_OUT_FILES)."""
     key = _key(str(dist.metadata.get("Name") or ""))
     if key in KNOWN_LICENCES:
         licence, where = KNOWN_LICENCES[key]
         klass, said = _class_of_name(licence), f"{licence} ({where})"
     else:
         klass, said = licence_class(dist), "; ".join(licence_facts(dist)) or "nothing in its metadata"
-    carried = native_breaches(f for f, _ in _record(dist))
+    left_out = LEFT_OUT_FILES.get(key)
+    carried = native_breaches(f for f, _ in _record(dist) if not (left_out and left_out.matches(f)))
     if carried:
         return STRONG, f"{said}, and it carries {', '.join(sorted({Path(f).name for f, _ in carried}))} " \
                        f"({'; '.join(sorted({lic for _, lic in carried}))})"

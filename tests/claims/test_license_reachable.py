@@ -348,6 +348,10 @@ def test_a_release_carries_no_package_under_the_gpl():
     assert not carried, "a release would carry packages under the GPL:\n  " + "\n  ".join(
         f"{key} {bundled[key].version} ({'; '.join(gs.licence_facts(bundled[key]))})" for key in carried)
     assert not set(gs.LEFT_OUT) & set(bundled)
+    classes = {key: gs.classify(dist) for key, dist in bundled.items()}
+    wrong = sorted(f"{key} {bundled[key].version}: {klass} ({said})" for key, (klass, said) in classes.items()
+                   if klass in gs.BREACH or klass == gs.UNKNOWN)
+    assert not wrong, "a release would carry what a closed, paid product may not pass on:\n  " + "\n  ".join(wrong)
 
     tools = gs.build_only(installed)
     named: dict = {}
@@ -413,8 +417,10 @@ def test_what_every_release_leaves_out_eli_runs_without():
 
     installed = gs.installed_distributions()
     for name, entry in sorted(gs.LEFT_OUT.items()):
-        spec = importlib.util.find_spec(entry.of)
-        if spec is not None and spec.submodule_search_locations and entry.modules:
+        spec = importlib.util.find_spec(entry.of.replace("-", "_"))
+        if entry.held_by:
+            _check_held(gs, entry)
+        elif spec is not None and spec.submodule_search_locations and entry.modules:
             # read, not imported: on Linux importing PyAutoGUI opens the X display
             guarded, bound, imports = set(), set(), []
             for path in sorted(Path(next(iter(spec.submodule_search_locations))).glob("*.py")):
@@ -477,6 +483,39 @@ def test_what_every_release_leaves_out_eli_runs_without():
                     taken += [(a.name, None) for a in node.names if a.name.split(".")[0] in packages]
             if taken:
                 _check_taken(backend, tree, taken, provided, kept)
+
+
+def _check_held(gs, entry):
+    """A package that imports a left-out module unguarded (faster-whisper imports PyAV at the top of its
+    audio module) is imported in eli/ and api/ only through ELI's function for it, which puts a
+    placeholder where the module is missing: the package imports, nothing else sees the placeholder, and
+    what needs the module raises, saying why."""
+    import ast
+    import subprocess
+    import sys
+    holder, function = entry.held_by.split(":")
+    package = entry.of.replace("-", "_")
+    direct = []
+    for root in ("eli", "api"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
+                    [node.module or ""] if isinstance(node, ast.ImportFrom) and not node.level else []
+                if any(n.split(".")[0] == package for n in names):
+                    direct.append(f"{H.rel(path)}:{node.lineno}")
+    assert not direct, f"{package} is imported without {entry.held_by}: {direct}"
+    pytest.importorskip(package)
+    code = (f"import sys\nfor m in {list(entry.modules)!r}: sys.modules[m] = None\n"
+            f"from {holder} import {function}\nmod = {function}()\n"
+            f"assert not any(m in sys.modules for m in {list(entry.modules)!r}), 'the placeholder stayed'\n"
+            f"for need in {list(entry.needs)!r}:\n"
+            f"    try:\n        getattr(mod, need)('example.webm')\n    except ImportError as e:\n"
+            f"        assert 'no release' in str(e), e\n    else:\n        raise SystemExit(need + ' ran')\n"
+            f"print('held')\n")
+    ran = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(REPO), timeout=600)
+    assert ran.returncode == 0 and "held" in ran.stdout, ran.stderr[-2000:]
+    frozen = (REPO / "packaging" / "pyinstaller" / "eli_entry.py").read_text(encoding="utf-8")
+    assert f"from {holder} import {function}" in frozen, "the frozen app's selftest does not import it that way"
 
 
 def _check_taken(backend, tree, taken, provided, kept):

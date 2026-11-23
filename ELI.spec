@@ -394,6 +394,14 @@ if sys.platform.startswith("linux"):
         binaries.append((str(_path), _qt_lib_dest))
         print(f"[ELI.spec] bundling Qt xcb dependency: {_path} -> {_qt_lib_dest}")
 
+# faster-whisper imports PyAV at the top of its audio module, and no build carries PyAV (its FFmpeg holds
+# x264, under the GPL: packaging/gpl_sources.py, LEFT_OUT); imported the way ELI imports it, with a
+# placeholder for PyAV, the probe below finds it and its data (Silero's VAD model) is collected.
+try:
+    from eli.perception.local_whisper_stt import faster_whisper as _faster_whisper  # noqa: E402
+    _faster_whisper()
+except Exception as _e:
+    print(f"[ELI.spec] faster-whisper did not import ({_e}); speech input's data may be skipped")
 for pkg in ("llama_cpp", "faster_whisper"):
     datas += _optional_collect(pkg, data=True)
 # openWakeWord: only its feature extractor's models, the files ELI loads (FEATURE_MODELS in

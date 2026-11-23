@@ -1356,6 +1356,24 @@ _WEB_UI = """<!doctype html>
   spk.onchange=()=>localStorage.setItem('eli_speak',spk.checked?'1':'0');
   function vmsg(m){vstat.textContent=m||'';}
   let mediaRec=null,vchunks=[],recording=false,vstream=null;
+  // The clip as a 16 kHz mono WAV, decoded by the browser that recorded it: ELI carries no FFmpeg
+  // (PyAV's holds x264, under the GPL), and a WAV it reads itself. Null where the browser cannot.
+  async function wavOf(blob){
+    const AC=window.AudioContext||window.webkitAudioContext,OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+    if(!AC||!OAC||!blob.arrayBuffer)return null;
+    const ac=new AC();let buf;
+    try{buf=await ac.decodeAudioData(await blob.arrayBuffer());}finally{try{ac.close();}catch(_e){}}
+    const rate=16000,off=new OAC(1,Math.max(1,Math.ceil(buf.duration*rate)),rate);
+    const src=off.createBufferSource();src.buffer=buf;src.connect(off.destination);src.start();
+    const pcm=(await off.startRendering()).getChannelData(0),n=pcm.length;
+    const out=new DataView(new ArrayBuffer(44+n*2));
+    const tag=(o,t)=>{for(let i=0;i<t.length;i++)out.setUint8(o+i,t.charCodeAt(i));};
+    tag(0,'RIFF');out.setUint32(4,36+n*2,true);tag(8,'WAVE');tag(12,'fmt ');out.setUint32(16,16,true);
+    out.setUint16(20,1,true);out.setUint16(22,1,true);out.setUint32(24,rate,true);out.setUint32(28,rate*2,true);
+    out.setUint16(32,2,true);out.setUint16(34,16,true);tag(36,'data');out.setUint32(40,n*2,true);
+    for(let i=0;i<n;i++){const v=Math.max(-1,Math.min(1,pcm[i]));out.setInt16(44+i*2,v<0?v*32768:v*32767,true);}
+    return new Blob([out],{type:'audio/wav'});
+  }
   async function toggleMic(){
     if(recording){try{mediaRec.stop();}catch(_e){}return;}
     if(!navigator.mediaDevices||!window.MediaRecorder){
@@ -1373,12 +1391,13 @@ _WEB_UI = """<!doctype html>
       if(vstream){vstream.getTracks().forEach(t=>t.stop());vstream=null;}
       const type=(mediaRec.mimeType||mt||'audio/webm').split(';')[0];
       const ext=type.indexOf('mp4')>=0?'mp4':type.indexOf('ogg')>=0?'ogg':'webm';
-      const blob=new Blob(vchunks,{type:type});
+      let blob=new Blob(vchunks,{type:type}),sent=type,sentExt=ext;
       if(!blob.size){vmsg('No audio captured');return;}
       vmsg('Transcribing…');
-      const h={'Content-Type':type};if(token)h['Authorization']='Bearer '+token;
+      try{const wav=await wavOf(blob);if(wav){blob=wav;sent='audio/wav';sentExt='wav';}}catch(_e){}
+      const h={'Content-Type':sent};if(token)h['Authorization']='Bearer '+token;
       try{
-        const r=await fetch('/v1/voice/stt?ext='+ext,{method:'POST',headers:h,body:blob});
+        const r=await fetch('/v1/voice/stt?ext='+sentExt,{method:'POST',headers:h,body:blob});
         const j=await r.json();
         if(!j.ok){vmsg('STT error: '+(j.error||'failed'));return;}
         const text=(j.text||'').trim();
@@ -5282,7 +5301,9 @@ _VOICE_EXTS = {"webm", "ogg", "mp4", "m4a", "wav", "mp3"}
 async def voice_stt(request: Request, ext: str = "webm"):
     """Transcribe a raw audio clip (POST body) with ELI's local whisper model.
     Body is the audio bytes; `?ext=` (or the Content-Type subtype) names the
-    container so PyAV can decode it. Raw-body keeps us free of python-multipart."""
+    container. The web page sends a WAV its browser decoded; ELI reads WAV, FLAC,
+    Ogg and MP3 itself and anything else through the system's ffmpeg
+    (eli/perception/audio_samples.read_mono). Raw-body keeps us free of python-multipart."""
     import tempfile
     data = await request.body()
     if not data:

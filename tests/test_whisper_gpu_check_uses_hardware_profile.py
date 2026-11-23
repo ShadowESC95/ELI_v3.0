@@ -71,10 +71,33 @@ def test_a_recording_reaches_faster_whisper_as_16_khz_samples_not_a_file(tmp_pat
     assert abs(float(audio.mean()) - 1000 / 32768) < 1e-3, "the two channels are averaged, not run end to end"
 
 
-def test_a_file_that_cannot_be_read_here_is_left_to_faster_whisper(tmp_path):
+def test_a_file_libsndfile_cannot_read_goes_to_the_system_s_ffmpeg_never_to_pyav(tmp_path, monkeypatch):
+    """A file soundfile could not read was handed to faster-whisper, which opened it with PyAV; no
+    release carries PyAV (its FFmpeg holds x264, under the GPL). The system's ffmpeg program decodes it
+    when there is one, and without one the error names the file and what would read it."""
+    import subprocess
+    import numpy as np
+    from eli.perception import audio_samples
     odd = tmp_path / "talk.m4a"
     odd.write_bytes(b"not a wav")
-    assert stt._audio_for_whisper(odd) == str(odd)
+    ran = []
+
+    def ffmpeg(cmd, capture_output, check):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, np.full(800, 0.25, dtype="<f4").tobytes(), b"")
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(subprocess, "run", ffmpeg)
+    samples = stt._audio_for_whisper(odd)
+    assert ran and ran[0][ran[0].index("-ar") + 1] == str(audio_samples.SPEECH_RATE) and str(odd) in ran[0]
+    assert samples.dtype == np.float32 and len(samples) == 800 and float(samples[0]) == 0.25
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    try:
+        stt._audio_for_whisper(odd)
+    except ValueError as e:
+        assert "talk.m4a" in str(e) and "ffmpeg" in str(e)
+    else:
+        raise AssertionError("an unreadable file was not refused")
 
 
 def test_hints_reach_the_decoder_and_an_unsure_decode_is_marked(tmp_path, monkeypatch):

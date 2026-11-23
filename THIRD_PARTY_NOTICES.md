@@ -71,7 +71,7 @@ package whose source it cannot find is not released.
 | **PySide6** (Qt GUI) | LGPL-3.0 | Canonical Qt binding for packaged ELI |
 | **llama-cpp-python** | MIT | GGUF inference; built with llama.cpp (MIT) v0.8.0 by `packaging/llama_source.py` |
 | **faiss-cpu** | MIT | Vector memory index |
-| **faster-whisper** | MIT | Local speech-to-text |
+| **faster-whisper** (+ ctranslate2, tokenizers) | MIT | Local speech-to-text. It declares **PyAV**, which no release carries and no installer keeps: PyAV's wheels (BSD-3-Clause) link **x264 and x265 (GPL-2.0)** into their FFmpeg on every platform. ELI decodes a recording itself (WAV, FLAC, Ogg, MP3 through libsndfile; anything else through the system's own `ffmpeg` program when it has one) and hands faster-whisper the samples |
 | **SpeechRecognition** | BSD-3-Clause; its package also holds **FLAC encoder programs (GPL-2.0)** and CMU Sphinx's English model (BSD-style) | The microphone and the end of a phrase. The FLAC programs run only for its online recognisers, which ELI never calls; every build, wheelhouse and installer leaves them out (`packaging/gpl_sources.py`, LEFT_OUT_FILES) |
 | **onnxruntime** | MIT | Runs the Kokoro voice (text to speech) |
 | **misaki** | Apache-2.0 | Kokoro's text to phonemes; installed **without** its `[en]` extra (espeakng-loader, phonemizer-fork: GPL) |
@@ -126,6 +126,8 @@ Installed by `install.sh` or the OS package manager as needed:
 | **PyQt6 / PyQt5** | GPL-3.0 | Would copyleft shipped binaries |
 | **QScintilla** (with PyQt) | GPL | Optional dev UI only |
 | **MouseInfo**, **PyMsgBox**, **python3-xlib** | GPL | PyAutoGUI declares them; ELI never uses what needs them, and python-xlib (LGPL) is the Xlib it drives (see the GPL note above) |
+| **PyAV** (`av`) | BSD-3-Clause, with **x264 and x265 (GPL-2.0)** linked into its FFmpeg | faster-whisper declares it for opening files; ELI hands it samples it decoded itself (`packaging/gpl_sources.py`, LEFT_OUT) |
+| **GNU Readline**, **Berkeley DB**, any library or program under the GPL | GPL-3.0, Sleepycat | What a Linux build machine would add: `ELI.spec` leaves Python's `readline` module out, and every build's `--check-bundle` step stops on such a library or program (`NATIVE_LIBRARIES`) |
 
 Experimental trees under `experimental/` may reference PyQt6 — they are **not**
 part of the supported release.

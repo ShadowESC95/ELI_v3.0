@@ -927,7 +927,10 @@ affected: the installers keep to `requirements.lock.txt`.
 **Fix (v3.0.137):** ELI reads the recording itself and hands faster-whisper 16 kHz samples, so
 faster-whisper never opens a file. The release build now installs under the lock as well
 (`packaging/lock_constraints.py`), and the packaged app's `--selftest` checks that a recording
-can be read for speech input.
+can be read for speech input. Since then no release carries PyAV at all (its wheels' FFmpeg holds
+x264 and x265, under the GPL; `packaging/gpl_sources.py`, LEFT_OUT): ELI reads WAV, FLAC, Ogg and
+MP3 itself and anything else through the system's `ffmpeg` program when there is one
+(`eli/perception/audio_samples.read_mono`), and the web page sends a WAV its browser decoded.
 
 ---
 

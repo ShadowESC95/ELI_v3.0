@@ -61,6 +61,9 @@ NOT_DECLARED = {
           "own build files, and a packaged ELI asks the system's Python for it",
     "flash_attn": "an optional speed-up for Qwen3-TTS, built for the user's own CUDA (PyPI has no wheels); "
                   "the worker in Qwen3-TTS's runtime uses it only when it is there, sdpa otherwise",
+    "av": "PyAV, which faster-whisper declares: no release carries it and no installer keeps it (its wheels' "
+          "FFmpeg holds x264, under the GPL: packaging/gpl_sources.py, LEFT_OUT); local_whisper_stt only asks "
+          "whether it is there, to import faster-whisper with a placeholder where it is not",
     "qwen_tts": "imported only by eli/perception/qwen3_worker.py, inside the runtime ELI makes for Qwen3-TTS "
                 "(eli/perception/qwen3_runtime.py, its own requirements in qwen3_runtime.txt), never in ELI's",
 }

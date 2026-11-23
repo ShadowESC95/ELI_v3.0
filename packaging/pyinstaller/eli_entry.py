@@ -198,6 +198,11 @@ def _assert_paths_outside_bundle() -> None:
         if isinstance(_samples, str) or not (15900 <= len(_samples) <= 16100):
             raise RuntimeError("selftest: a recording cannot be read into 16 kHz samples for speech input")
     print("selftest: speech input reads a recording into 16 kHz samples")
+    # and faster-whisper imports without PyAV, which no build carries (its FFmpeg holds x264, under the GPL)
+    from eli.perception.local_whisper_stt import faster_whisper as _faster_whisper
+    if not hasattr(_faster_whisper(), "WhisperModel"):
+        raise RuntimeError("selftest: faster-whisper does not import for speech input")
+    print("selftest: faster-whisper imports without PyAV")
     if os.environ.get("ELI_REQUIRE_VOICES") == "1":
         # The voice must SPEAK in the frozen app, not merely be on disk: misaki, spaCy's tagger, the
         # unknown-word model and onnxruntime each load on the first reply, and a piece the spec did

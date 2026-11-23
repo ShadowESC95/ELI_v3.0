@@ -1728,7 +1728,8 @@ class VoiceAgent(_BaseAgent):
             mute   = os.environ.get("ELI_MUTE", "0") == "1"
             stt_avail = False
             try:
-                import faster_whisper  # noqa: F401
+                from eli.perception.local_whisper_stt import faster_whisper
+                faster_whisper()
                 stt_avail = True
             except ImportError:
                 _SWLOG.debug("suppressed exception", exc_info=True)
