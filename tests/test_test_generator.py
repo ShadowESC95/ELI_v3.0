@@ -22,6 +22,15 @@ def test_verify_rejects_a_failing_test():
     assert r["accepted"] is False and r["reason"] in ("failed/errored", "no tests collected")
 
 
+def test_a_check_leaves_nothing_under_tests():
+    """The candidate is run under tests/ (the suite's conftest applies to it), in a folder of its own:
+    one shared tests/_testgen_tmp was left in the checkout after every check."""
+    before = sorted(p.name for p in TG._VERIFY_PARENT.iterdir())
+    assert TG.verify_test("def test_ok():\n    assert 2 * 3 == 6\n")["accepted"] is True
+    assert TG.verify_test("def test_bad():\n    assert 2 * 3 == 7\n")["accepted"] is False
+    assert sorted(p.name for p in TG._VERIFY_PARENT.iterdir()) == before
+
+
 def test_verify_rejects_syntax_error():
     # long enough to pass the min-length guard so it reaches the syntax check
     r = TG.verify_test("def test_broken_syntax(:\n    assert True  # missing paren arg\n")

@@ -30,6 +30,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,8 +57,10 @@ def _manifest() -> Path:
 
 
 # Candidates are verified UNDER tests/ so the repo conftest + testpaths apply
-# (fixed location, independent of the drafts folder, which a test may redirect).
-_VERIFY_TMP = REPO / "tests" / "_testgen_tmp"
+# (fixed location, independent of the drafts folder, which a test may redirect). Each check has a
+# folder of its own there, removed with the candidate: one shared tests/_testgen_tmp was left in the
+# checkout after every check, and two checks at once shared it.
+_VERIFY_PARENT = REPO / "tests"
 
 # Curated safe, pure-ish modules whose public functions are deterministic and
 # cheap to import (no GUI, no daemons, no model, no network). Start small +
@@ -192,9 +195,11 @@ def verify_test(code: str) -> Dict[str, Any]:
         ast.parse(code)
     except SyntaxError as e:
         return {"accepted": False, "reason": f"syntax error: {e}"}
-    _VERIFY_TMP.mkdir(parents=True, exist_ok=True)
-    fd, path = tempfile.mkstemp(suffix="_cand_test.py", prefix="test_cand_", dir=str(_VERIFY_TMP))
-    os.close(fd)
+    try:
+        folder = tempfile.mkdtemp(prefix="_testgen_", dir=str(_VERIFY_PARENT))
+    except OSError as e:
+        return {"accepted": False, "reason": f"verify error: cannot write under tests/: {e}"}
+    path = os.path.join(folder, "test_cand.py")
     try:
         Path(path).write_text(code, encoding="utf-8")
         r = subprocess.run(
@@ -212,10 +217,7 @@ def verify_test(code: str) -> Dict[str, Any]:
     except Exception as e:
         return {"accepted": False, "reason": f"verify error: {e}"}
     finally:
-        try:
-            os.unlink(path)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
