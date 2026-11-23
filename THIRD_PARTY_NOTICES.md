@@ -77,6 +77,8 @@ package whose source it cannot find is not released.
 | **spaCy** (+ thinc, srsly, cymem, preshed, murmurhash, blis, wasabi, weasel, confection, catalogue) | MIT / BSD | misaki's English tagger |
 | **num2words** | LGPL-2.1 | misaki's numbers as words (pure Python; see the LGPL section) |
 | **python-crfsuite** | MIT (CRFsuite: BSD) | Guesses words misaki's dictionaries lack (with gruut's English model, below) |
+| **langdetect** (+ six) | Apache-2.0 (six: MIT) | The language of a reply in the Latin script (`eli/perception/reply_language.py`) |
+| **jieba**, **pypinyin**, **cn2an** (+ proces), **ordered-set** | MIT | misaki's Chinese G2P for Kokoro's Mandarin voices |
 | **FastAPI** / **Starlette** / **uvicorn** | MIT | Web server |
 | **paho-mqtt** | EPL-2.0 / EDL-1.0 | MQTT device server |
 | **zeroconf** | LGPL-2.1+ | mDNS discovery |
@@ -100,7 +102,7 @@ Full pinned versions: `requirements-full.txt`, `requirements.lock.txt`.
 | Component | License | Used for |
 |---|---|---|
 | **diffusers**, **accelerate**, **safetensors** | Apache-2.0 | Local image generation |
-| **qwen-tts** (`voice-gpu`) + PyTorch | Apache-2.0 / BSD | The GPU voice: Qwen3-TTS natural voices and voice cloning. Not in the release builds. Its closure adds transformers, accelerate, gradio, librosa, torchaudio, sox (Python wrapper, BSD), einops, all permissive, and **soxr** (LGPL-2.1) |
+| **qwen-tts** 0.1.1 + PyTorch, in Qwen3-TTS's own runtime | Apache-2.0 / BSD | The GPU voice: Qwen3-TTS natural voices and voice cloning. Not in the release builds and not in ELI's environment: on a machine whose GPU has room ELI fetches a pinned **uv** (Astral, MIT or Apache-2.0) and makes a runtime with its own Python, PyTorch for the card's CUDA, transformers 4.57.3, accelerate 1.12.0, librosa, soundfile, torchaudio, sox (Python wrapper, BSD), einops and onnxruntime, all permissive but **soxr** (LGPL-2.1), and qwen-tts without its demo's gradio (`eli/perception/qwen3_runtime.py`) |
 
 ---
 

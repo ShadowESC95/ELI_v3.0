@@ -1,6 +1,6 @@
 """Voice library browser — ELI's Kokoro voices, by accent, gender and grade.
 
-ELI's voice is Kokoro-82M: 28 English voices (American and British), fetched with the
+ELI's voice is Kokoro-82M: 36 voices (American and British English, Mandarin), fetched with the
 engine on first use (``eli.runtime.voice_assets``). This dialog lists them with the
 grade Kokoro's authors give each, and fetches any that is not on this machine yet.
 
@@ -60,7 +60,7 @@ class VoiceDownloadDialog(QDialog):
 
         root = QVBoxLayout(self)
         blurb = QLabel(
-            "ELI's voices are Kokoro's: American and British English, graded by the quality "
+            "ELI's voices are Kokoro's: American and British English and Mandarin, graded by the quality "
             "of their training audio (A best). Style presets (calm, robotic, …) layer ffmpeg "
             "effects on them — generic sound styles, not copyrighted character clones. "
             "For a custom timbre, clone your own reference clip in Settings (the GPU voice)."
@@ -75,6 +75,7 @@ class VoiceDownloadDialog(QDialog):
         self.lang_combo.addItem("All voices", "")
         self.lang_combo.addItem("American English", "en_US")
         self.lang_combo.addItem("British English", "en_GB")
+        self.lang_combo.addItem("Mandarin Chinese", "zh_CN")
         self.lang_combo.currentIndexChanged.connect(lambda _i: self._refresh_table())
         filters.addWidget(self.lang_combo)
         self.installed_only = QCheckBox("Installed only")

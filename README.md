@@ -243,9 +243,10 @@ text, and moves and clicks the mouse.
 Always-listening with a wake word **you can train** — and that hears you over background music. It
 ducks your media to listen, waits for an unfinished command to complete, ignores its own spoken
 output, and builds a per-user voice profile. Includes dictation, audio transcription, and a Kokoro
-text-to-speech voice (28 voices, American and British English, on the CPU of any machine; on a GPU
-with room for it, the more human Qwen3-TTS, which also clones a voice from your recording) that never
-voices garbled fragments. A separate "train my voice" session learns
+text-to-speech voice (36 voices, American and British English and Mandarin, on the CPU of any machine;
+on a GPU with room for it, the more human Qwen3-TTS in ten languages, which also clones a voice from your
+recording; elsewhere your system's own voice for a reply in another language) that never voices garbled
+fragments. A separate "train my voice" session learns
 your pitch, energy, and tone so its delivery adapts to how you sound.
 
 ### Vision and screen understanding

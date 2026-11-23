@@ -184,7 +184,7 @@ _add("Gaze (eye-tracking)", "GAZE_CLICK", "Click where the eyes rest", "“open�
 _add("Voice", "DICTATE", "Start/stop dictation into the active field", "“start dictation”", "“stop dictating”", shown="quick", direct=True)
 _add("Voice", "TRANSCRIBE", "Transcribe an audio file", "“transcribe audio.wav”", shown="quick", direct=True)
 _add("Voice", "SPEAK", "Speak text aloud (TTS)", "“say good morning”", shown="quick", direct=True)
-_add("Voice", "LIST_VOICES", "List ELI's voices (28 Kokoro voices, American and British English) and which are on this machine", "“what voices do you have”", "“list voices”", "“which accents can I get”", shown="quick")
+_add("Voice", "LIST_VOICES", "List ELI's voices (36 Kokoro voices, American and British English and Mandarin) and which are on this machine", "“what voices do you have”", "“list voices”", "“which accents can I get”", shown="quick")
 _add("Voice", "DOWNLOAD_VOICE", "Fetch one of ELI's Kokoro voices (American or British English) and switch to it", "“download a British voice”", "“get me a female British voice”", "“install bf_emma”", shown="quick")
 _add("Voice", "SET_VOICE", "Switch the active TTS voice/accent (distinct from persona tone)", "“use the alan voice”", "“switch your voice to amy”", "“use the robotic style voice”", "“use the natural voice”", shown="quick", explicit=True)
 _add("Voice", "CREATE_VOICE", "Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone)", "“create a voice called Nova from clip.mp4”", "“make an ELI voice from recording.wav”", shown="quick")

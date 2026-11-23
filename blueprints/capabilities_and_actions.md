@@ -118,7 +118,7 @@ evidence-planner first (real code/web/memory analysis) before synthesising.
 | `DICTATE` | Start/stop dictation into the active field | “start dictation” · “stop dictating” | Core |
 | `TRANSCRIBE` | Transcribe an audio file | “transcribe audio.wav” | Core |
 | `SPEAK` | Speak text aloud (TTS) | “say good morning” | Plugin |
-| `LIST_VOICES` | List ELI's voices (28 Kokoro voices, American and British English) and which are on this machine | “what voices do you have” · “list voices” · “which accents can I get” | Core |
+| `LIST_VOICES` | List ELI's voices (36 Kokoro voices, American and British English and Mandarin) and which are on this machine | “what voices do you have” · “list voices” · “which accents can I get” | Core |
 | `DOWNLOAD_VOICE` | Fetch one of ELI's Kokoro voices (American or British English) and switch to it | “download a British voice” · “get me a female British voice” · “install bf_emma” | Core |
 | `SET_VOICE` | Switch the active TTS voice/accent (distinct from persona tone) | “use the alan voice” · “switch your voice to amy” · “use the robotic style voice” · “use the natural voice” | Core |
 | `CREATE_VOICE` | Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone) | “create a voice called Nova from clip.mp4” · “make an ELI voice from recording.wav” | Core |

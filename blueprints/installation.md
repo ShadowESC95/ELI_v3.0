@@ -164,7 +164,7 @@ only matters when those don't match the user's CUDA or a source build is require
    An install that ends with errors exits non-zero.
 8. Fetches **`nomic-embed-text-v1.5.Q4_K_M.gguf`** → `models/embeddings/` (~80 MiB,
    required for memory/RAG) via `python -m eli.core.model_download --aux`.
-9. Fetches **voice weights**: the Kokoro voice's files (model, 28 English voices, spaCy's tagger,
+9. Fetches **voice weights**: the Kokoro voice's files (model, 36 voices, spaCy's tagger,
    the unknown-word model; pinned, checksum-checked) + faster-whisper `small.en` via
    `python -m eli.runtime.voice_assets` (idempotent; skipped if already present).
 10. Optionally downloads a **chat GGUF** (wizard / `--model=` / `--auto`).

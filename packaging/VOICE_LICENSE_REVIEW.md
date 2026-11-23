@@ -11,7 +11,7 @@ workflow fetches them with that module into `tts_kokoro/`, and `ELI.spec` bundle
 | File(s) | Upstream | Licence | Classification |
 |---|---|---|---|
 | `model.onnx` (fp32), `tokenizer.json` | onnx-community/Kokoro-82M-v1.0-ONNX @ `1939ad2a`, exported from hexgrad/Kokoro-82M | Apache-2.0 | ship |
-| `voices/{af,am,bf,bm}_*.bin` (the 28 English voices) | same | Apache-2.0 | ship |
+| `voices/{af,am,bf,bm,zf,zm}_*.bin` (the 28 English and 8 Mandarin voices) | same | Apache-2.0 | ship |
 | `en_core_web_sm-3.8.0/` (spaCy's English tagger) | explosion/spacy-models release `en_core_web_sm-3.8.0` | MIT (OntoNotes 5 licensed commercially by Explosion; WordNet 3.0 licence) | ship |
 | `g2p_en.crf` (gruut's English grapheme-to-phoneme CRF) | rhasspy/gruut @ `a2187f9d`, `gruut-lang-en/gruut_lang_en/g2p/model.crf` | MIT (CMU Pronouncing Dictionary data, BSD-2-Clause-style) | ship |
 
@@ -23,15 +23,21 @@ What is deliberately **not** used, because it is GPL:
 - **g2p_en** (Apache-2.0 itself) depends on `distance`, which is GPL.
 
 Kokoro's other languages (Spanish, French, Hindi, Italian, Portuguese) are read through espeak-ng by
-misaki, so ELI offers Kokoro's American and British English voices only. On a GPU, Qwen3-TTS (below)
-speaks ten languages.
+misaki, so ELI offers Kokoro's American and British English voices and its Mandarin ones (misaki's own Chinese
+G2P: jieba, pypinyin, cn2an, ordered-set, all MIT). On a GPU, Qwen3-TTS (below) speaks ten languages; elsewhere a
+reply in another language is spoken by the operating system's own voice for it, which ELI does not ship (on Linux
+through speech-dispatcher's `spd-say`, a separate program).
 
 ## The GPU voice (optional, not in the release builds)
 
 **Qwen3-TTS** 12Hz 1.7B and 0.6B, CustomVoice (nine built-in speakers) and Base (voice cloning), Apache-2.0
-weights and code (`qwen-tts` 0.1.1). Installed with the `voice-gpu` extra; the weights are fetched at a pinned
-revision on first use and each weight file is checked against its SHA-256 (`eli/perception/tts_qwen3.py`).
-Classification: **ship-safe**, but never bundled (GPU-bound, 2.5-4.5 GB).
+weights and code (`qwen-tts` 0.1.1). It runs in a runtime ELI makes for it on a machine whose GPU has room
+(`eli/perception/qwen3_runtime.py`): a pinned uv (MIT or Apache-2.0, SHA-256-checked) fetches a Python, PyTorch for
+the card's CUDA and the pinned packages (`qwen3_runtime.txt`: transformers 4.57.3, accelerate 1.12.0, librosa,
+soundfile, sox's Python wrapper (BSD; the SoX program is not needed), einops, onnxruntime, all permissive; librosa
+brings soxr, LGPL-2.1), and qwen-tts without its demo's gradio. The weights are fetched at a pinned revision on
+first use and each weight file is checked against its SHA-256 (`eli/perception/tts_qwen3.py`). Classification:
+**ship-safe**, never bundled: everything is fetched onto the user's machine, GPU-bound, a few GB.
 
 ## Voice cloning
 

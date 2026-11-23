@@ -72,8 +72,9 @@ system.
 
 * **GGUF models, embeddings, diffusion weights** — up to 100 GB; the app
   downloads what the user picks on first run.
-* **The GPU voice (Qwen3-TTS)** — GPU-bound (PyTorch with CUDA, 2.5-4.5 GB of weights);
-  installed with the `voice-gpu` extra on a GPU machine, weights fetched on first use.
+* **The GPU voice (Qwen3-TTS)** — GPU-bound (PyTorch with CUDA, 2.5-4.5 GB of weights). Every build,
+  frozen or not, makes its runtime on a machine whose GPU has room for it (`eli/perception/qwen3_runtime.py`:
+  a pinned uv, its own Python and pins) and fetches the weights on first use.
 * **PyQt** — GPL; the frozen bundle is PySide6-only (excluded in `ELI.spec`).
 * **Everything ELI needs to run its features is bundled.** Voice input and output, the
   window, the server, documents, vision, web search, wake words, the device drivers and

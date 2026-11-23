@@ -6,7 +6,7 @@
 > **Since 3.0.172 (the Kokoro voice):** the presets are a Kokoro base voice plus the effect chain,
 > and a cloned voice (`clone:<name>`) is spoken first by **Qwen3-TTS** (Apache-2.0, Base model, from
 > the reference clip and, when given, its transcript) on a GPU with room for it beside the language
-> model (`eli/perception/tts_qwen3.py`, the `voice-gpu` extra), then Chatterbox, then XTTS-v2. When
+> model (`eli/perception/tts_qwen3.py`, in the runtime ELI makes for it, `qwen3_runtime.py`), then Chatterbox, then XTTS-v2. When
 > none can speak it the Kokoro default voice speaks, visibly. The dated sections below record the
 > XTTS work as it was done; "Piper" there is the earlier default voice.
 
