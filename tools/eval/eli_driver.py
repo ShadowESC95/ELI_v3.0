@@ -114,10 +114,22 @@ def _real_state_paths() -> Dict[str, str]:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def new_sandbox() -> Path:
-    """A fresh, empty folder for one throwaway copy of ELI's state. It sits inside the project
-    (ELI drops path settings that point outside it); whoever made it removes it."""
-    parent = _ROOT / "artifacts" / "_eval_sandbox"
+def sandbox_parent(data_dir: Optional[str] = None) -> Path:
+    """Where the throwaway copies are made: inside the project (ELI drops path settings that point
+    outside it), in the data folder in force (`data_dir`, else found by another process, as
+    _real_state_paths does) when that is inside the project, as a test run's own sandbox is, else the
+    project's artifacts/. It was always the project's artifacts/, so a test run left an empty
+    artifacts/_eval_sandbox in the checkout."""
+    base = Path(data_dir or _real_state_paths()["data"]).resolve()
+    if _ROOT.resolve() not in base.parents:
+        base = _ROOT / "artifacts"
+    return base / "_eval_sandbox"
+
+
+def new_sandbox(data_dir: Optional[str] = None) -> Path:
+    """A fresh, empty folder for one throwaway copy of ELI's state (in sandbox_parent()); whoever
+    made it removes it."""
+    parent = sandbox_parent(data_dir)
     parent.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
 
@@ -193,7 +205,7 @@ def enter_sandbox(box: Optional[Path] = None) -> Path:
         SANDBOX = Path(box)
         return SANDBOX
     real = _real_state_paths()
-    box = new_sandbox()
+    box = new_sandbox(real["data"])
     import atexit
     atexit.register(shutil.rmtree, str(box), True)
     if Path(real["config"]).is_dir():

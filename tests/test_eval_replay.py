@@ -299,7 +299,7 @@ def test_each_run_of_a_measurement_has_its_own_fixed_hash_seed():
 def test_the_replay_holds_the_figures_of_the_last_recorded_run():
     base = R.baseline()
     assert base, "no recorded run: python tools/eval/run_eval.py --target replay --record-baseline"
-    leftovers = set((_REPO / "artifacts" / "_eval_sandbox").glob("run-*"))
+    leftovers = set(R.D.sandbox_parent().glob("run-*"))
     result = R.run()
     assert R.comparable(result, base), (
         f"the replay now measures something else ({result['signature']} against the recorded "
@@ -308,8 +308,9 @@ def test_the_replay_holds_the_figures_of_the_last_recorded_run():
     R.record(result, regs)                         # the sandbox's own history
     assert not regs, R.table(result, base) + "\n" + json.dumps(regs, indent=1)
     # it ran in copies of its own, thrown away, and nothing it was told reached this run's memory
-    assert set((_REPO / "artifacts" / "_eval_sandbox").glob("run-*")) == leftovers
+    assert set(R.D.sandbox_parent().glob("run-*")) == leftovers
     from eli.core import paths
+    assert R.D.sandbox_parent().parent == Path(paths.artifacts_dir()).resolve(), "made in the checkout, not this run's sandbox"
     db = Path(paths.user_db_path())
     if db.exists():
         with sqlite3.connect(str(db)) as conn:
