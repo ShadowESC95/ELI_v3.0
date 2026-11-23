@@ -317,9 +317,9 @@ def reset_gguf_inference_globals():
 # watched, so a test that wrote the capability manifest at the checkout's root, or rewrote a
 # blueprint, passed unseen. Not watched: the run's own sandbox, git's folder, the interpreter's
 # bytecode, a Python environment kept in the checkout (a developer's .venv), and what the run was
-# asked to write (--junitxml, --basetemp). The eval's own throwaway folder
-# (tools/eval/eli_driver.new_sandbox) is a sandbox like this run's: what it holds is still watched.
-_THROWAWAY_FOLDERS = (ROOT / "artifacts" / "_eval_sandbox",)
+# asked to write (--junitxml, --basetemp, pytest's cache, a coverage file). The eval's throwaway
+# copies of ELI are made in this run's sandbox (tools/eval/eli_driver.sandbox_parent), and one made in
+# the checkout's artifacts/_eval_sandbox is removed with its folder, so that folder is watched too.
 FOLDER = "folder"
 
 
@@ -334,8 +334,7 @@ def _own_state() -> dict:
             if name in (".git", "__pycache__") or path == SANDBOX or (path / "pyvenv.cfg").is_file():
                 continue
             kept.append(name)
-            if path not in _THROWAWAY_FOLDERS:
-                seen[path] = FOLDER
+            seen[path] = FOLDER
         dirnames[:] = kept
         for name in filenames:
             if name == ".git":                          # a worktree's pointer to its repository

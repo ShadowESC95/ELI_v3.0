@@ -189,6 +189,8 @@ def test_the_router_board_from_the_command_line_runs_in_its_copy_and_writes_noth
     from tests._state_env import state_env
     from tools.eval import run_eval
     real = tmp_path / "real"
+    in_checkout = _REPO / "artifacts" / "_eval_sandbox"          # where a data folder outside the project puts it
+    was_there = in_checkout.exists()
     case = next(c for c in run_eval._load_cases(Path(run_eval.__file__).with_name("cases.yaml"))
                 if str(c.get("target") or "router").lower() == "router" and not c.get("desktop"))
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
@@ -202,4 +204,30 @@ def test_the_router_board_from_the_command_line_runs_in_its_copy_and_writes_noth
     assert out.returncode == 0 and "1 passed" in out.stdout, (out.stdout + out.stderr)[-1500:]
     written = sorted(str(p.relative_to(real)) for p in real.rglob("*") if p.is_file()) if real.exists() else []
     assert written == [], written
+    assert was_there or not in_checkout.exists(), "the copy's folder was left in the checkout"
+
+
+def test_a_copys_folder_goes_with_the_last_copy_in_it():
+    """The copies' folder was made and never removed: a board run from a data folder outside the
+    project left an empty artifacts/_eval_sandbox in the checkout."""
+    import shutil
+    import tempfile
+    from eli.core.paths import data_dir
+    D = _driver()
+    data = Path(tempfile.mkdtemp(dir=str(data_dir())))          # a data folder of its own, inside the project
+    try:
+        first, second = D.new_sandbox(str(data)), D.new_sandbox(str(data))
+        parent = first.parent
+        assert parent == second.parent == D.sandbox_parent(str(data)) and parent.parent == data.resolve()
+        D.remove_sandbox(first)
+        assert not first.exists() and second.is_dir(), "another copy still in use keeps the folder"
+        D.remove_sandbox(second)
+        assert not parent.exists()
+        # a folder this process did not make (another run's) is left as it was
+        parent.mkdir()
+        third = D.new_sandbox(str(data))
+        D.remove_sandbox(third)
+        assert parent.is_dir() and not third.exists()
+    finally:
+        shutil.rmtree(data, ignore_errors=True)
 

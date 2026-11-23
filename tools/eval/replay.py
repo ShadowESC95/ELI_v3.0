@@ -51,7 +51,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -246,7 +245,7 @@ def replay_once(script_path: Path = SCRIPT, model: str = D.STUB,
         state = json.loads((out / "state.json").read_text(encoding="utf-8"))
         return score(script, obs, state)
     finally:
-        shutil.rmtree(box, ignore_errors=True)
+        D.remove_sandbox(box)
 
 
 def run(runs: int = RUNS, model: str = D.STUB, script_path: Path = SCRIPT,

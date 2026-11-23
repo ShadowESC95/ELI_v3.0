@@ -128,10 +128,35 @@ def sandbox_parent(data_dir: Optional[str] = None) -> Path:
 
 def new_sandbox(data_dir: Optional[str] = None) -> Path:
     """A fresh, empty folder for one throwaway copy of ELI's state (in sandbox_parent()); whoever
-    made it removes it."""
+    made it removes it, with remove_sandbox()."""
     parent = sandbox_parent(data_dir)
-    parent.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
+    for attempt in (1, 2):
+        if not parent.is_dir():
+            parent.mkdir(parents=True, exist_ok=True)
+            _MADE_PARENTS.add(parent)
+        try:
+            return Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
+        except FileNotFoundError:           # another run's remove_sandbox took the empty folder away
+            if attempt == 2:
+                raise
+    raise AssertionError("unreachable")
+
+
+_MADE_PARENTS: set = set()                  # the copies' folders this process made
+
+
+def remove_sandbox(box: Path) -> None:
+    """Remove a throwaway copy, and the folder the copies are made in once none is left in it, when
+    this process made that folder: a run with its data folder outside the project made them in the
+    checkout's artifacts/ and left artifacts/_eval_sandbox there."""
+    box = Path(box)
+    shutil.rmtree(box, ignore_errors=True)
+    if box.parent in _MADE_PARENTS:
+        try:
+            box.parent.rmdir()
+            _MADE_PARENTS.discard(box.parent)
+        except OSError:
+            pass                            # another copy is still in it, or it is already gone
 
 
 def sandbox_env(box: Path) -> Dict[str, str]:
@@ -207,7 +232,7 @@ def enter_sandbox(box: Optional[Path] = None) -> Path:
     real = _real_state_paths()
     box = new_sandbox(real["data"])
     import atexit
-    atexit.register(shutil.rmtree, str(box), True)
+    atexit.register(remove_sandbox, box)
     if Path(real["config"]).is_dir():
         shutil.copytree(real["config"], box / "config")
     if Path(real["persona"]).is_file():

@@ -214,7 +214,8 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     run's guard, which listed only files, said nothing; it watched only ELI's state folders, so the
     capability manifest written at the checkout's root and a rewritten document passed unseen too.
     Every folder made, file written and file deleted anywhere in the checkout is named now, with the
-    test that did it. Not the run's own sandbox, the eval's throwaway folder, bytecode or a Python
+    test that did it, the eval's throwaway folder among them (a run with its data folder outside the
+    project left an empty artifacts/_eval_sandbox). Not the run's own sandbox, bytecode or a Python
     environment kept in the checkout, nor what the run was asked to write."""
     import sys
     conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
@@ -226,7 +227,6 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     (tmp_path / ".venv" / "pyvenv.cfg").write_text("home = /usr\n")
     monkeypatch.setattr(conftest, "ROOT", tmp_path)
     monkeypatch.setattr(conftest, "SANDBOX", tmp_path / "artifacts" / "_pytest")
-    monkeypatch.setattr(conftest, "_THROWAWAY_FOLDERS", (tmp_path / "artifacts" / "_eval_sandbox",))
     monkeypatch.setattr(conftest, "_WATCHED", str(tmp_path.resolve()))
     monkeypatch.setattr(conftest, "_WRITTEN_BY", {})
     before = conftest._own_state()
@@ -250,6 +250,7 @@ def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(
     assert str((tmp_path / "notes.txt").resolve()) not in conftest._WRITTEN_BY
     this_test = os.environ["PYTEST_CURRENT_TEST"].split(" ")[0]
     assert conftest._written_since(before, [tmp_path / "report.xml"]) == [
+        f"artifacts/_eval_sandbox/ (made by {this_test})",
         f"artifacts/runtime/ (made by {this_test})",
         f"blueprints/a.md (written by {this_test})",
         f"capability_manifest.json (written by {this_test})",
