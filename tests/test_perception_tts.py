@@ -157,6 +157,17 @@ def test_speak_if_enabled_true_calls_tts():
     mock_tts.assert_called_once_with("hello", voice_name="any-voice")
 
 
+@pytest.mark.parametrize("blank", ["", "   ", None, "...", "-", "\n\t"])
+def test_text_with_nothing_to_say_is_not_spoken_and_says_so(blank):
+    """Blank text is shown as "...", which was handed on to be spoken: speak_if_enabled said it was
+    speaking (True) while the speech layer refused it."""
+    from eli.perception.tts_router import speak
+    with patch("eli.perception.tts_router._run_tts", return_value=True) as mock_tts:
+        assert speak_if_enabled(blank, enabled=True) is False
+        assert speak(blank) is False
+    mock_tts.assert_not_called()
+
+
 def test_run_tts_speaks_more_than_three_chunks(monkeypatch):
     from eli.perception import tts_router
 

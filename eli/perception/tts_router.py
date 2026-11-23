@@ -1195,11 +1195,15 @@ def _run_tts_impl(text: str, voice_name: str | None = None) -> bool:
 
 
 def speak(text: str, voice_name: str | None = None) -> bool:
+    """Speak `text` on a thread of its own; True when speech was started. Text with nothing to say
+    (blank, punctuation, a fragment) starts nothing and returns False: it returned True, as if
+    speaking, because blank text is shown as "..." and that was handed on for _run_tts to refuse."""
     import threading as _threading
 
     text = _eli_tts_visible_text(text)
     clean = str(text or "").strip()
-    if not clean:
+    if not clean or _eli_tts_is_unspeakable(clean):
+        log.debug(f"[TTS] nothing to say in {str(text)[:24]!r}: not speaking")
         return False
 
     def _runner():
