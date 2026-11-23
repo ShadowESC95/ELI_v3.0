@@ -63,8 +63,8 @@ class ConversationMixin:
                 count = _re.search(r"\((\d+\s+fetched[^)]*)\)", text, _re.I)
                 text = ". ".join(([count.group(1)] if count else [])
                                  + [f"{src}: {title.strip().rstrip('…')}" for src, title in heads])
-        cuts = [i for i in (text.find(m) for m in ("```", "Exact command", "## Command", "Command(s):",
-                                                     "Commands:")) if i > 0]
+        from eli.perception.speech_stream import SPOKEN_CUT_MARKERS
+        cuts = [i for i in (text.find(m) for m in SPOKEN_CUT_MARKERS) if i > 0]
         return text[:min(cuts)].strip() if cuts else text
 
     def _interrupt_speech(self):
@@ -115,6 +115,203 @@ class ConversationMixin:
             return
         log.debug(f"[STT→GUI] {text}")
         self._take_message(text, spoken=True)
+
+    # ── Conversation mode (eli/perception/conversation.py) ─────────────────────────
+    _CONVERSATION_LABELS = {"off": "", "listening": "👂 Listening", "thinking": "💭 Thinking",
+                            "speaking": "🗣 Speaking", "paused": "⏸ Paused"}
+
+    def _conversation(self):
+        conv = getattr(self, "_conversation_obj", None)
+        if conv is None:
+            from eli.perception.conversation import Conversation
+            conv = Conversation(on_state=lambda st: self.conversation_state_signal.emit(st))
+            self._conversation_obj = conv
+        return conv
+
+    def _on_conversation_toggled(self, checked: bool) -> None:
+        self._set_conversation_mode(bool(checked))
+
+    def _set_conversation_mode(self, on: bool, *, why: str = "") -> None:
+        """Conversation mode on: the microphone listens with no wake word for each turn and may cut
+        ELI off; replies are spoken as they are written, in the fast mode. Off: as it was."""
+        conv = self._conversation()
+        btn = getattr(self, "converse_btn", None)
+        if btn is not None and btn.isChecked() != on:
+            btn.blockSignals(True)
+            btn.setChecked(on)
+            btn.blockSignals(False)
+        if on:
+            conv.start()
+            mic = getattr(self, "stt_btn", None)
+            if mic is not None and not mic.isChecked():
+                self._mic_on_for_conversation = True
+                mic.setChecked(True)            # _stt_toggle starts the listener
+            self._wire_conversing(True)
+            self.status_signal.emit("💬 Conversation mode on: just talk. Say “stop the conversation” to end it.")
+        else:
+            self._wire_conversing(False)
+            conv.stop()
+            if getattr(self, "_mic_on_for_conversation", False):
+                self._mic_on_for_conversation = False
+                mic = getattr(self, "stt_btn", None)
+                if mic is not None and mic.isChecked():
+                    mic.setChecked(False)
+            self.status_signal.emit("💬 Conversation mode off" + (f" ({why})" if why else ""))
+        self._show_delivery()
+
+    def _wire_conversing(self, on: bool) -> None:
+        """The listener's side: every turn for ELI, and the user may speak over it."""
+        try:
+            from eli.perception import audio_stt as _ast
+            stt = _ast._AUDIO_STT
+            if stt is None:
+                return
+            conv = self._conversation()
+            stt.set_conversing(on, on_barge_in=conv.barge_in, on_barge_in_empty=conv.barge_in_was_nothing)
+        except Exception:
+            log.debug("[CONVERSE] the listener was not told", exc_info=True)
+
+    def _on_conversation_state(self, state: str) -> None:
+        label = getattr(self, "conversation_state_label", None)
+        if label is not None:
+            text = self._CONVERSATION_LABELS.get(state, state)
+            try:
+                from eli.perception import audio_stt as _ast
+                stt = _ast._AUDIO_STT
+                if state != "off" and not (stt is not None and getattr(stt, "is_listening", False)):
+                    text += " · no microphone: type to talk"
+            except Exception:
+                log.debug("[CONVERSE] microphone state unknown", exc_info=True)
+            label.setText(text)
+            label.setVisible(state != "off")
+        btn = getattr(self, "converse_btn", None)
+        if btn is not None and btn.isChecked() != (state != "off"):
+            btn.blockSignals(True)
+            btn.setChecked(state != "off")
+            btn.blockSignals(False)
+        if state == "off":
+            self._wire_conversing(False)
+
+    def _show_delivery(self) -> None:
+        label = getattr(self, "conversation_voice_label", None)
+        if label is None:
+            return
+        try:
+            from eli.perception.conversation import delivery_summary
+            label.setText(f"🎙 {delivery_summary()}")
+        except Exception:
+            log.debug("[CONVERSE] voice summary unavailable", exc_info=True)
+
+    def _conversation_tick(self) -> None:
+        """Ends a conversation left quiet longer than the user takes to answer; keeps the state shown."""
+        conv = getattr(self, "_conversation_obj", None)
+        if conv is None or not conv.active:
+            return
+        if conv.idle_due():
+            self._set_conversation_mode(False, why="quiet for a while")
+            return
+        self._on_conversation_state(conv.state)
+
+    def _on_chat_typing(self) -> None:
+        conv = getattr(self, "_conversation_obj", None)
+        if conv is not None:
+            conv.note_activity()
+
+    def _conversation_control_done(self, out) -> None:
+        """A control the conversation carried out: shown where it can be seen (ELI says nothing)."""
+        kind = out.control.kind if out.control else ""
+        if kind == "start":
+            self._set_conversation_mode(True)
+            return
+        if kind == "stop":
+            self._set_conversation_mode(False)
+            return
+        if kind in ("pace", "level", "tone", "normal", "voice"):
+            self._show_delivery()
+            self._sync_voice_combo()
+            self.status_signal.emit(f"🎙 Voice: {out.result.get('what') or ''}")
+        elif kind == "hush" and out.cut_off is not None:
+            self._pending_cut_off = out.cut_off
+            self._request_generation_cancel()
+        else:
+            self.status_signal.emit(f"💬 {out.control.said}")
+
+    def _sync_voice_combo(self) -> None:
+        combo = getattr(self, "voice_combo", None)
+        if combo is None:
+            return
+        try:
+            from eli.perception.tts_router import get_active_voice, voice_display_name
+            vid = get_active_voice()
+            idx = combo.findData(vid)
+            combo.blockSignals(True)
+            if idx < 0:
+                combo.addItem(voice_display_name(vid), vid)
+                idx = combo.findData(vid)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+        except Exception:
+            log.debug("[CONVERSE] voice picker not updated", exc_info=True)
+
+    def _voice_reference(self, samples, rate: int, t: float) -> None:
+        """What the conversation's voice plays, for the listener where no recorder reads the sink."""
+        try:
+            from eli.perception import audio_stt as _ast
+            stt = _ast._AUDIO_STT
+            if stt is not None:
+                stt.reference_output(samples, rate, t)
+        except Exception:
+            log.debug("[CONVERSE] output reference not handed over", exc_info=True)
+
+    def _conversation_speech(self):
+        """A stream for this reply's voice, or None outside conversation mode."""
+        conv = getattr(self, "_conversation_obj", None)
+        if conv is None or not conv.active:
+            return None
+        from eli.perception.speech_stream import SpeechStream
+        return conv.begin_reply(lambda: SpeechStream(on_audio=self._voice_reference))
+
+    def _speak_through(self, stream, text: str) -> None:
+        """A whole reply (not streamed) into the conversation's voice."""
+        if stream is None:
+            return
+        text = self._spoken_part(str(text or ""))
+        if text.strip():
+            stream.feed(text)
+        self._finish_speech(stream)
+
+    def _finish_speech(self, stream) -> None:
+        """No more text for this stream; the state goes back to listening once it has been heard."""
+        if stream is None:
+            return
+        stream.finish()
+        conv = self._conversation()
+
+        def _watch():
+            while not stream.wait(timeout=0.1):
+                if stream.started and not stream.paused:
+                    conv.speaking()
+            conv.spoke(stream)
+
+        threading.Thread(target=_watch, daemon=True, name="eli-converse-speech").start()
+
+    def _write_cut_off(self) -> None:
+        """A reply the user spoke over is kept as far as they heard it, so the next turn knows where
+        ELI stopped. Only when its stream was closed early: an ended stream was stored whole by the
+        engine."""
+        heard, self._pending_cut_off = getattr(self, "_pending_cut_off", None), None
+        if not heard or not getattr(self, "_last_turn_cancelled", False):
+            return
+        ce = getattr(self, "_cognitive_engine", None)
+        memory = getattr(ce, "memory", None) if ce is not None else None
+        if memory is None:
+            return
+        try:
+            from eli.perception.conversation import cut_off_record
+            memory.add_conversation_turn("assistant", cut_off_record(heard), getattr(ce, "session_id", None),
+                                         getattr(ce, "user_id", None))
+        except Exception:
+            log.debug("[CONVERSE] the cut-off reply was not recorded", exc_info=True)
 
     def _populate_mic_device_combo(self, restore: bool = False):
         """Populate mic selector with ALSA devices + PulseAudio/PipeWire BT sources."""
@@ -670,6 +867,15 @@ class ConversationMixin:
         text = str(text or "").strip()
         if not text:
             return
+        conv = self._conversation()
+        out = conv.heard(text, spoken=spoken)
+        if out.kind == "control":
+            self._conversation_control_done(out)
+            return
+        if conv.active and spoken and self._busy_for_messages():
+            # the user spoke over the reply, or before it came: it is dropped and this is the turn
+            self._pending_cut_off = out.cut_off
+            self._request_generation_cancel()
         if not self._busy_for_messages():
             self._start_turn(text, spoken=spoken)
             return
@@ -713,6 +919,7 @@ class ConversationMixin:
         self._turn_running = False
         if getattr(self, "_streaming", False):     # a turn that ended with its reply still open
             self._append_chat_response("__STREAM_END__")
+        self._write_cut_off()                       # before the turn that cut it off is sent
         self._drain_waiting()
 
     def _run_now(self, text: str, *, spoken: bool, shown: bool = False) -> bool:
@@ -863,6 +1070,10 @@ class ConversationMixin:
         self.status_signal.emit('🔄 Generating response...')
 
         _typed = not spoken
+        _conv = self._conversation()
+        _conversing = _conv.active
+        if _conversing:
+            _conv.thinking()
 
         def generate_worker():
             if _typed:
@@ -875,6 +1086,11 @@ class ConversationMixin:
                 max_tokens  = self.max_tokens_input.value()
                 temperature = self.temperature_input.value()
                 reasoning_mode = getattr(self, '_reasoning_mode', 'quick')
+                _speech = None
+                if _conversing:
+                    # a conversation's turn takes the fast mode, whatever the picker says
+                    from eli.cognition.reasoning_modes import canonical_mode as _cm
+                    reasoning_mode = _cm("fast")
 
                 # ── CognitiveEngine-first runtime path ──
                 _ce = getattr(self, '_cognitive_engine', None)
@@ -945,8 +1161,26 @@ class ConversationMixin:
                                 self.is_generating = False
                                 self.status_signal.emit('Send enabled')
                                 self.status_signal.emit('🟢 Ready')
+                                if _speech is not None:
+                                    # The turn ends once the reply has been heard: the user may still
+                                    # cut it off, and a turn cut off is closed here, unstored, and
+                                    # kept as far as it was heard (_write_cut_off).
+                                    self._finish_speech(_speech)
+                                    while not _speech.wait(timeout=0.1):
+                                        if _generation_cancelled() or _speech.stopped:
+                                            break
+                                    if _generation_cancelled() or _speech.stopped:
+                                        _was_cancelled = True
+                                        break
+                                    _speech = None
                                 continue
                             full_tokens.append(token)
+                            if _conversing and (_speech is None or _speech.stopped) and _conv.active \
+                                    and not _generation_cancelled():
+                                _speech = _speech if _speech is not None and not _speech.stopped \
+                                    else self._conversation_speech()
+                            if _speech is not None and not _speech.stopped:
+                                _speech.feed(token)
                             if first_token:
                                 self.chat_stream_signal.emit('__STREAM_START__')
                                 first_token = False
@@ -1052,12 +1286,23 @@ class ConversationMixin:
 
                 if not _response_streamed:
                     self.chat_response_signal.emit(response)
+                if _conversing:
+                    if _speech is not None:
+                        if _was_cancelled:
+                            _speech.stop()
+                        else:
+                            self._finish_speech(_speech)
+                    elif not _response_streamed and response and not _was_cancelled:
+                        self._speak_through(self._conversation_speech(), response)
+                    else:
+                        _conv.ended_turn()
+                self._last_turn_cancelled = _was_cancelled
 
                 # Note: "no fake actions" follow-through now lives in the engine
                 # (_stream_with_followthrough), so it covers every consumer and
                 # the appended real result already arrives via the token stream.
 
-                if getattr(self, '_tts_auto', False):
+                if getattr(self, '_tts_auto', False) and not _conversing:
                     self._speak_response(response)
                 self._mem_refresh_sig.emit()
                 # Refresh confidence/grounding badge in status bar (via queued signal — worker thread safe)

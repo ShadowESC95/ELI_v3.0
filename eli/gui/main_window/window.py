@@ -204,6 +204,9 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
     # A command run at once while ELI answers or the model loads: its reply (worker → main thread)
     _ran_now_sig = pyqtSignal(str)
 
+    # Conversation mode's state (listening / thinking / speaking / paused / off), from any thread
+    conversation_state_signal = pyqtSignal(str)
+
     # Screen control: OCR / "ask ELI" results (worker → main thread) — was
     # QTimer.singleShot(0, ...) called FROM the worker thread, which has no
     # guaranteed event loop and is not the safe cross-thread marshalling
@@ -296,6 +299,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self._mem_refresh_sig.connect(self.refresh_memory_stats, Qt.ConnectionType.QueuedConnection)
         self._conf_meta_update_sig.connect(self._update_confidence_meta_label, Qt.ConnectionType.QueuedConnection)
         self._ran_now_sig.connect(self._on_ran_now, Qt.ConnectionType.QueuedConnection)
+        self.conversation_state_signal.connect(self._on_conversation_state, Qt.ConnectionType.QueuedConnection)
         self._image_chat_sig.connect(self._on_image_chat_response, Qt.ConnectionType.QueuedConnection)
         self._generated_artifact_open_sig.connect(
             self._open_generated_artifact_from_result,
@@ -534,6 +538,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         )
         self.chat_input.setMaximumHeight(120)
         self.chat_input.installEventFilter(self)
+        self.chat_input.textChanged.connect(self._on_chat_typing)   # typing is the user being there
         input_layout.addWidget(self.chat_input)
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
@@ -791,6 +796,35 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         )
         self.stt_btn.toggled.connect(self._stt_toggle)
         btn_layout.addWidget(self.stt_btn)
+
+        # Conversation mode: talk with no wake word for each turn, speak over ELI, pause it
+        self.converse_btn = QPushButton("💬 Converse")
+        self.converse_btn.setCheckable(True)
+        self.converse_btn.setToolTip(
+            "Conversation mode: just talk, no wake word for each turn. ELI answers in the fast mode\n"
+            "and speaks as it writes. Speak over it to cut in; say “wait” / “go on” to pause and go on,\n"
+            "“speak slower / softer / calmer”, “use the British voice”. Say or type “stop the\n"
+            "conversation” to end it (it also ends after a long quiet). Typing works too.")
+        self.converse_btn.setStyleSheet(
+            _BTN_BASE + "QPushButton { background-color:#607D8B; }"
+            "QPushButton:checked { background-color:#00897B; }"
+            "QPushButton:hover { background-color:#455A64; }"
+        )
+        self.converse_btn.toggled.connect(self._on_conversation_toggled)
+        btn_layout.addWidget(self.converse_btn)
+        self.conversation_state_label = QLabel("")
+        self.conversation_state_label.setStyleSheet("color:#88c0d0; font-weight:bold; padding:0 4px;")
+        self.conversation_state_label.setVisible(False)
+        btn_layout.addWidget(self.conversation_state_label)
+        self.conversation_voice_label = QLabel("")
+        self.conversation_voice_label.setStyleSheet("color:#8a93a6; font-size:10px; padding:0 4px;")
+        self.conversation_voice_label.setToolTip("ELI's voice as it is set now (say “speak normally” to reset it)")
+        btn_layout.addWidget(self.conversation_voice_label)
+        self._show_delivery()
+        self._conversation_timer = QTimer(self)
+        self._conversation_timer.setInterval(500)
+        self._conversation_timer.timeout.connect(self._conversation_tick)
+        self._conversation_timer.start()
 
         self.reasoning_mode_combo = QComboBox()
         self.reasoning_mode_combo.addItems(['⚡ Quick','🧠 Normal','🔬 Advanced','📚 Research','🎓 Expert'])

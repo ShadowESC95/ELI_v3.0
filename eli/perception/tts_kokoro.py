@@ -92,12 +92,28 @@ _LEGACY_VOICES = {
 }
 
 
+BLEND = "+"                   # 'af_heart+bf_emma': the voices' styles averaged (Kokoro's own blending)
+
+
 def voice_id(name: str) -> str:
-    """The stored form of a Kokoro voice name ('kokoro:af_heart' -> 'af_heart'); '' when it is not one."""
+    """The stored form of a Kokoro voice name ('kokoro:af_heart' -> 'af_heart'; 'af_heart,bf_emma' or
+    'af_heart+bf_emma' -> 'af_heart+bf_emma', a blend); '' when it is not one."""
     vid = str(name or "").strip()
     if vid.lower().startswith(PREFIX):
         vid = vid[len(PREFIX):]
+    parts = [p.strip() for p in re.split(r"[+,]", vid) if p.strip()]
+    if len(parts) > 1:
+        parts = list(dict.fromkeys(parts))
+        if all(p in VOICES for p in parts):
+            return BLEND.join(parts) if len(parts) > 1 else parts[0]
+        return ""
     return vid if vid in VOICES else ""
+
+
+def blend_parts(vid: str) -> List[str]:
+    """The Kokoro voices a voice id is made of: itself, or each voice of a blend."""
+    v = voice_id(vid)
+    return v.split(BLEND) if v else []
 
 
 def voice_for_legacy(name: str) -> str:
@@ -122,7 +138,10 @@ def legacy_names() -> Dict[str, str]:
 
 
 def describe(vid: str) -> str:
-    """'Heart (US female)' for a voice id."""
+    """'Heart (US female)' for a voice id; 'Heart + Emma (blend)' for a blend."""
+    parts = blend_parts(vid)
+    if len(parts) > 1:
+        return " + ".join(VOICES[p]["name"] for p in parts) + " (blend)"
     meta = VOICES.get(voice_id(vid))
     if not meta:
         return str(vid or "")
@@ -289,6 +308,12 @@ class _Engine:
         self._lock = threading.Lock()
 
     def pack(self, vid: str):
+        parts = blend_parts(vid)
+        if len(parts) > 1 and vid not in self._packs:
+            # a blend is its voices' style vectors averaged, row by row, over the rows all of them have
+            packs = [self.pack(p) for p in parts]
+            rows = min(len(p) for p in packs)
+            self._packs[vid] = sum(p[:rows] for p in packs) / float(len(packs))
         if vid not in self._packs:
             from eli.runtime import voice_assets
             path = voice_assets.kokoro_voice_file(vid)
@@ -406,7 +431,7 @@ def synthesize(text: str, voice: str = DEFAULT_VOICE, *, speed: float = 1.0):
     if eng is None:
         return None
     try:
-        british = VOICES[vid]["accent"] == "b"
+        british = VOICES[blend_parts(vid)[0]]["accent"] == "b"     # a blend reads as its first voice
         with eng._lock:
             pack = eng.pack(vid)
             ps = eng.phonemes(text, british)

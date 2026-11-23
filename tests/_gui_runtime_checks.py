@@ -125,7 +125,45 @@ def build_window(window_module: str) -> dict:
         pass
     # No event processing: the first queued event is the model picker, a dialog waiting for a click.
     window = importlib.import_module(window_module).EliMainWindow()
-    return {"tabs": [window.tabs.tabText(i) for i in range(window.tabs.count())], "failed": failed}
+    return {"tabs": [window.tabs.tabText(i) for i in range(window.tabs.count())], "failed": failed,
+            "window": window}
+
+
+def converse(window_module: str) -> dict:
+    """Build the window, then turn conversation mode on and off with its button and by what is
+    typed, the listener stood in (no microphone is opened), and report what the window showed."""
+    import eli.perception.audio_stt as _stt
+    listening = []
+    _stt.start_audio_listening = lambda callback=None: listening.append("start") or True
+    _stt.stop_audio_listening = lambda: listening.append("stop") or True
+
+
+    class _Listener:
+        on_unclear, is_listening = None, True
+
+        def set_conversing(self, on, on_barge_in=None, on_barge_in_empty=None):
+            listening.append(f"conversing {on}")
+
+    _stt.get_audio_stt = lambda: _stt._AUDIO_STT
+    built = build_window(window_module)
+    _stt._AUDIO_STT = _Listener()
+    w = built.pop("window")
+    seen = {}
+    w.converse_btn.setChecked(True)
+    w._on_conversation_state(w._conversation().state)
+    seen["on"] = {"state": w._conversation().state, "label": w.conversation_state_label.text(),
+                  "label_hidden": w.conversation_state_label.isHidden(), "mic": w.stt_btn.isChecked()}
+    w._take_message("speak slower", spoken=False)
+    seen["voice_label"] = w.conversation_voice_label.text()
+    w._take_message("stop the conversation", spoken=False)
+    w._on_conversation_state(w._conversation().state)
+    seen["off"] = {"state": w._conversation().state, "button": w.converse_btn.isChecked(),
+                   "label_hidden": w.conversation_state_label.isHidden(), "mic": w.stt_btn.isChecked()}
+    w._take_message("start a conversation", spoken=False)
+    seen["typed_start"] = w._conversation().state
+    w._set_conversation_mode(False)
+    seen["listening"] = listening
+    return {"seen": seen, "failed": built["failed"]}
 
 
 def main(argv: list) -> None:
@@ -139,8 +177,11 @@ def main(argv: list) -> None:
             result = {"missing": unresolved_names()}
         elif what == "methods":
             result = {"missing": missing_methods(window_module)}
+        elif what == "converse":
+            result = converse(window_module)
         else:
             result = build_window(window_module)
+            result.pop("window", None)
     print("RESULT " + json.dumps(result), flush=True)
     os._exit(0)  # the window starts background threads; nothing here needs them to finish
 

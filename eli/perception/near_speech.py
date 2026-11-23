@@ -108,6 +108,7 @@ class NearSpeech:
         self._run = 0
         self._in_speech = False
         self._frames = 0                       # mic frames seen: the detector's own clock
+        self.last_frames: List[tuple] = []     # the mic's band-energy frames from the last chunk
         self._hold_until = 0
         self._frozen = False
         self._next_relag = 0
@@ -142,7 +143,8 @@ class NearSpeech:
     def mic(self, x, t_end: float) -> List[float]:
         onsets = []
         with self._lock:
-            for t, e in self._mic.push(x, t_end):
+            self.last_frames = self._mic.push(x, t_end)        # BargeIn reads the same frames
+            for t, e in self.last_frames:
                 hit = self._frame(int(round(t / HOP_S)), e)
                 if hit:
                     onsets.append(t)
@@ -262,7 +264,8 @@ class BargeIn:
     def judge(self, x, t_end: float, near: Optional["NearSpeech"], onsets: List[float]) -> Optional[float]:
         decided = near is not None and near.active
         hit = None
-        for t, e in self._frames.push(x, t_end):
+        frames = near.last_frames if near is not None else self._frames.push(x, t_end)
+        for t, e in frames:
             if self._level.frame(float(np.log(e.sum() + 1e-12))) and hit is None and not decided:
                 hit = t
         if decided:

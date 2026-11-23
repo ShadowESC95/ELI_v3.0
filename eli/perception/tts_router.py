@@ -42,11 +42,14 @@ _PROSODY_DEFAULTS = {k: v for k, v in _NEUTRAL_VOICE.items() if k != "pitch"}
 
 def _prosody() -> Dict[str, float]:
     """The delivery for the next reply: the neutral defaults, the saved tts_<key> settings, the current
-    tone (tone_adaptor), then ELI_TTS_<KEY> from the environment. {} when ELI_TTS_PROSODY=0 (the
+    tone (tone_adaptor), then ELI_TTS_<KEY> from the environment. The owner's saved pace ("speak
+    slower") is kept under any tone, as its share of the neutral pace: the tone's values replaced it,
+    neutral's own pace included, so a saved pace was never heard. {} when ELI_TTS_PROSODY=0 (the
     engine's own pace). Never raises."""
     if os.environ.get("ELI_TTS_PROSODY", "1").strip().lower() in {"0", "false", "no", "off"}:
         return {}
     vals: Dict[str, Any] = dict(_PROSODY_DEFAULTS)
+    saved_pace = None
     try:
         from eli.core.runtime_settings import load_settings
         s = load_settings() or {}
@@ -54,15 +57,20 @@ def _prosody() -> Dict[str, float]:
             v = s.get(f"tts_{k}")
             if v is not None:
                 vals[k] = v
+        saved_pace = s.get("tts_length_scale")
     except Exception:
         log.debug("[TTS] prosody settings read failed", exc_info=True)
     # Emotional delivery: the current tone overrides the base pace and sentence pause so ELI's VOICE
     # carries the emotion: slow with long pauses for sad, fast with short ones for ecstatic.
     try:
         from eli.cognition import tone_adaptor
-        for k, v in (tone_adaptor.voice_prosody() or {}).items():
+        tone = tone_adaptor.voice_prosody() or {}
+        for k, v in tone.items():
             if k in vals and v is not None:
                 vals[k] = v
+        neutral = float(_PROSODY_DEFAULTS.get("length_scale") or 1.0)
+        if saved_pace is not None and tone.get("length_scale") is not None and neutral > 0:
+            vals["length_scale"] = float(tone["length_scale"]) * float(saved_pace) / neutral
     except Exception:
         log.debug("[TTS] tone prosody merge skipped", exc_info=True)
     for k in vals:  # env wins over everything (explicit user pin)
@@ -76,6 +84,34 @@ def _prosody() -> Dict[str, float]:
         except (TypeError, ValueError):
             log.debug("[TTS] bad prosody value for %s: %r", k, v)
     return out
+
+
+def gain_db() -> float:
+    """How much louder (or, below zero, softer) than the engine's own level ELI speaks, in dB: the
+    saved tts_gain_db ("speak softer"), else ELI_TTS_GAIN_DB, else 0."""
+    raw = os.environ.get("ELI_TTS_GAIN_DB", "").strip()
+    try:
+        from eli.core.runtime_settings import load_settings
+        saved = (load_settings() or {}).get("tts_gain_db")
+        if saved is not None and not raw:
+            raw = str(saved)
+    except Exception:
+        log.debug("[TTS] gain setting read failed", exc_info=True)
+    try:
+        return float(raw or 0.0)
+    except ValueError:
+        log.debug("[TTS] bad gain value %r", raw)
+        return 0.0
+
+
+def _with_gain(samples):
+    """`samples` at the saved level, kept within full scale."""
+    import numpy as _np
+    db = gain_db()
+    x = _np.asarray(samples, dtype=_np.float32)
+    if abs(db) < 1e-6:
+        return x
+    return _np.clip(x * float(10.0 ** (db / 20.0)), -1.0, 1.0)
 
 
 def _speed(prosody: Dict[str, float]) -> float:
@@ -842,10 +878,61 @@ def _speech_pieces(text: str) -> List[str]:
 
 
 def _render_piece(piece: str, voice: str, prosody: Dict[str, float]) -> Optional[bytes]:
-    """One sentence in a Kokoro voice, as WAV bytes, with the tone's pitch; None when it could not be
-    rendered (tts_kokoro logs why)."""
+    """One sentence in a Kokoro voice, as WAV bytes, with the tone's pitch and the saved level; None
+    when it could not be rendered (tts_kokoro logs why)."""
     wav = _kokoro.synthesize_wav(piece, voice, speed=_speed(prosody))
-    return _apply_tone_pitch(wav) if wav else None
+    return _apply_tone_pitch(_gain_wav(wav)) if wav else None
+
+
+def _wav_samples(wav: bytes):
+    """(float32 mono samples, rate) of WAV bytes."""
+    import numpy as _np
+    import wave
+    with wave.open(io.BytesIO(wav), "rb") as w:
+        rate, width, ch = w.getframerate(), w.getsampwidth(), w.getnchannels()
+        raw = w.readframes(w.getnframes())
+    if width == 2:
+        x = _np.frombuffer(raw, dtype="<i2").astype(_np.float32) / 32768.0
+    elif width == 4:
+        x = _np.frombuffer(raw, dtype="<i4").astype(_np.float32) / 2147483648.0
+    else:
+        x = (_np.frombuffer(raw, dtype=_np.uint8).astype(_np.float32) - 128.0) / 128.0
+    if ch > 1:
+        x = x.reshape(-1, ch).mean(axis=1)
+    return x, int(rate)
+
+
+def _gain_wav(wav: Optional[bytes]) -> Optional[bytes]:
+    """A voice's WAV at the saved level."""
+    if not wav or abs(gain_db()) < 1e-6:
+        return wav
+    try:
+        x, rate = _wav_samples(wav)
+        return _kokoro.to_wav(_with_gain(x), rate)
+    except Exception:
+        log.debug("[TTS] level not applied to the neural voice", exc_info=True)
+        return wav
+
+
+def render_samples(text: str, voice_name: Optional[str] = None):
+    """`text` in the active voice (or `voice_name`) as (float32 samples, rate), with the tone and
+    the saved pace, pitch and level, for a caller that plays it itself (speech_stream, a reply
+    spoken clause by clause). None when this voice cannot be rendered to samples (a system voice:
+    pyttsx3 speaks it) or nothing could be said."""
+    active = voice_name or get_active_voice()
+    if _is_system_voice(active) or _eli_tts_is_unspeakable(text):
+        return None
+    if str(active).startswith(("char:", "clone:", "natural:")):
+        wav = synthesize_wav(text, voice_name=active)
+        if not wav:
+            return None
+        x, rate = _wav_samples(wav)
+        return (x, rate) if x.size else None
+    wav = _render_piece(str(text), kokoro_voice(active), _prosody())
+    if not wav:
+        return None
+    x, rate = _wav_samples(wav)
+    return (x, rate) if x.size else None
 
 
 def _silence_wav(seconds: float, like: bytes) -> Optional[bytes]:
@@ -1130,14 +1217,34 @@ def _wav_sample_rate_bytes(wav_bytes: bytes) -> int:
 
 
 def _tone_instruct() -> str:
-    """The current tone as Qwen3-TTS's style instruction ("" for the neutral tone)."""
+    """The delivery as Qwen3-TTS's plain-language instruction: the current tone, and the pace and
+    level the owner set ("speak slower", "speak softer"); "" when it is the voice's own."""
+    parts: List[str] = []
     try:
         from eli.cognition import tone_adaptor
         tone = str((tone_adaptor.current_tone() or {}).get("tone") or "")
     except Exception:
         log.debug("[TTS_WAV] tone read skipped", exc_info=True)
-        return ""
-    return "" if tone in {"", "neutral"} else f"Speak in a {tone.replace('_', ' ')} tone."
+        tone = ""
+    if tone not in {"", "neutral"}:
+        parts.append(f"in a {tone.replace('_', ' ')} tone")
+    try:
+        from eli.core.runtime_settings import load_settings
+        pace = float((load_settings() or {}).get("tts_length_scale") or _PROSODY_DEFAULTS.get("length_scale", 1.0))
+    except Exception:
+        log.debug("[TTS_WAV] pace read skipped", exc_info=True)
+        pace = float(_PROSODY_DEFAULTS.get("length_scale", 1.0))
+    base = float(_PROSODY_DEFAULTS.get("length_scale", 1.0))
+    if pace > base:
+        parts.append("more slowly than usual")
+    elif pace < base:
+        parts.append("more quickly than usual")
+    db = gain_db()
+    if db < 0:
+        parts.append("softly")
+    elif db > 0:
+        parts.append("with more volume")
+    return ("Speak " + ", ".join(parts) + ".") if parts else ""
 
 
 def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
@@ -1156,7 +1263,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             wav = tts_qwen3.synthesize_natural_wav(text, active, instruct=_tone_instruct())
             if wav:
                 _note_neural_fallback(None)
-                return wav               # the tone is in the instruction, no pitch shift after
+                return _gain_wav(wav)    # the tone is in the instruction, no pitch shift after
         except Exception:
             log.debug("[TTS_WAV] Qwen3-TTS natural voice failed", exc_info=True)
         try:
@@ -1164,7 +1271,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             wav = tts_xtts.synthesize_natural_wav(text, active)
             if wav:
                 _note_neural_fallback(None)
-                return _apply_tone_pitch(wav)
+                return _gain_wav(_apply_tone_pitch(wav))
         except Exception:
             log.debug("[TTS_WAV] natural voice resolve failed", exc_info=True)
         _note_neural_fallback(active)
@@ -1186,7 +1293,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
                                                      ref_text=str(spec.get("ref_text") or ""))
                 if wav:
                     _note_neural_fallback(None)
-                    return _apply_tone_pitch(wav)
+                    return _gain_wav(_apply_tone_pitch(wav))
         except Exception:
             log.debug("[TTS_WAV] Qwen3-TTS clone failed", exc_info=True)
         try:
@@ -1200,7 +1307,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             wav = tts_chatterbox.synthesize_wav(text, active, exaggeration=_exag)
             if wav:
                 _note_neural_fallback(None)
-                return wav  # Chatterbox handles emotion natively — no post-hoc pitch shift
+                return _gain_wav(wav)  # Chatterbox handles emotion natively — no post-hoc pitch shift
         except Exception:
             log.debug("[TTS_WAV] chatterbox clone resolve failed", exc_info=True)
         try:
@@ -1208,7 +1315,7 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             wav = tts_xtts.synthesize_wav(text, active)
             if wav:
                 _note_neural_fallback(None)
-                return _apply_tone_pitch(wav)
+                return _gain_wav(_apply_tone_pitch(wav))
         except Exception:
             log.debug("[TTS_WAV] clone voice resolve failed", exc_info=True)
         _note_neural_fallback(active)

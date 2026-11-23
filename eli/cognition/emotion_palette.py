@@ -55,7 +55,7 @@ _BUILTIN: Dict[str, Dict[str, Any]] = {
         "text": "Buzzing, over-the-moon — high energy, fast, barely-contained excitement.",
         "voice": {"length_scale": 0.95, "noise_scale": 0.9, "noise_w": 0.9,
                   "sentence_silence": 0.22, "pitch": 2.0},
-        "expression": "ecstatic", "aliases": ["thrilled", "hyped", "buzzing", "stoked"],
+        "expression": "ecstatic", "aliases": ["thrilled", "hyped", "buzzing", "stoked", "excited"],
     },
     "comedic": {
         "desc": "witty, playful timing", "category": "playful",

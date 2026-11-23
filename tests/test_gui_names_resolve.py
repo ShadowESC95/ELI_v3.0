@@ -28,7 +28,10 @@ def _run(what: str, tmp_path, timeout: int = 300) -> dict:
     env.update(ELI_DATA_DIR=str(tmp_path / "data"), ELI_CONFIG_DIR=str(tmp_path / "config"),
                ELI_PERSONA_AUTO_PATH=str(tmp_path / "persona.auto.txt"),
                ELI_WORLD_DIR=str(tmp_path / "world"), ELI_NOTEBOOK_DIR=str(tmp_path / "notebook"),
-               ELI_OFFLINE="1", ELI_FORCE_CPU="1", QT_QPA_PLATFORM="offscreen")
+               ELI_OFFLINE="1", ELI_FORCE_CPU="1", QT_QPA_PLATFORM="offscreen",
+               # the run's own settings file would take what the window saves (ELI_SETTINGS_FILE wins
+               # over ELI_CONFIG_DIR), and every later test would read it
+               ELI_SETTINGS_FILE=str(tmp_path / "config" / "settings.json"))
     proc = subprocess.run([sys.executable, "-m", "tests._gui_runtime_checks", what, WINDOW_MODULE],
                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=timeout)
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]

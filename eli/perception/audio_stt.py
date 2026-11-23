@@ -1770,12 +1770,15 @@ class ELIAudioSTT:
         near.reference(x, t_end)
 
     # ── Conversation mode: no wake word for each turn, and the user may speak over ELI ────────────
-    def set_conversing(self, on: bool, on_barge_in: Optional[Callable[[float], None]] = None) -> None:
+    def set_conversing(self, on: bool, on_barge_in: Optional[Callable[[float], None]] = None,
+                       on_barge_in_empty: Optional[Callable[[], None]] = None) -> None:
         """Conversation mode on or off. On, every turn is for ELI (VoiceGate.set_conversing) and
-        speech that starts while ELI speaks calls `on_barge_in(t)` at once (the voice stops there)
-        and is kept for the listener, from its onset."""
+        speech that starts while ELI speaks calls `on_barge_in(t)` at once (the voice falls silent
+        there) and is kept for the listener, from its onset; when it held no words,
+        `on_barge_in_empty()` (the voice goes on)."""
         from eli.perception.near_speech import BargeIn
         self._on_barge_in = on_barge_in if on else None
+        self._on_barge_in_empty = on_barge_in_empty if on else None
         self._barge_at = None
         if on and getattr(self, "_barge", None) is None:
             self._barge = BargeIn()
@@ -1791,6 +1794,18 @@ class ELIAudioSTT:
         from eli.perception.near_speech import HOP_S, NEED_FRAMES
         lead = NEED_FRAMES * HOP_S + float(getattr(self.recognizer, "non_speaking_duration", 0.0) or 0.0)
         return at - lead
+
+    def _barge_in_came_to_nothing(self) -> None:
+        """What silenced ELI held no words (a cough, a door): it is forgotten and ELI goes on."""
+        if getattr(self, "_barge_at", None) is None:
+            return
+        self._barge_at = None
+        cb = getattr(self, "_on_barge_in_empty", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                log.debug("[VOICE_BARGE_IN] the voice did not go on", exc_info=True)
 
     def _stop_near_speech(self) -> None:
         tap = getattr(self, "_tap", None)
@@ -1827,12 +1842,12 @@ class ELIAudioSTT:
                        t_end, own_voice=own, samples=pcm.size)
         near = getattr(self, "_near", None)
         barge = getattr(self, "_on_barge_in", None)
-        if near is None and barge is None:
-            return
         x = pcm.astype(np.float32) / 32768.0
         if rate and rate != 16000:
             from eli.perception.audio_samples import resample
             x = resample(x, rate, 16000)
+        if near is None and barge is None:
+            return
         onsets = near.mic(x, t_end) if near is not None else []
         if barge is not None and own:
             hit = self._barge.judge(x, t_end, near, onsets)
@@ -2499,8 +2514,11 @@ class ELIAudioSTT:
                         # The gate the room sets now (noise_floor), or the owner's own number.
                         self._apply_gate()
                         _listen_start = time.monotonic()
+                        # After a barge-in the wait is the short one: speech that silenced ELI goes
+                        # on at once, and if none follows ELI should not stay silent for long.
                         _active_main_timeout = (
-                            ARMED_MAIN_TIMEOUT if self._voice_gate.armed() else MAIN_TIMEOUT
+                            ARMED_MAIN_TIMEOUT if self._voice_gate.armed() and self._barge_keep_from() is None
+                            else MAIN_TIMEOUT
                         )
                         # Duration-adaptive end-of-phrase pause for command/dictation states. Short commands finish
                         # after ELI_STT_SHORT_PAUSE (0.5s) of silence; past ELI_STT_LONG_AFTER (12s) it waits
@@ -2534,6 +2552,7 @@ class ELIAudioSTT:
                                 phrase_time_limit=_active_phrase_limit,
                             )
                     except sr.WaitTimeoutError:
+                        self._barge_in_came_to_nothing()
                         self._emit_released()       # quiet: a held command whose time is up goes on
                         if self._voice_gate.armed() and self._eli_duck_snapshot is not None:
                             self._voice_gate.touch_arm()
@@ -2640,6 +2659,7 @@ class ELIAudioSTT:
                             log.debug("suppressed exception", exc_info=True)
 
                     if not transcript:
+                        self._barge_in_came_to_nothing()
                         continue
 
                     # TTS window overlap check. The background monitor stamps _tts_mon_last[0] whenever TTS is
