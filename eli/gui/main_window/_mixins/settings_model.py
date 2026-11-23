@@ -844,25 +844,13 @@ class SettingsModelMixin:
                         # project root and no writable site-packages, so a pip line is no fix there.
                         extra = ""
                         if not res.get("synth_ready"):
-                            try:
-                                from eli.core.paths import is_frozen as _is_frozen
-                                _packaged = bool(_is_frozen())
-                            except Exception:
-                                _packaged = False
-                            if _packaged:
-                                extra = (
-                                    "\n\nNOTE: this build cannot synthesise cloned voices — the "
-                                    "voice-cloning engine (Qwen3-TTS, for a GPU) is not included, so "
-                                    f"'{name.strip()}' is saved but ELI will keep speaking in its "
-                                    "own voice.\nTo use it, run ELI from the source install "
-                                    "(README ▸ Install) with the voice-gpu extra on a machine with a GPU."
-                                )
-                            else:
-                                extra = (
-                                    "\n\nInstall the voice-cloning engine to make it sound like the "
-                                    "recording (it runs on a GPU):\n  pip install -e \".[voice-gpu]\"  "
-                                    "(from the ELI project root)"
-                                )
+                            # the same on every install route: ELI makes the engine's runtime itself
+                            extra = (
+                                "\n\nThis machine cannot run the voice-cloning engine yet: Qwen3-TTS needs an "
+                                "NVIDIA GPU with room for it beside the model, where ELI sets it up by itself "
+                                f"(a download of a few GB, once). '{name.strip()}' is saved; until then ELI keeps "
+                                "speaking in its own voice."
+                            )
                         QMessageBox.information(self, "Voice created",
                                                f"Created and selected the voice '{name.strip()}'.{extra}")
                     else:

@@ -105,7 +105,6 @@ def qwen(monkeypatch):
     from eli.perception import gpu_room, tts_qwen3
     tts_qwen3._reset_for_tests()
     monkeypatch.setattr(tts_qwen3, "installed", lambda: True)
-    monkeypatch.setattr(tts_qwen3, "_cuda_works", lambda: True)
     monkeypatch.delenv("ELI_QWEN3_TTS", raising=False)
     monkeypatch.delenv("ELI_QWEN3_TTS_DEVICE", raising=False)
     monkeypatch.setattr(gpu_room, "measured_footprint_mb", lambda table, card, model: None)
@@ -136,7 +135,8 @@ def test_the_largest_model_a_card_has_room_for_is_taken_on_that_card(qwen, monke
 @pytest.mark.parametrize("rooms", [[], [None], [10.0]])
 def test_no_room_or_no_way_to_tell_keeps_the_gpu_for_the_language_model(qwen, monkeypatch, rooms):
     _cards(monkeypatch, rooms)
-    assert qwen.choose("custom") is None and qwen.list_natural_voices() == []
+    assert qwen.room_for("custom") is None and qwen.choose("custom") is None
+    assert qwen.list_natural_voices() == []
 
 
 def test_the_need_is_what_the_model_was_measured_holding_once_it_has_been(qwen, monkeypatch):
@@ -149,18 +149,18 @@ def test_the_need_is_what_the_model_was_measured_holding_once_it_has_been(qwen, 
     assert entry["repo"].endswith("0.6B-CustomVoice"), "the measured footprint did not count"
 
 
-def test_a_cpu_only_machine_never_loads_it(qwen, monkeypatch):
-    monkeypatch.setattr(qwen, "installed", lambda: False)
-    assert qwen.choose("base") is None
-    qwen._reset_for_tests()
-    monkeypatch.setattr(qwen, "installed", lambda: True)
+def test_room_without_its_runtime_is_not_yet_a_voice_and_a_cpu_machine_never_has_one(qwen, monkeypatch):
     _cards(monkeypatch, [10 ** 6])
-    monkeypatch.setattr(qwen, "_cuda_works", lambda: False)
-    assert qwen.choose("base") is None, "PyTorch without CUDA"
+    monkeypatch.setattr(qwen, "installed", lambda: False)
+    assert qwen.room_for("base") is not None and qwen.choose("base") is None, "used before its runtime is made"
+    monkeypatch.setattr(qwen, "installed", lambda: True)
+    assert qwen.choose("base") is not None, "asked again once the runtime is made"
     qwen._reset_for_tests()
-    monkeypatch.setattr(qwen, "_cuda_works", lambda: True)
+    _cards(monkeypatch, [])
+    assert qwen.room_for("base") is None, "no NVIDIA card"
+    _cards(monkeypatch, [10 ** 6])
     monkeypatch.setenv("ELI_QWEN3_TTS", "0")
-    assert qwen.choose("base") is None, "switched off"
+    assert qwen.room_for("base") is None, "switched off"
 
 
 def test_the_choice_is_made_once_a_run(qwen, monkeypatch):
@@ -171,41 +171,76 @@ def test_the_choice_is_made_once_a_run(qwen, monkeypatch):
     assert qwen.choose("custom") == first
 
 
-class _Model:
+class _FakeWorker:
     def __init__(self):
-        self.calls = []
-        self.model = type("M", (), {"get_supported_languages": staticmethod(lambda: ["english", "auto"])})()
+        self.asked = []
 
-    def generate_custom_voice(self, **kw):
-        self.calls.append(("custom", kw))
-        return [[0.1] * 2400], 24000
-
-    def generate_voice_clone(self, **kw):
-        self.calls.append(("clone", kw))
-        return [[0.1] * 2400], 24000
+    def ask(self, req):
+        import wave
+        self.asked.append({k: v for k, v in req.items() if k != "out"})
+        with wave.open(req["out"], "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"\x01\x00" * 2400)
+        return {"ok": True, "seconds": 0.1, "rate": 24000, "reserved_mb": 3210.0}
 
 
 def test_a_natural_voice_is_a_speaker_steered_by_the_tone(qwen, monkeypatch):
-    model = _Model()
-    monkeypatch.setattr(qwen, "_model", lambda kind: model)
-    monkeypatch.setattr(qwen, "_record_footprint", lambda kind: None)
-    wav = qwen.synthesize_natural_wav("Hello.", "natural:sophia", instruct="Speak in a sad tone.")
-    assert wav and model.calls == [("custom", {"text": "Hello.", "speaker": "Serena", "language": "auto",
-                                               "instruct": "Speak in a sad tone."})]
+    from eli.perception import gpu_room
+    worker = _FakeWorker()
+    _cards(monkeypatch, [10 ** 6])
+    monkeypatch.setattr(qwen, "_model", lambda kind: worker)
+    recorded = []
+    monkeypatch.setattr(gpu_room, "record_footprint", lambda table, card, model, mb: recorded.append((model, mb)))
+    qwen.choose("custom")
+    wav = qwen.synthesize_natural_wav("Hello.", "natural:sophia", instruct="Speak in a sad tone.", language="english")
+    assert wav and worker.asked == [{"op": "custom", "text": "Hello.", "speaker": "Serena", "language": "english",
+                                     "instruct": "Speak in a sad tone."}]
+    assert recorded and recorded[0][1] == 3210.0, "the first synthesis did not record the footprint"
 
 
-def test_a_clone_without_its_transcript_takes_only_the_speakers_character(qwen, monkeypatch, tmp_path):
-    model = _Model()
-    monkeypatch.setattr(qwen, "_model", lambda kind: model)
-    monkeypatch.setattr(qwen, "_record_footprint", lambda kind: None)
+def test_a_clone_is_spoken_from_its_recording_and_transcript(qwen, monkeypatch, tmp_path):
+    worker = _FakeWorker()
+    monkeypatch.setattr(qwen, "_model", lambda kind: worker)
     ref = tmp_path / "ref.wav"
     ref.write_bytes(b"RIFF")
-    assert qwen.synthesize_clone_wav("Hi.", str(ref))
     assert qwen.synthesize_clone_wav("Hi.", str(ref), ref_text="What the clip says.")
-    (_, a), (_, b) = model.calls
-    assert a["x_vector_only_mode"] is True and a["ref_text"] is None
-    assert b["x_vector_only_mode"] is False and b["ref_text"] == "What the clip says."
+    assert worker.asked[0]["op"] == "clone" and worker.asked[0]["ref_text"] == "What the clip says."
     assert qwen.synthesize_clone_wav("Hi.", str(tmp_path / "missing.wav")) is None
+
+
+def test_the_worker_speaks_json_lines_from_a_runtime_of_its_own(qwen, monkeypatch, tmp_path):
+    """ELI starts the runtime's Python on qwen3_worker.py and talks to it one JSON line at a time; here
+    a stand-in worker on this Python answers, and what it printed on stdout first does not get in."""
+    import sys
+    from eli.perception import qwen3_runtime
+    fake = tmp_path / "worker.py"
+    fake.write_text(
+        "import json, sys, wave\n"
+        "sys.path.insert(0, %r)\n"
+        "from eli.perception.qwen3_worker import _protocol_stream\n"
+        "out = _protocol_stream()\n"
+        "print('a library notice on stdout')\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    if req['op'] == 'load':\n"
+        "        out.write(json.dumps({'ok': True}) + '\\n'); continue\n"
+        "    w = wave.open(req['out'], 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)\n"
+        "    w.writeframes(b'\\x01\\x00' * 2400); w.close()\n"
+        "    out.write(json.dumps({'ok': True, 'seconds': 0.1}) + '\\n')\n" % str(REPO), encoding="utf-8")
+    monkeypatch.setattr(qwen3_runtime, "python_path", lambda root=None: Path(sys.executable))
+    monkeypatch.setattr(qwen3_runtime, "WORKER", fake)
+    monkeypatch.setattr(qwen3_runtime, "runtime_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(qwen, "_local_snapshot", lambda entry: tmp_path)
+    monkeypatch.setenv("ELI_QWEN3_TTS_DEVICE", "cpu")
+    try:
+        wav = qwen.synthesize_natural_wav("Hello.", "natural:aiden")
+        assert wav and wav[:4] == b"RIFF", qwen.last_error()
+    finally:
+        if qwen._WORKER is not None:
+            qwen._WORKER.proc.kill()
+            qwen._WORKER.proc.wait()
 
 
 def test_a_cloned_voice_is_spoken_by_qwen3_first_with_the_registry_recording(monkeypatch, tmp_path):
@@ -268,3 +303,115 @@ def test_the_two_gib_asset_guard_is_still_in_place():
     """Bundling the engine only stays safe while this guard exists."""
     raw = (REPO / ".github" / "workflows" / "release.yml").read_text()
     assert "2147483648" in raw, "the GitHub 2 GiB asset-size guard is gone"
+
+
+# ── 5. the runtime Qwen3-TTS runs in ─────────────────────────────────────────
+def _tar_with(name: str, body: bytes) -> bytes:
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(f"uv-x/{name}")
+        info.size = len(body)
+        tf.addfile(info, io.BytesIO(body))
+    return buf.getvalue()
+
+
+def _serve(monkeypatch, body: bytes):
+    import io
+    import sys
+    import eli.core
+
+    class _Net:
+        asked = []
+
+        def allow_network(self, reason):
+            import contextlib
+            return contextlib.nullcontext()
+
+        def guarded_urlopen(self, req, timeout=0):
+            _Net.asked.append(req.full_url)
+            return io.BytesIO(body)
+
+        def should_block_network(self):
+            return False
+    net = _Net()
+    monkeypatch.setattr(eli.core, "netguard", net, raising=False)
+    monkeypatch.setitem(sys.modules, "eli.core.netguard", net)
+    return net
+
+
+def test_the_pinned_uv_is_refused_when_its_checksum_does_not_match_and_kept_when_it_does(monkeypatch, tmp_path):
+    import hashlib
+    from eli.perception import qwen3_runtime as R
+    body = _tar_with("uv", b"#!/bin/sh\necho uv\n")
+    monkeypatch.setattr(R, "_platform_key", lambda: "linux-x86_64")
+    monkeypatch.setattr(R, "_windows", lambda: False)
+    monkeypatch.setitem(R.UV_ASSETS, "linux-x86_64", ("uv-x86_64-unknown-linux-gnu.tar.gz", "0" * 64))
+    _serve(monkeypatch, body)
+    with pytest.raises(ValueError, match="checksum"):
+        R._fetch_uv(tmp_path)
+    assert not (tmp_path / "bin").exists()
+    monkeypatch.setitem(R.UV_ASSETS, "linux-x86_64",
+                        ("uv-x86_64-unknown-linux-gnu.tar.gz", hashlib.sha256(body).hexdigest()))
+    uv = R._fetch_uv(tmp_path)
+    assert uv.read_bytes().startswith(b"#!/bin/sh") and uv.stat().st_mode & 0o100
+    assert R.UV_VERSION in R._UV_RELEASE and all(len(sha) == 64 for _name, sha in R.UV_ASSETS.values())
+
+
+def test_the_runtime_is_made_with_its_own_python_cuda_torch_its_pins_and_qwen_without_gradio(monkeypatch, tmp_path):
+    from eli.perception import qwen3_runtime as R
+    commands = []
+    monkeypatch.setattr(R, "_fetch_uv", lambda root: root / "bin" / "uv")
+    monkeypatch.setattr(R, "_windows", lambda: False)
+
+    def _uv(uv, root, *args):
+        commands.append(args)
+        if args[0] == "venv":
+            py = R.python_path(root)
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
+    monkeypatch.setattr(R, "_uv", _uv)
+    monkeypatch.setattr(R, "check", lambda root=None: {"ok": True, "cuda": True, "qwen-tts": "0.1.1"})
+    _serve(monkeypatch, b"")
+    res = R.make(tmp_path)
+    assert res["ok"] and R.ready(tmp_path)["qwen-tts"] == "0.1.1"
+    assert commands[0][:3] == ("venv", "--python", R.PYTHON)
+    assert ("--torch-backend", "auto") == commands[1][4:6] and commands[1][-2:] == ("torch", "torchaudio")
+    assert commands[2][-2:] == ("-r", str(R._REQUIREMENTS)) and commands[3][-2:] == ("--no-deps", R.QWEN_TTS)
+    pins = [line.split("#", 1)[0].strip() for line in R._REQUIREMENTS.read_text(encoding="utf-8").splitlines()]
+    assert "transformers==4.57.3" in pins and "accelerate==1.12.0" in pins
+    assert not any(p.startswith(("gradio", "torch", "qwen")) for p in pins), "pinned twice or brought back"
+    assert R.make(tmp_path).get("already") is True, "made again"
+
+
+def test_a_runtime_that_does_not_see_cuda_is_not_ready(monkeypatch, tmp_path):
+    from eli.perception import qwen3_runtime as R
+    monkeypatch.setattr(R, "_fetch_uv", lambda root: root / "bin" / "uv")
+    monkeypatch.setattr(R, "_uv", lambda uv, root, *args: R.python_path(root).parent.mkdir(parents=True, exist_ok=True)
+                        or R.python_path(root).write_text(""))
+    monkeypatch.setattr(R, "check", lambda root=None: {"ok": True, "cuda": False})
+    _serve(monkeypatch, b"")
+    res = R.make(tmp_path)
+    assert res["ok"] is False and "CUDA" in res["error"] and R.ready(tmp_path) is None
+
+
+def test_a_machine_without_room_makes_no_runtime_and_fetches_nothing(monkeypatch, tmp_path):
+    from eli.perception import qwen3_runtime as R, tts_qwen3
+    monkeypatch.setattr(R, "runtime_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(tts_qwen3, "room_for", lambda kind: None)
+    net = _serve(monkeypatch, b"")
+    res = R.make_if_room()
+    assert res["ok"] is False and "room" in res["skipped"] and net.asked == []
+    assert not (tmp_path / "runtime").exists()
+
+
+def test_the_worker_keeps_its_answers_apart_from_what_libraries_print(tmp_path):
+    import subprocess
+    import sys
+    code = ("import sys, json; sys.path.insert(0, %r)\n"
+            "from eli.perception.qwen3_worker import _protocol_stream\n"
+            "out = _protocol_stream()\nprint('noise from a library')\nout.write(json.dumps({'ok': True}) + '\\n')\n"
+            % str(REPO))
+    got = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert got.stdout.strip() == '{"ok": true}' and "noise from a library" in got.stderr

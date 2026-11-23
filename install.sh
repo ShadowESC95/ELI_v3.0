@@ -1169,6 +1169,14 @@ else
     warn "Voice models deferred — fetch later with: .venv/bin/python -m eli.runtime.voice_assets"
     VOICE_STATUS="deferred (fetch later)"
 fi
+# The more human GPU voice (Qwen3-TTS): its own runtime, made only where an NVIDIA GPU has room for it
+# beside the language model (eli/perception/qwen3_runtime.py); a CPU-only machine skips it in a second.
+info "Checking whether this GPU has room for the more human voice (Qwen3-TTS)..."
+if "$PYTHON_VENV" -m eli.perception.qwen3_runtime --if-room; then
+    ok "GPU voice: ready, or not needed on this machine (see the line above)."
+else
+    warn "GPU voice deferred — ELI sets it up by itself later; Kokoro speaks meanwhile."
+fi
 
 echo
 if [ "$VERIFY_OK" -eq 1 ]; then

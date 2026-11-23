@@ -174,16 +174,9 @@ test = [
 full = [
     "eli-v3[llm,image]",
 ]
-# The GPU voice: Qwen3-TTS (Apache-2.0 code and weights), the natural voices and voice cloning,
-# chosen by itself on a machine whose GPU has room for it beside the model (eli/perception/tts_qwen3.py).
-# PyTorch comes from the index for this GPU (the installers' own step); the weights (2.5-4.5 GB) are
-# fetched on first use. CPU-only machines never need it, and the release bundles do not carry it.
-# qwen-tts 0.1.1 pins transformers==4.57.3 and accelerate==1.12.0, older than the lock's, so it is
-# not part of `full` and installing it moves those two back.
-voice-gpu = [
-    "qwen-tts>=0.1.1",
-    "torch>=2.0",
-]
+# The GPU voice, Qwen3-TTS (Apache-2.0), is not an extra: qwen-tts needs transformers 4.57.3 and
+# accelerate 1.12.0, older than this environment's, so ELI makes it a runtime of its own on a machine whose
+# GPU has room for it (eli/perception/qwen3_runtime.py, eli/perception/qwen3_runtime.txt).
 # Neural voice cloning — Chatterbox (Resemble AI, MIT-licensed code + weights).
 # Commercial-clean replacement for XTTS (Coqui's model licence is non-commercial):
 # zero-shot cloning from a short reference clip + native emotion/exaggeration control.

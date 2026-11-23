@@ -565,6 +565,11 @@ Write-Host "[..] Ensuring voice models (local STT + TTS, for browser/desktop voi
 & $PythonVenv -m eli.runtime.voice_assets
 if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Voice models ready." -ForegroundColor Green; $VoiceStatus = "ready" }
 else { Write-Host "[WARN] Voice models deferred (run: .venv\Scripts\python -m eli.runtime.voice_assets)" -ForegroundColor Yellow; $VoiceStatus = "deferred (fetch later)" }
+# The more human GPU voice (Qwen3-TTS): its own runtime, made only where an NVIDIA GPU has room for it
+# beside the language model (eli/perception/qwen3_runtime.py); a CPU-only machine skips it in a second.
+Write-Host "[..] Checking whether this GPU has room for the more human voice (Qwen3-TTS)..."
+& $PythonVenv -m eli.perception.qwen3_runtime --if-room
+if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] GPU voice deferred - ELI sets it up by itself later; Kokoro speaks meanwhile." -ForegroundColor Yellow }
 
 Eli-Progress -Phase finish -Pct 100 -Msg "Installation complete"
 Write-Host ""

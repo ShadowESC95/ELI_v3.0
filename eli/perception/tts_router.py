@@ -506,22 +506,40 @@ def kokoro_voice(voice_name: str) -> str:
     return _kokoro.voice_id(voice_name) or _kokoro.voice_for_legacy(voice_name) or _DEFAULT_VOICE
 
 
+# The voice ELI wrote into every settings file as its default before the Kokoro voice (runtime_settings),
+# so a saved one is no choice of the user's: it reads as no voice chosen, and the engine's default speaks.
+_RETIRED_DEFAULT_VOICES = frozenset({"en_US-amy-medium"})
+
+
 def _engine_setting() -> str:
     """The saved voice engine: 'auto' (Qwen3-TTS where the GPU has room, Kokoro elsewhere), 'kokoro'
-    or 'natural'. The earlier engine's 'piper' reads as 'kokoro'."""
+    or 'natural'. The earlier engine's 'piper', the default every install had, reads as 'auto'."""
     try:
         from eli.core.runtime_settings import load_settings
         val = str((load_settings() or {}).get("tts_engine") or "auto").strip().lower()
     except Exception:
         val = "auto"
-    return {"piper": "kokoro"}.get(val, val)
+    return {"piper": "auto"}.get(val, val)
+
+
+_RUNTIME_ASKED = False
 
 
 def _natural_default() -> str:
+    """Qwen3-TTS's default natural voice where this machine runs it, else ''. Where the GPU has room but
+    its runtime is not made yet, it is made in the background, once a run, when the network is allowed
+    (eli/perception/qwen3_runtime); Kokoro speaks meanwhile."""
+    global _RUNTIME_ASKED
     try:
         from eli.perception import tts_qwen3
         if tts_qwen3.usable("custom"):
             return "natural:serena"
+        if not _RUNTIME_ASKED and not tts_qwen3.installed():
+            _RUNTIME_ASKED = True
+            from eli.core import netguard
+            if not netguard.should_block_network():
+                from eli.perception import qwen3_runtime
+                qwen3_runtime.make_if_room(background=True)
     except Exception:
         log.debug("[TTS] Qwen3-TTS check failed", exc_info=True)
     return ""
@@ -529,8 +547,9 @@ def _natural_default() -> str:
 
 def get_active_voice() -> str:
     """The voice that speaks: ELI_TTS_VOICE, else the saved tts_voice (a voice saved for the earlier
-    engine maps onto its nearest Kokoro voice), else the engine's default: Qwen3-TTS's natural voice
-    when the engine is 'auto' or 'natural' and this machine's GPU runs it, Kokoro's otherwise."""
+    engine maps onto its nearest Kokoro voice; the default it wrote for everyone counts as none), else the
+    engine's default: Qwen3-TTS's natural voice when the engine is 'auto' or 'natural' and this machine's
+    GPU runs it, Kokoro's otherwise."""
     env = (os.environ.get("ELI_TTS_VOICE", "") or os.environ.get("ELI_PIPER_VOICE", "")).strip()
     chosen = env
     if not chosen:
@@ -539,6 +558,8 @@ def get_active_voice() -> str:
             chosen = str((load_settings() or {}).get("tts_voice", "") or "").strip()
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        if chosen in _RETIRED_DEFAULT_VOICES:
+            chosen = ""
     if chosen:
         if chosen.startswith(("char:", "clone:", "natural:", "sys:")):
             return chosen
@@ -699,7 +720,9 @@ _NEURAL_FALLBACK: Dict[str, Any] = {"active": False, "requested": "", "reason": 
 def _neural_unavailable_reason() -> str:
     """Why a neural voice cannot synthesise right now, in one line."""
     try:
-        from eli.perception import tts_qwen3
+        from eli.perception import qwen3_runtime, tts_qwen3
+        if qwen3_runtime.state().get("state") == "making":
+            return "its runtime is being made (a download of a few GB, once); the default voice speaks meanwhile"
         if tts_qwen3.installed() and not tts_qwen3.usable("custom") and not tts_qwen3.usable("base"):
             return "no GPU on this machine has room for Qwen3-TTS beside the language model"
         if tts_qwen3.last_error():
@@ -708,8 +731,8 @@ def _neural_unavailable_reason() -> str:
         log.debug("[TTS] Qwen3-TTS state unknown", exc_info=True)
     if _clone_backend_available("qwen3") or _clone_backend_available("chatterbox") or _clone_backend_available("xtts"):
         return "the neural engine is present but produced no audio for this voice"
-    return ("the neural voice engine is not installed in this build "
-            "(the voice-gpu extra: qwen-tts and PyTorch, on a machine with a GPU)")
+    return ("the neural voice engine is not on this machine (ELI makes its runtime only where an NVIDIA "
+            "GPU has room for it beside the language model)")
 
 
 def _note_neural_fallback(requested) -> None:

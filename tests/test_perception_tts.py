@@ -108,7 +108,39 @@ def test_on_a_machine_whose_gpu_runs_qwen3_the_automatic_engine_speaks_with_its_
     no_settings.write_text(json.dumps({"tts_engine": "kokoro"}), encoding="utf-8")
     assert get_active_voice() == "af_heart", "Kokoro chosen: the GPU voice is not used"
     no_settings.write_text(json.dumps({"tts_engine": "piper"}), encoding="utf-8")
-    assert get_active_voice() == "af_heart", "the earlier engine's setting reads as Kokoro"
+    assert get_active_voice() == "natural:serena", "the earlier engine, every install's default, reads as automatic"
+
+
+def test_a_user_who_kept_the_old_default_voice_gets_the_automatic_one_and_a_chosen_voice_is_kept(no_settings, monkeypatch):
+    """Every settings file held tts_voice en_US-amy-medium, the earlier engine's default: it is nobody's
+    choice, so it reads as none and the automatic engine speaks; a voice the user picked stays theirs."""
+    import json
+    from eli.perception import tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    no_settings.write_text(json.dumps({"tts_voice": "en_US-amy-medium", "tts_engine": "piper"}), encoding="utf-8")
+    assert get_active_voice() == "natural:serena"
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": False)
+    assert get_active_voice() == "af_heart", "a CPU-only machine keeps Kokoro"
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    no_settings.write_text(json.dumps({"tts_voice": "en_GB-alan-medium"}), encoding="utf-8")
+    assert get_active_voice() == "bm_george", "a voice the user chose is kept"
+
+
+def test_where_the_gpu_has_room_the_runtime_is_made_in_the_background_once_and_only_when_online(no_settings, monkeypatch):
+    from eli.core import netguard
+    from eli.perception import qwen3_runtime, tts_qwen3
+    from eli.perception import tts_router as tr
+    asked = []
+    monkeypatch.setattr(tts_qwen3, "installed", lambda: False)
+    monkeypatch.setattr(qwen3_runtime, "make_if_room", lambda background=False: asked.append(background) or {})
+    monkeypatch.setattr(netguard, "should_block_network", lambda: True)
+    monkeypatch.setattr(tr, "_RUNTIME_ASKED", False)
+    assert get_active_voice() == "af_heart" and asked == [], "fetched with the network switched off"
+    monkeypatch.setattr(netguard, "should_block_network", lambda: False)
+    monkeypatch.setattr(tr, "_RUNTIME_ASKED", False)
+    get_active_voice()
+    get_active_voice()
+    assert asked == [True], "not made in the background, or asked more than once a run"
 
 
 def test_the_backends_say_which_engine_speaks_and_whether_its_files_are_here(no_settings, monkeypatch, tmp_path):
