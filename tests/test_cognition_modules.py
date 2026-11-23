@@ -2,18 +2,6 @@
 from __future__ import annotations
 
 
-# ── Agent Bus ─────────────────────────────────────────────────────────────
-
-
-# ── Orchestrator ──────────────────────────────────────────────────────────
-
-
-# ── GGUF Inference ────────────────────────────────────────────────────────
-
-
-# ── Inference Broker ──────────────────────────────────────────────────────
-
-
 # ── HyDE ─────────────────────────────────────────────────────────────────
 
 
@@ -36,6 +24,3 @@ def test_hyde_adds_each_usable_answer_after_the_query():
     def _broken(prompt):
         raise RuntimeError("no model")
     assert expand_query_hyde("What is Python?", _broken) == ["What is Python?"]
-
-
-# ── Engagement Tracker ────────────────────────────────────────────────────

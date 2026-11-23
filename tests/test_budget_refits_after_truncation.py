@@ -33,9 +33,6 @@ REPO = Path(__file__).resolve().parents[1]
 ENGINE = REPO / "eli" / "kernel" / "stages" / "generation.py"
 
 
-# ── the arithmetic the fix restores ────────────────────────────────────────
-
-
 # ── the source must recompute after truncating ─────────────────────────────
 def _engine_code():
     src = ENGINE.read_text(encoding="utf-8")

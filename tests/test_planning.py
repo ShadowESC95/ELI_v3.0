@@ -4,12 +4,6 @@ from __future__ import annotations
 import sqlite3
 
 
-# ── Proactive Daemon ──────────────────────────────────────────────────────
-
-
-# ── Plugin system ─────────────────────────────────────────────────────────
-
-
 # ── Knowledge Graph ───────────────────────────────────────────────────────
 
 
@@ -28,5 +22,3 @@ def test_knowledge_graph_schema_has_core_tables(tmp_db):
     finally:
         conn.close()
     assert {"kg_entities", "kg_relations", "kg_entities_fts"} <= tables
-
-# ── Memory Adapter ────────────────────────────────────────────────────────

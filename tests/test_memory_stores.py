@@ -7,9 +7,6 @@ import pytest
 from eli.memory.memory import Memory
 
 
-# ── Memory store write/read cycle ────────────────────────────────────────
-
-
 # ── FTS5 Index ────────────────────────────────────────────────────────────
 
 

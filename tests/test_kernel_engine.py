@@ -86,9 +86,6 @@ def test_recall_memory_query_respects_limit(engine):
     assert len(result) <= 3
 
 
-# ── Multiple engine instances ─────────────────────────────────────────────
-
-
 # ── Degenerate-output guard (fragment never surfaced) ─────────────────────
 import pytest as _pytest
 

@@ -9,9 +9,6 @@ def action(text: str) -> str:
     return (route(text).get("action") or "").upper()
 
 
-# ── Greeting / Phatic routing ─────────────────────────────────────────────
-
-
 # ── Math / factual routing ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text", [
@@ -33,9 +30,6 @@ def test_factual_queries(text):
     assert isinstance(result, dict)
     a = (result.get("action") or "").upper()
     assert a in ("CHAT", "FACTUAL", "COGNITIVE_CHAT"), f"'{a}' for: {text}"
-
-
-# ── Memory specific recall ────────────────────────────────────────────────
 
 
 # ── Identity / self-awareness queries ────────────────────────────────────
@@ -60,9 +54,6 @@ def test_identity_queries(text):
                  "USER_IDENTITY_SUMMARY", "LIST_CAPABILITIES"), f"'{a}' for: {text}"
 
 
-# ── Reasoning mode queries ────────────────────────────────────────────────
-
-
 # ── Cognition/pipeline queries ────────────────────────────────────────────
 
 @pytest.mark.parametrize("text", [
@@ -81,15 +72,6 @@ def test_cognition_queries(text):
                  "EXPLAIN_COGNITION_RUNTIME", "LIST_CAPABILITIES"), f"'{a}' for: {text}"
 
 
-# ── File system queries ───────────────────────────────────────────────────
-
-
-# ── Code queries ──────────────────────────────────────────────────────────
-
-
-# ── Operator / media commands ────────────────────────────────────────────
-
-
 # ── Long-form queries ─────────────────────────────────────────────────────
 
 LONG_QUERIES = [
@@ -106,15 +88,6 @@ def test_long_query_routing(text):
     a = (result.get("action") or "").upper()
     assert a in ("CHAT", "FACTUAL", "COGNITIVE_CHAT", "MEMORY_RECALL"), \
         f"'{a}' for long query"
-
-
-# ── Confidence bounds ─────────────────────────────────────────────────────
-
-
-# ── Action string format ──────────────────────────────────────────────────
-
-
-# ── No crashes on weird inputs ────────────────────────────────────────────
 
 
 # ── Visual content-questions gather a real glance (not CHAT guessing) ────────
