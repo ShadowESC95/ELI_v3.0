@@ -1,7 +1,7 @@
 # ELI Perception — Vision, Voice, Wake Word, Tone, OS Control
 
-`eli/perception/` (27 files). ELI's senses and hands: local vision, speech-to-text,
-text-to-speech, a **self-trained wake-word detector**, a **voice-profile/tone**
+`eli/perception/` (33 files). ELI's senses and hands: local vision, speech-to-text,
+text-to-speech, **conversation mode**, a **self-trained wake-word detector**, a **voice-profile/tone**
 subsystem, and OS control. All local, no APIs, no third-party accounts.
 
 ## Files
@@ -10,7 +10,10 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 |---|---|---|
 | `mic_resolver.py` | ~620 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
 | `audio_stt.py` | ~2.9k | STT + mic capture (read without a break) + ducking + adaptive pause + wake/voice capture |
-| `near_speech.py` | ~310 | **speech the machine's own output does not explain** — the default sink's monitor as reference, the music's share at the mic learnt band by band; lowers ELI's media at the onset of the owner's speech |
+| `near_speech.py` | ~350 | **speech the machine's own output does not explain** — the default sink's monitor as reference, the music's share at the mic learnt band by band; lowers ELI's media at the onset of the owner's speech; `BargeIn`, the user speaking over ELI's voice |
+| `noise_floor.py` | ~200 | **the room's level and the speech gate set over it**, measured from every mic chunk; `LevelOnset`, speech onsets over a learnt background |
+| `conversation.py` | ~400 | **conversation mode**: the state, what each thing heard is (a control or a turn), the voice controls, the idle end learnt from use |
+| `speech_stream.py` | ~500 | **a reply spoken while it is written**: clause by clause, rendering ahead of one continuous output; pause, resume, stop, what was heard |
 | `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
 | `tts_router.py` | ~1230 | voice router: Kokoro / Qwen3-TTS / pyttsx3 + `char:`/`clone:`/`natural:` voice resolution, sentence-ahead rendering, playback; `neural_fallback_state()` makes a neural fallback observable |
@@ -143,12 +146,41 @@ A large, feature-dense STT module:
   the music, where a rise in loudness found none, with 2 false onsets in 4 minutes of music and
   none from its own lowering and restoring. Off with `ELI_STT_ONSET_DUCK=0`; nothing happens where
   the mic does not hear the output (headphones) or no sound server runs.
+- **The speech gate follows the room** (`noise_floor.NoiseFloor`). Every chunk the mic delivers is
+  measured; the room is those chunks without the spans the voice gate took as the owner's words and
+  without ELI's own voice (the speaking lock and its drain). Before each capture the gate is set to
+  the lowest level at which the room's last 12 s would not have started a phrase by
+  SpeechRecognition's own rule (`phrase_threshold` of chunks over it, no silence longer than the
+  end-of-phrase pause between), raised by Z (near_speech's) deviations of a chunk's own level
+  (1/sqrt(2n) for n samples): just above a fan, above a television's or a song's loudest stretch,
+  and back down when the room is quiet. The configured start (`ELI_STT_ENERGY_THRESHOLD`, 1200)
+  holds only until the room has been heard for `non_speaking_duration`. It replaced the fixed
+  start, SpeechRecognition's dynamic threshold switch, a recalibration every 60 silent cycles and a
+  self-heal that lifted the gate after three captures ran to their cap (a capture that runs to its
+  cap with no words is room, so the measured gate is above it on the next cycle). Settings ▸ Audio:
+  *Automatic sensitivity* (default) or a number by hand (`stt_sensitivity_auto`,
+  `stt_energy_threshold`; `ELI_STT_SENSITIVITY=manual`), and a live meter (`level_meter()`). Measured
+  on fixtures (`tests/test_stt_noise_self_heal.py`: a quiet room at 120 RMS, a fan at 600, a
+  television at 1,500 and music at the incident's 7,924): no phrase started on any room alone in
+  48 s of each, and the owner's utterances said 6 dB and 12 dB above the room's average started one
+  10 of 10 times in every room.
+- **Echo cancellation** (`ensure_echo_cancel`, Settings ▸ Audio or `ELI_STT_ECHO_CANCEL=1`): PipeWire's
+  own canceller (webrtc) in **monitor mode** in a client process of ELI's (`pipewire -c` with a
+  private config, ended with ELI by `PR_SET_PDEATHSIG` and at exit): the default sink's monitor is
+  what it takes out, so ELI's voice and its music are cancelled whatever plays them; its clean source
+  (`eli_echo_cancelled`, lowest priority, never the desktop default) is read by ELI alone through
+  `PULSE_SOURCE`, and a microphone the owner chose is what it cleans. The earlier path loaded
+  PulseAudio's module-echo-cancel into the server: it cancels only what plays into its own sink, and
+  nothing does, so it cancelled nothing. On PulseAudio without PipeWire it is not done (moving
+  every stream to its sink would change the desktop's routing); `echo_cancel_state()` says why.
+  Not run against a live desktop in testing (the machine's sound settings were left alone); the
+  tests stand in for `pipewire` and `pactl`.
 - **Voice profile** (`voice_profile.json` in the user's runtime folder; `voice_profile_n` in the
-  "Microphone ready" line): the level and length of the owner's speech, which may lower the energy
-  gate toward it. It learns only from what the voice gate takes as the owner's — the wake word, a
-  command it sends on (`_learn_voice`) — and not while ELI's media plays or the noise self-heal
-  holds the gate up; learnt from every capture it measured the songs the mic transcribed. A
-  profile written before (no `learned_from`) starts over.
+  "Microphone ready" line): the level and length of the owner's speech. It learns only from what
+  the voice gate takes as the owner's — the wake word, a command it sends on (`_learn_voice`) — and
+  not while ELI's media plays or the room is clearly louder than the quietest it has been heard
+  (`NoiseFloor.louder_than_usual`); learnt from every capture it measured the songs the mic
+  transcribed. A profile written before (no `learned_from`) starts over.
 - Transcript cleanup: `_cleanup`, `_collapse_repeated_phrase`,
   `_eli_fast_command_alias` (maps spoken phrases to commands),
   `_is_safe_direct`/`_allow_direct_chat` (gates which utterances bypass to chat).
@@ -159,7 +191,10 @@ A large, feature-dense STT module:
   capture with a single dynamic condition: short commands finalise after
   `ELI_STT_SHORT_PAUSE` (0.5s) of silence; a prompt speaking past `ELI_STT_LONG_AFTER`
   (12s) needs `ELI_STT_LONG_PAUSE` (2s), so a mid-sentence pause no longer cuts it.
-  Flag-gated (`ELI_STT_ADAPTIVE_PAUSE`) with fallback to stock `listen()`.
+  Flag-gated (`ELI_STT_ADAPTIVE_PAUSE`) with fallback to stock `listen()`. In conversation mode the
+  short pause is the user's own: every pause they make inside a turn and go on from is told to the
+  voice gate (`note_inner_pause`), and a turn ends after half again the longest recent one
+  (`VoiceGate.end_of_phrase_pause`), so a thinking pause is waited out.
 - **Generic mic-capture script** — one mechanism (no second microphone) drives both
   wake-word enrollment and voice/emotion training: a list of `{prompt, sink}` steps,
   each captured (past the TTS-echo guards) clip routed to its sink, the next cue
@@ -168,7 +203,8 @@ A large, feature-dense STT module:
 - **Acoustic wake hook** — when unarmed and a wake model is trained, the captured
   audio is scored by `wakeword` and, if it fires, the wake word is injected so the
   existing `VoiceGate` arms — catching the wake word even when whisper transcribed the
-  music. **Per-turn tone hook** — on a real command, `voice_profile.classify_tone` is
+  music. The voice is a second signal (`_voice_of`, speaker_id): with speakers enrolled, an enrolled
+  voice needs a lower score and any other a higher one (`WakeDetector.threshold_for`). **Per-turn tone hook** — on a real command, `voice_profile.classify_tone` is
   run and published on a side-channel for cognition (below).
 
 ## Wake word (`wakeword.py`, 2026-06-08) — self-trained, robust over music
@@ -190,7 +226,30 @@ transcribes the music). Instead ELI **trains its own** detector, 100% locally:
 - **Personalisation** — enrolled real-mic clips of the user are folded in as heavily-
   weighted positives.
 - Actions: `WAKE_SET` / `WAKE_TRAIN` / `WAKE_ENROLL`. Fully fallback-safe
-  (`ELI_WAKE_ACOUSTIC=0`; no model → the transcription matcher).
+  (`ELI_WAKE_ACOUSTIC=0`; no model → the transcription matcher). Training never worked before
+  2026-11-23: each fold of the threshold's cross-validation was trained inside `torch.no_grad()`.
+- **Learning from use** (`ELI_WAKE_LEARN=0` turns it off). A wake word heard (bare, or before a
+  command) is held (`ELIAudioSTT._wake_candidate`) and kept once the command after it is acted on
+  (`_confirm_wake`): the wake word cut from the capture (`wake_segment`: its first stretch of
+  speech up to the first pause, centred as the trainer's clips are) as an enrolment clip, and the
+  room it was said in (what the mic heard just before, ELI's voice left out) as a noise bed, one per
+  clip. Not kept while ELI spoke, when ELI's media played and the mic heard no speech the output does
+  not explain (music alone), or for a voice that is not an enrolled one. Once the real clips since
+  the last training are at least as many as it learnt from then (and never fewer than its folds),
+  it trains again in the background (`retrain_due`, `retrain_in_background`) and the new detector is
+  used once done. `training_status()` feeds Settings ▸ Audio. A short capture is scored centred, as
+  its training clips are (it was padded at the end).
+- **The voice as a second signal** (`threshold_for`): the trained threshold when no voice is known;
+  for an enrolled voice halfway down to the held-out non-wake clips' 95th percentile; for another
+  voice halfway up to the held-out wake clips' median. Measured on fixtures with a model-free
+  stand-in for openWakeWord's features (log energy in 24 bands; the trainer, head, thresholds and
+  learning are the real ones; `tests/test_wakeword_training.py`), the owner's wake word 12 times per
+  room, so the stand-in's absolute rates say little about openWakeWord's: trained from ELI's voices
+  alone, missed 5 / 12 / 10 / 12 in a quiet room / fan / television / music, a minute of television
+  talk woke it 28 times (22 as an unknown voice); after ten confirmed wakes in those rooms, missed
+  4 / 7 / 11 / 10 with the voice known (7 / 8 / 11 / 10 not known) and the television woke it 15
+  times (14 as an unknown voice). A guest saying the wake word was accepted 12 / 12 times by the
+  stand-in either way: its features do not tell speakers apart, which the real speaker_id does.
 
 ## Voice profile + tone (`voice_profile.py`, 2026-06-08) — foundation for emotion
 
@@ -330,6 +389,15 @@ match its checksum is refused, and a refused one makes no folder. Once fetched, 
 The fp32 export was kept: on a CPU it ran as fast as the fp16 and uint8 exports and four times faster
 than the int8 one, and each reduced export changed the sound.
 
+*Delivery the owner sets.* "Speak slower" and the like (conversation mode) are kept as
+`tts_length_scale` (one step is half the spread of the palette's paces) and `tts_gain_db` (one step
+halves or doubles the power), heard under any tone: the tone's values used to replace the saved pace,
+neutral's own included, so a saved pace was never heard; now it is the tone's pace times the saved
+pace's share of neutral. Qwen3-TTS gets the same as words in its instruction (`_tone_instruct`:
+"Speak in a calm tone, more slowly than usual, softly."). Kokoro voices blend: `af_heart+bf_emma`
+averages the voices' style vectors (`tts_kokoro.blend_parts`). `render_samples()` gives any voice as
+samples for a caller that plays it itself.
+
 *Speaking.* `_run_tts` holds the speaking lock (the microphone's echo guard) and the avatar's speaking
 state for the whole reply. The Kokoro path renders the reply sentence by sentence on a thread of its own
 and plays each sentence as soon as it is ready, the next one rendering meanwhile; the tone's pause
@@ -358,6 +426,59 @@ turns "a British male voice", "use the emma voice" or a voice id into a voice fo
 `DOWNLOAD_VOICE`, without hard-coded ids.
 
 **Style presets** (`voice_fx.py`, `char:calm`, `char:robotic`, …) are a Kokoro base voice plus an ffmpeg effect chain (pitch / speed / filters). They are **generic sound styles**, not bundled impersonations of copyrighted characters; each preset carries an **ordered, gender-matched `fallback` chain** of Kokoro voices, and a preset saved with a Piper base reads as that base's Kokoro voice. **Voice cloning** (`CREATE_VOICE`, `clone:<name>`): `tts_xtts.add_clone()` keeps the reference recording (and its transcript when given, which lets Qwen3-TTS clone more closely); Qwen3-TTS speaks it on a GPU with room, else Chatterbox, else XTTS. Both `char:` and `clone:` resolve through `synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI voice picker.
+
+## Conversation mode (`conversation.py`, `speech_stream.py`)
+
+On with the window's 💬 Converse button or *"let's have a conversation"* (said or typed), off with
+the button, *"stop the conversation"* / *"goodbye"*, or by itself after a quiet longer than half again
+the longest of the user's recent answer gaps (learnt, kept as `conversation_answer_gaps`; before any,
+the listener's armed window). While on:
+- **Turns.** The voice gate stays armed (`VoiceGate.set_conversing`): no wake word for each turn,
+  a guarded command still needs one, a sentence that trails off ("and", "the", "because") is held
+  for the rest of it and released after the user's own continuation pause, and the end of a turn
+  waits out the user's own inner pauses (above). Each turn runs in the fast reasoning mode
+  (`canonical_mode("fast")`); the engine and the pipeline are unchanged.
+- **Speech as it is written** (`SpeechStream`). The turn worker feeds the reply's tokens as they
+  stream; `Clauses` cuts them into pieces (markup and everything from the first code block on left
+  out, as `_spoken_part` does). The first clause is rendered at once; nothing plays until what is
+  rendered lasts as long as the next piece takes to be written and rendered at the paces measured
+  so far, then everything plays through one PortAudio stream (`DeviceOutput`, the same route as
+  `_play_wav_blocking`; the system player piece by piece where none is listed) with a fade at each
+  join. While audio plays, the next piece is the longest run of whole sentences that renders before
+  the audio waiting runs out (a render model fitted to the last renders: seconds per piece plus per
+  character), else of clauses, else as many words as do; each keeps its closing mark, so a clause
+  cut at a comma is read with a comma's tone and pause. Measured on fixtures
+  (`tests/test_conversation_mode.py`: a model writing 12 tokens a second after 0.8 s; Kokoro's
+  measured 0.43 of real time plus 0.15 s a piece; 15 characters a second of speech): a 26-character
+  reply's first audio at 2.1 s (2.3 s written whole, then spoken), a 261-character one at 2.4 s
+  (7.4 s); no silence while rendering in either; the long one in 5 pieces with 2 joins inside a
+  sentence.
+- **Speaking over ELI** (`near_speech.BargeIn`, fed every mic chunk heard while ELI's voice plays).
+  Where the mic hears the output (speakers) and NearSpeech has learnt its share there (after
+  `LEARN_S`, 12 s of output; the learning is kept for the session), speech the output does not
+  explain decides, ELI's voice and any music alike; before that, and where the mic does not hear the
+  output (headphones), the level over what the mic hears while ELI speaks (`LevelOnset`, the same
+  robust rule). Where no recorder reads the sink (no sound server, Windows, macOS) ELI's own voice
+  is handed to NearSpeech as the reference (`reference_output`). At the onset the voice falls silent
+  at once and the audio from the onset on is kept for the listener (`_ContinuousMic.flush(keep_from)`);
+  the listener waits the short wait for it; what was said decides: "wait", "hold on", "pause" keep
+  ELI silent where it stopped, "go on", "continue" go on from there, "stop", "that's enough" stop it,
+  a voice control is carried out and ELI goes on, anything else drops the rest of the reply,
+  cancels its generation (the window's own cancel) and is the next turn; a sound with no words in it
+  lets ELI go on. A reply cut off before its stream ended is not stored by the engine; the window
+  stores what was heard of it, marked as cut off there (`cut_off_record`). A reply whose stream had
+  already ended is stored whole (only the main chat path waits at `__MAIN_REPLY_DONE__` for the voice).
+  Measured on fixtures: speakers, the user 3 dB below ELI's level at the mic, 8 of 8 utterances found,
+  128 ms median from their first syllable (320 ms worst), ELI silent within one output block after;
+  headphones, 4 of 4, 100 ms; false interrupts per minute on ELI's own voice, ELI's voice over music
+  and with headphones: 0, 0 and 0.
+- **The voice's controls** (`read_control`, read from the words alone, before the engine: the router
+  reads "speak slower" as text to say and "switch to Emma" as a window to focus): pace, level,
+  tone ("calmer", "more excited", "more serious" through the palette's aliases), "speak normally",
+  "use the British voice", "switch to <voice>", "blend <voice> and <voice>"; kept (the tts_* settings,
+  the tone, the voice) and shown beside the button (`delivery_summary`). Pace, level, normal and
+  blends are read with the mode off too; "pause", "stop" and "continue" only while ELI has something
+  to pause (else they are for the music).
 
 ## OS control (`os_controller.py`)
 

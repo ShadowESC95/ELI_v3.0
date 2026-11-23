@@ -128,6 +128,34 @@ show stale or wrong numbers:
 
 See `tests/test_confidence_badge_reflects_the_real_turn.py`.
 
+### Conversation mode and the voice controls
+
+The chat row's **💬 Converse** button (or *"let's have a conversation"* said or typed) turns on
+conversation mode (`eli/perception/conversation.py`, wired in `ConversationMixin`): the microphone
+listens with no wake word for each turn, each turn runs in the fast reasoning mode
+(`canonical_mode("fast")`, i.e. Quick, whatever the picker says), and the reply is spoken while it
+is streamed (`speech_stream.SpeechStream`, fed from the turn worker's tokens; at the engine's
+`__MAIN_REPLY_DONE__` the worker waits until the reply has been heard, so a turn the user cuts off is
+closed unstored and recorded as far as it was heard). A label beside the button shows the state
+(👂 Listening, 💭 Thinking, 🗣 Speaking, ⏸ Paused, and "no microphone: type to talk" when the
+listener is not running); the label after it shows the voice as set now (voice, pace, level,
+tone). Everything said or typed goes through `Conversation.heard` first (`_take_message`): a
+conversation or voice control ("wait", "go on", "stop", "speak slower", "use the British voice", "stop
+the conversation") is carried out there and never reaches the engine; a spoken turn while a reply is
+being written or spoken cancels it (`_request_generation_cancel`) and is the next turn; a typed one
+waits its turn as before. Typing in the chat box counts as the user being there for the idle end. The
+voice picker follows a spoken voice change. Offscreen test: `tests/test_conversation_mode.py`
+(`tests/_gui_runtime_checks.py converse`).
+
+**Settings ▸ Audio**: *Automatic sensitivity* (on by default) uses the room's own speech gate
+(`noise_floor.py`); off, the *Speech level (manual)* number is used. A live meter shows the mic's
+level against the gate and the room's level. The wake card has the **wake phrase** (applied at once
+and the detector trained on it in the background), the wake detector's status (trained when, clips
+of the owner's wake word kept from use, how many since the last training) and *echo cancellation*
+(PipeWire's, run by ELI for itself; its state or why it is off). All are saved in the settings
+(`stt_sensitivity_auto`, `stt_energy_threshold`, `stt_echo_cancel`; the phrases in
+`models/wakeword/wake_config.json`).
+
 ### Commands that need no model
 
 `ConversationMixin._needs_no_model` asks the engine whether a message is a command it runs

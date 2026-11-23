@@ -599,6 +599,32 @@ flowchart LR
   speaks**, and shows a focused look while it's thinking.
 - **Teach ELI your voice & tone:** "train my voice" — it learns your pitch/energy and even emotion
   cues, then adapts how it speaks to you.
+- **Conversation mode — just talk:** click **💬 Converse** next to the microphone button, or say or
+  type *"let's have a conversation"*. Now there is no wake word for each turn: say what you want,
+  pause to think if you need to (ELI waits for the rest of a sentence you leave hanging), and ELI
+  answers out loud as it writes, in its fast mode. The label beside the button says whether ELI is
+  listening, thinking, speaking or paused.
+  - **Cut in** any time: just start talking. ELI goes quiet at your first syllable and listens.
+    What it had said so far is what it remembers saying.
+  - **Pause and go on:** *"wait"*, *"hold on"*, *"pause"* — ELI stops where it was; *"go on"*,
+    *"continue"* — it carries on from there. *"Stop"* or *"that's enough"* — it stops and listens.
+  - **Change how it sounds:** *"speak slower"*, *"faster"*, *"softer"*, *"louder"*, *"calmer"*,
+    *"more excited"*, *"more serious"*, *"speak normally"*, *"use the British voice"*,
+    *"switch to Emma"*, *"blend Heart and Emma"*. The change is heard from the next phrase on, kept
+    for next time, and shown beside the button. (With the GPU voice the same words steer its
+    delivery.)
+  - **Finish:** *"stop the conversation"* (or *"goodbye"*), or click the button again. It also ends
+    by itself after a silence longer than you usually take to answer.
+  - Typing works the whole time; replies are still spoken.
+- **Hearing you in a noisy room:** ELI measures the room all the time and listens for speech just
+  above it — a fan, a television or music raise the level it needs, and it comes back down when the
+  room is quiet. **Settings ▸ Audio** shows the level live; *Automatic sensitivity* is on by default
+  (turn it off to set a number yourself). Each time you say the wake word and ELI acts on what
+  follows, it keeps that recording (never its own voice, never music alone) and, once it has enough
+  new ones, retrains its wake-word listener on how you actually say it, in the rooms you actually
+  use it in. If you have enrolled your voice ("enroll speaker <name>"), your voice wakes ELI more
+  easily and a stranger's or a television's less. On Linux with PipeWire, *echo cancellation* in the
+  same page takes ELI's own voice and music out of what the microphone hears.
 - **If voice misbehaves:** "run voice diagnostics".
 
 ---
