@@ -18,7 +18,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Constructing a widget must never reach the network. FirstBootWizard kicks off a
-# real asset prefetch (Piper voices + the embedder) from its constructor, which in
+# real asset prefetch (the voice + the embedder) from its constructor, which in
 # this lane downloaded and copied files mid-test and ABORTED the pytest process —
 # taking every test after it with it. This lane is usually run with --noconftest,
 # so it cannot rely on the root conftest for the offline default: set it here, the
@@ -461,10 +461,10 @@ def test_both_startup_windows_take_the_natural_voice_from_the_voice_engine(monke
     from eli.gui.panels.startup import FirstBootWizard, StartupModelSelectionDialog
     monkeypatch.setattr(xtts, "_DEFAULT_NATURAL", "another_voice")
     natural = SimpleNamespace(selected_tts_engine=lambda: "natural")
-    piper = SimpleNamespace(selected_tts_engine=lambda: "piper")
+    kokoro = SimpleNamespace(selected_tts_engine=lambda: "kokoro")
     for window in (StartupModelSelectionDialog, FirstBootWizard):
         assert window.selected_tts_voice(natural) == "natural:another_voice"
-        assert window.selected_tts_voice(piper) == ""
+        assert window.selected_tts_voice(kokoro) == ""
 
 
 def test_notebook_and_workspaces_read_their_store_with_the_shared_reader(tmp_path):

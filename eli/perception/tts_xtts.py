@@ -1,14 +1,12 @@
-"""Voice cloning backend (Coqui XTTS-v2).
+"""The cloned-voice registry, and the legacy Coqui XTTS-v2 backend.
 
 A "cloned voice" reproduces a target voice from a short reference sample (~6-20s of
-clean speech) with zero training — powered by Coqui XTTS-v2. Unlike Piper/character
-voices (always available), this needs the optional heavy ``TTS`` package + a ~1.8GB
-model that downloads on first use, so everything here **degrades gracefully**:
-
-- Registering a clone (``add_clone``) only stores a reference clip — works offline,
-  no ``TTS`` needed. Users can build their voice library any time.
-- Synthesis (``synthesize_wav``) needs ``TTS`` installed; if absent it returns None
-  and the caller falls back to a normal voice, with a clear one-line reason.
+clean speech) with zero training. The registry here (``add_clone``) only stores the
+reference clip, offline, so a voice captured once works on whichever clone engine
+this machine has: Qwen3-TTS on a GPU with room for it (tts_qwen3, the GPU extra),
+then Chatterbox (MIT), then Coqui XTTS-v2 (its model's licence is non-commercial;
+never part of ELI's builds). Synthesis returns None when the engine is absent and
+the caller speaks with the default voice, with a clear one-line reason.
 
 tts_router resolves a voice named ``clone:<name>`` through here.
 """
@@ -113,8 +111,9 @@ def _to_reference_wav(audio_path: str, dest: Path) -> bool:
 
 
 def add_clone(name: str, audio_path: str, language: str = "en",
-              desc: str = "") -> Dict[str, Any]:
-    """Register a cloned voice from a reference audio clip (offline; no TTS needed)."""
+              desc: str = "", ref_text: str = "") -> Dict[str, Any]:
+    """Register a cloned voice from a reference audio clip (offline; no engine needed). `ref_text`,
+    what the clip says, lets Qwen3-TTS clone it more closely."""
     key = str(name or "").lower().replace(CLONE_PREFIX, "", 1).strip().replace(" ", "_")
     if not key:
         return {"ok": False, "error": "empty name"}
@@ -125,13 +124,22 @@ def add_clone(name: str, audio_path: str, language: str = "en",
         return {"ok": False, "error": "could not read/convert the reference audio (need ffmpeg or a .wav)"}
     reg = _load_registry()
     reg[key] = {"ref_wav": str(ref), "language": language or "en", "desc": desc or f"Cloned voice: {key}"}
+    if str(ref_text or "").strip():
+        reg[key]["ref_text"] = str(ref_text).strip()
     _save_registry(reg)
     return {"ok": True, "name": key, "id": CLONE_PREFIX + key, "ref_wav": str(ref),
             "synth_ready": _clone_synth_available()}
 
 
 def _clone_synth_available() -> bool:
-    # Clones are spoken by Chatterbox when it is installed, XTTS otherwise (tts_router).
+    # Clones are spoken by Qwen3-TTS where the GPU runs it, Chatterbox when it is installed, XTTS
+    # otherwise (tts_router.synthesize_wav).
+    try:
+        from eli.perception import tts_qwen3
+        if tts_qwen3.usable("base"):
+            return True
+    except Exception:
+        log.debug("tts_xtts: Qwen3-TTS check failed", exc_info=True)
     try:
         from eli.perception.tts_chatterbox import chatterbox_available
         if chatterbox_available():
@@ -169,7 +177,7 @@ def list_clones() -> "list[Dict[str, Any]]":
 _COMPAT_PATCHED = False
 _XTTS_IMPORT_ERROR = ""
 # Python does not cache a FAILED import, so every call re-walked sys.path and
-# re-logged. The shipped bundle deliberately omits coqui-tts (Piper is the
+# re-logged. The shipped bundle deliberately omits coqui-tts (Kokoro is the
 # bundled engine), so several callers each paid a full failed-import walk at
 # startup. The answer cannot change within a process.
 _XTTS_AVAILABLE: "bool | None" = None
@@ -371,7 +379,7 @@ def synthesize_wav(text: str, clone_name: str) -> Optional[bytes]:
         log.debug("tts_xtts: missing reference for '%s'", clone_name)
         return None
     if not xtts_available():
-        log.info("tts_xtts: %s needs the voice-clone extra — `pip install \"eli-v2.0[clone]\"`",
+        log.info("tts_xtts: %s needs coqui-tts, which ELI does not install (its model is non-commercial)",
                  str(clone_name))
         return None
     outpath = ""

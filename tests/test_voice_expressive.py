@@ -1,12 +1,11 @@
-"""Expressive-voice upgrade: robotic-voice removal, Piper prosody, natural neural voice.
+"""Expressive voice: the tone's delivery, hidden robotic voices, natural neural voices.
 
-- Piper is given expressive prosody (sentence pauses so ?/!/. land) — the flat-Amy fix.
-- espeak `sys:` and Piper low/x_low voices are hidden by default (kept as last resort).
-- XTTS-v2 exposed as a general `natural:` backend (no clone), with graceful Piper fallback.
+- Kokoro speaks with the tone's pace and the pause after each sentence (tts_router._prosody).
+- The operating system's own `sys:` voices are hidden by default (kept as a last resort).
+- `natural:` voices are Qwen3-TTS's speakers on a GPU with room for it (XTTS-v2's where that is
+  installed); without either, the default Kokoro voice speaks and says so.
 """
 from __future__ import annotations
-
-import os
 
 import pytest
 
@@ -15,47 +14,36 @@ from eli.perception import tts_xtts as X
 from eli.runtime import voice_assets as va
 
 
-# ── Piper prosody ─────────────────────────────────────────────────────────────
-def test_prosody_args_present_by_default():
-    args = tr._piper_prosody_args()
-    assert "--sentence_silence" in args  # the pause-at-full-stop that Amy was missing
-    assert "--noise_scale" in args and "--length_scale" in args
+# ── Delivery ──────────────────────────────────────────────────────────────────
+def test_prosody_present_by_default():
+    vals = tr._prosody()
+    assert vals.get("sentence_silence", 0) > 0, "the pause after a full stop"
+    assert "length_scale" in vals
 
 
 def test_prosody_can_be_disabled(monkeypatch):
     monkeypatch.setenv("ELI_TTS_PROSODY", "0")
-    assert tr._piper_prosody_args() == []
+    assert tr._prosody() == {}
 
 
 def test_env_overrides_prosody(monkeypatch):
     monkeypatch.setenv("ELI_TTS_SENTENCE_SILENCE", "0.9")
-    args = tr._piper_prosody_args()
-    i = args.index("--sentence_silence")
-    assert args[i + 1] == "0.9"
+    assert tr._prosody()["sentence_silence"] == 0.9
 
 
 # ── Robotic-voice removal ─────────────────────────────────────────────────────
-def test_low_quality_detection():
-    assert tr._is_low_quality_piper("en_US-foo-x_low")
-    assert tr._is_low_quality_piper("en_US-foo-low")
-    assert not tr._is_low_quality_piper("en_US-amy-medium")
-
-
-def test_default_list_hides_robotic_and_low_quality(monkeypatch, tmp_path):
-    for name in ("en_US-amy-medium", "en_GB-alan-high", "en_US-ryan-low", "en_US-kim-x_low"):
-        (tmp_path / f"{name}.onnx").write_bytes(b"onnx")             # installed here, as on a machine
-        (tmp_path / f"{name}.onnx.json").write_text("{}", encoding="utf-8")   # that has voices
-    monkeypatch.setattr(tr, "_voice_search_dirs", lambda: [tmp_path])
+def test_default_list_hides_the_systems_own_voices(monkeypatch):
+    monkeypatch.setattr(tr, "_list_system_voices", lambda refresh=False: ["sys:gmw/en-us", "sys:gmw/en"])
+    monkeypatch.delenv("ELI_TTS_ALLOW_ROBOTIC", raising=False)
     voices = tr.list_voices()
-    assert not any(v.startswith("sys:") for v in voices), "espeak voices must be hidden"
-    assert not any(tr._is_low_quality_piper(v) for v in voices), "low-qual voices must be hidden"
-    # there should still be natural-sounding voices offered
-    assert any(v.startswith("en_") and v.endswith(("-medium", "-high")) for v in voices)
+    assert not any(v.startswith("sys:") for v in voices), "the system's voices must be hidden"
+    assert "af_heart" in voices
+    monkeypatch.setenv("ELI_TTS_ALLOW_ROBOTIC", "1")
+    assert "sys:gmw/en" in tr.list_voices()
 
 
 def test_robotic_voices_restorable(monkeypatch):
     monkeypatch.setenv("ELI_TTS_ALLOW_ROBOTIC", "1")
-    # only meaningful if the box has any system voices; assert the flag is read
     assert tr._allow_robotic_voices() is True
 
 
@@ -117,13 +105,20 @@ def test_set_voice_accepts_natural_without_it_being_installed():
         tr.set_active_voice(prev)
 
 
-def test_natural_voice_synth_falls_back_to_piper_end_to_end():
-    """With XTTS absent, a natural: voice must still produce audio (via Piper). Real speech needs a
-    downloaded Piper voice: a machine with none (a CI runner) cannot make any, so it is not asked there."""
-    if not [v for v in tr.list_voices() if ":" not in v]:
-        pytest.skip("no Piper voice is downloaded on this machine")
+def test_natural_voice_without_a_neural_engine_speaks_with_the_default_voice_and_says_so(monkeypatch):
+    """With neither Qwen3-TTS nor XTTS able to speak, a natural: voice still produces audio, the
+    default Kokoro voice's, and the fallback state says the chosen voice is not what is heard."""
+    from eli.perception import tts_kokoro, tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "synthesize_natural_wav", lambda *a, **k: None)
+    monkeypatch.setattr(X, "natural_available", lambda: False)
+    said = []
+    monkeypatch.setattr(tts_kokoro, "synthesize_wav",
+                        lambda text, voice="af_heart", speed=1.0: said.append(voice) or tts_kokoro.to_wav([0.1] * 2400))
     wav = tr.synthesize_wav("This is a test.", "natural:sophia")
-    assert wav and len(wav) > 1000
+    assert wav and len(wav) > 1000 and said == ["af_heart"]
+    state = tr.neural_fallback_state()
+    assert state["active"] and state["requested"] == "natural:sophia" and state["reason"]
+    tr._note_neural_fallback(None)
 
 
 # ── Voice creation engine (drop-in wav/mp4) ───────────────────────────────────

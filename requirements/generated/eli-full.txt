@@ -36,7 +36,6 @@ pandas
 pdfplumber
 peft
 Pillow
-piper-tts>=1.4
 platformdirs
 protobuf>=4.25.3,<5
 psutil

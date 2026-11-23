@@ -46,7 +46,8 @@ DISTRIBUTION = {
     "speech_recognition": "speechrecognition",
     "faiss": "faiss-cpu",
     "llama_cpp": "llama-cpp-python",
-    "piper": "piper-tts",
+    "pycrfsuite": "python-crfsuite",
+    "qwen_tts": "qwen-tts",
     "win32com": "pywin32",
     "chatterbox": "chatterbox-tts",
     "yara": "yara-python",
@@ -59,13 +60,15 @@ NOT_DECLARED = {
     "TTS": "Coqui XTTS: its model is under a non-commercial licence, so ELI never ships it (Chatterbox clones)",
     "gi": "PyGObject comes with the Linux desktop (python3-gi); pip cannot build it without the system's "
           "own build files, and a packaged ELI asks the system's Python for it",
+    "flash_attn": "an optional speed-up for Qwen3-TTS, built for the user's own CUDA (PyPI has no wheels); "
+                  "eli/perception/tts_qwen3.py uses it only when it is installed, sdpa otherwise",
 }
 
 # Built for, or chosen by, the machine's GPU. The installers fetch each by a step of their own: the
 # engine is built for CUDA, Metal, ROCm, Vulkan or the CPU, and PyTorch comes from the index for the GPU
 # found; the rest run on PyTorch. Only these may wait in an optional extra.
 GPU_BOUND = frozenset({"llama-cpp-python", "torch", "torchaudio", "diffusers", "transformers", "peft",
-                       "datasets", "bitsandbytes", "chatterbox-tts"})
+                       "datasets", "bitsandbytes", "chatterbox-tts", "qwen-tts"})
 
 # What each requirements file is installed on (install.sh, install.ps1 and their fallbacks): the lock on
 # Linux and Windows, the ranges when the lock cannot be met there, requirements-macos.txt on a Mac.

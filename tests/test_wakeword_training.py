@@ -38,3 +38,22 @@ def test_reading_the_wake_phrases_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / "models").exists()
     assert ww.set_wake_phrases(["Hey Juniper"]) == ["hey juniper"]
     assert ww.get_wake_phrases() == ["hey juniper"]
+
+
+def test_the_trainer_says_the_phrase_in_elis_own_voices_spread_over_accents_and_genders(monkeypatch):
+    """The trainer synthesised its positives with Piper; it now uses ELI's Kokoro voices, the best
+    graded of each kind first, at 16 kHz."""
+    from eli.perception import tts_kokoro, tts_router
+    from eli.perception import wakeword as ww
+    monkeypatch.setattr(tts_router, "list_voices", lambda: ["char:calm", *tts_kokoro.VOICES])
+    voices = ww._voices(4)
+    kinds = {(tts_kokoro.VOICES[v]["accent"], tts_kokoro.VOICES[v]["gender"]) for v in voices}
+    assert len(voices) == 4 and len(kinds) == 4, voices
+    assert "af_heart" in voices and "char:calm" not in voices
+    asked = []
+    monkeypatch.setattr(tts_kokoro, "synthesize",
+                        lambda text, voice, speed=1.0: asked.append((text, voice, speed))
+                        or np.zeros(tts_kokoro.SAMPLE_RATE, dtype=np.float32))
+    clip = ww._synth("hey eli", "bm_george", speed=1.18)
+    assert asked == [("hey eli", "bm_george", 1.18)]
+    assert clip is not None and len(clip) == ww.SR, "one second at Kokoro's rate is one second at 16 kHz"

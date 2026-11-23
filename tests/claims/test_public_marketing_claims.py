@@ -83,10 +83,10 @@ def test_no_pynvml_dependency():
             assert "pynvml" not in p.read_text(encoding="utf-8").lower()
 
 
-def test_piper_voice_index_claim_has_code_anchor():
-    src = (REPO / "eli" / "runtime" / "voice_assets.py").read_text(encoding="utf-8")
-    assert "166" in src and "45" in src
-    assert "voices.json" in src
+def test_the_voice_count_claim_has_a_code_anchor():
+    """README and the guides say 28 voices, American and British English: the engine's own list."""
+    from eli.perception.tts_kokoro import VOICES
+    assert len(VOICES) == 28 and {m["accent"] for m in VOICES.values()} == {"a", "b"}
 
 
 def test_wake_word_training_hook_exists():

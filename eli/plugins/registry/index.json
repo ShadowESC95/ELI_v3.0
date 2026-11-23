@@ -18,7 +18,7 @@
       "id": "tts",
       "name": "Text-to-Speech",
       "version": "1.0.0",
-      "description": "Text-to-speech via espeak/piper",
+      "description": "Text-to-speech with ELI's own voice (Kokoro; Qwen3-TTS on a GPU)",
       "author": "ELI Core",
       "license": "MIT",
       "requires": [],

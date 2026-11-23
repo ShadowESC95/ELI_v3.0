@@ -32,7 +32,8 @@ env/
 
 # ── TTS voice model files (large binaries) ───────────────────────────────────
 *.onnx
-tts_piper/piper/*.onnx.json
+# the Kokoro voice's files a release build carries (python -m eli.runtime.voice_assets --kokoro-to tts_kokoro)
+tts_kokoro/
 
 # ── Training data / outputs ───────────────────────────────────────────────────
 training/

@@ -114,7 +114,7 @@ def test_rthook_safe_copy_reads_from_readonly_source(tmp_path):
 
     src_root = tmp_path / "bundle"
     dst_root = tmp_path / "user"
-    src_file = src_root / "tts_piper" / "piper" / "voice.onnx"
+    src_file = src_root / "config" / "voices" / "characters.json"
     src_file.parent.mkdir(parents=True)
     src_file.write_bytes(b"onnx-bytes")
 
@@ -124,8 +124,8 @@ def test_rthook_safe_copy_reads_from_readonly_source(tmp_path):
     assert spec.loader is not None
     spec.loader.exec_module(hook)
 
-    hook._safe_copy_file(src_file, dst_root / "tts_piper" / "piper" / "voice.onnx")
-    copied = dst_root / "tts_piper" / "piper" / "voice.onnx"
+    hook._safe_copy_file(src_file, dst_root / "config" / "voices" / "characters.json")
+    copied = dst_root / "config" / "voices" / "characters.json"
     assert copied.read_bytes() == b"onnx-bytes"
 
 

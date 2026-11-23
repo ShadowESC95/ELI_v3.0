@@ -184,8 +184,8 @@ _add("Gaze (eye-tracking)", "GAZE_CLICK", "Click where the eyes rest", "“open�
 _add("Voice", "DICTATE", "Start/stop dictation into the active field", "“start dictation”", "“stop dictating”", shown="quick", direct=True)
 _add("Voice", "TRANSCRIBE", "Transcribe an audio file", "“transcribe audio.wav”", shown="quick", direct=True)
 _add("Voice", "SPEAK", "Speak text aloud (TTS)", "“say good morning”", shown="quick", direct=True)
-_add("Voice", "LIST_VOICES", "List installed voices and what's downloadable (166 across 45 languages)", "“what voices do you have”", "“list voices”", "“which accents can I get”", shown="quick")
-_add("Voice", "DOWNLOAD_VOICE", "Download a voice/accent from the Piper library and switch to it", "“download a British voice”", "“get me a Scottish accent”", "“install en_US-amy-medium”", shown="quick")
+_add("Voice", "LIST_VOICES", "List ELI's voices (28 Kokoro voices, American and British English) and which are on this machine", "“what voices do you have”", "“list voices”", "“which accents can I get”", shown="quick")
+_add("Voice", "DOWNLOAD_VOICE", "Fetch one of ELI's Kokoro voices (American or British English) and switch to it", "“download a British voice”", "“get me a female British voice”", "“install bf_emma”", shown="quick")
 _add("Voice", "SET_VOICE", "Switch the active TTS voice/accent (distinct from persona tone)", "“use the alan voice”", "“switch your voice to amy”", "“use the robotic style voice”", "“use the natural voice”", shown="quick", explicit=True)
 _add("Voice", "CREATE_VOICE", "Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone)", "“create a voice called Nova from clip.mp4”", "“make an ELI voice from recording.wav”", shown="quick")
 _add("Conversation & persona", "SET_TONE", "Shade ELI's expressed tone/emotion (words+voice+face) without changing its core personality", "“be comedic”", "“talk street”", "“sound more professional”", "“use a deadpan tone”", shown="quick", explicit=True)
@@ -317,10 +317,10 @@ _add("Self-maintenance", "LORA_TRAIN", "Run the LoRA training pipeline DAG (pref
 _add("Self-maintenance", "ORCHESTRATION_STATUS", "Explain the agent DAG orchestrator: execution layers, dependencies, critical path, and last run", "“orchestration status”", "“show your agent dag”", shown="quick", open=True)
 _add("Self-maintenance", "TEST_REVIEW", "Run the suite, back up the report + write an errors file, summarise results, and offer result-driven fix options", "“test review”", "“run the tests and tell me what to fix”", shown="quick")
 _add("Voice", "WAKE_SET", "Set your own wake word (any phrase); ELI persists it and trains the detector on it", "“change the wake word to athena”", "“set my wake word to atlas”", shown="quick", explicit=True)
-_add("Voice", "WAKE_TRAIN", "Train the local, self-supervised wake-word model (Piper-synth + noise/music augmentation; robust over background music)", "“train the wake word”", shown="quick", explicit=True)
+_add("Voice", "WAKE_TRAIN", "Train the local, self-supervised wake-word model (ELI's own voices + noise/music augmentation; robust over background music)", "“train the wake word”", shown="quick", explicit=True)
 _add("Voice", "WAKE_ENROLL", "Record your voice saying the wake word and retrain (personalisation, over music)", "“enroll my wake word”", shown="quick", explicit=True)
 _add("Voice", "TRAIN_VOICE", "Learn your voice + tone — pitch/energy/rate, happy/angry/excited, and question-vs-statement; ELI then adapts its delivery to how you sound", "“train my voice”", "“learn how I speak”", shown="quick", explicit=True)
-_add("Voice", "STT_DIAGNOSTICS", "Mic/STT/TTS diagnostics (Whisper, wake word, ducking, Piper)", "“run voice diagnostics”", "“voice diagnostics”", "“check the microphone”", "“stt diagnostics”", shown="quick")
+_add("Voice", "STT_DIAGNOSTICS", "Mic/STT/TTS diagnostics (Whisper, wake word, ducking, the voice engine)", "“run voice diagnostics”", "“voice diagnostics”", "“check the microphone”", "“stt diagnostics”", shown="quick")
 _add("Conversation & persona", "MULTI_COMMAND", "Run several chained commands from one utterance, in order", "“close steam and set an alarm for 7am”", "“open spotify then play X”", shown="always")
 
 # ── Tasks, time & planning ──────────────────────────────────────────────────

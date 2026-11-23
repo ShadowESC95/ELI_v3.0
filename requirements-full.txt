@@ -38,7 +38,10 @@ llama-cpp-python>=0.3.30  # <0.3.30 cannot read hybrid attention+SSM GGUFs
 faiss-cpu>=1.7
 
 # Speech and audio
-piper-tts>=1.4
+misaki>=0.9.4,<0.10    # Kokoro's phonemes; WITHOUT its [en] extra, which brings espeak-ng (GPL)
+spacy>=3.8,<3.9        # misaki's tagger; the en_core_web_sm 3.8.0 fetched with the voice needs 3.8
+num2words>=0.5         # misaki's numbers as words (LGPL-2.1)
+python-crfsuite>=0.9   # the guess for words misaki's dictionaries lack (tts_kokoro)
 onnxruntime>=1.25; python_version >= "3.11"
 onnxruntime>=1.15; python_version < "3.11"   # the newest with a Python 3.10 build is older
 openwakeword>=0.4.0  # local self-trained wake-word detector (no account)

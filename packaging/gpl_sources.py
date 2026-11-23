@@ -2,8 +2,8 @@
 source of every LGPL one is.
 
 GPL-3.0 lets a program be passed on as a binary when its Corresponding Source goes with it, or is
-offered beside it. The frozen builds carry piper-tts (espeak-ng compiled into it) and PyAutoGUI's
-helpers MouseInfo, PyMsgBox and, on Linux, python3-xlib, all under the GPL (THIRD_PARTY_NOTICES.md).
+offered beside it. THIRD_PARTY_NOTICES.md names the GPL packages the frozen builds carry, if any;
+when the environment holds none, SOURCES.md says so and the run succeeds.
 The release workflow runs this in the Linux build's environment, which holds every package the
 Windows and macOS builds carry plus a few for Linux alone, and attaches what it fetched to the release:
 
@@ -14,9 +14,9 @@ Windows and macOS builds carry plus a few for Linux alone, and attaches what it 
 GPL packages: every installed distribution whose licence metadata names the GPL or AGPL and offers no
 LGPL choice. The source is that version's sdist from PyPI, checked against PyPI's digest; without one,
 the project's repository at the version's tag. A package that carries compiled code whose build files
-the sdist leaves out also gets the repository at the tag: piper-tts's sdist has neither its
-CMakeLists.txt nor the C source of its espeak bridge. When a package's build fetches more source (CMake
-ExternalProject or FetchContent, as piper-tts does for espeak-ng), that is fetched too, at the commit
+the sdist leaves out also gets the repository at the tag (piper-tts 1.4's sdist, when the builds still
+carried it, had neither its CMakeLists.txt nor the C source of its espeak bridge). When a package's
+build fetches more source (CMake ExternalProject or FetchContent), that is fetched too, at the commit
 the build names.
 
 LGPL packages (Qt for Python and the Qt libraries inside its wheels, zeroconf, chardet, python-xlib and
@@ -297,7 +297,11 @@ def fetch_all(out_dir: Path) -> int:
              "Each package under the GPL that the builds carry, at the version they carry, and the",
              "source file here with where it came from. See THIRD_PARTY_NOTICES.md for the licences.", ""]
     failed = []
-    for pkg in gpl_distributions():
+    packages = gpl_distributions()
+    if not packages:
+        lines.append("No package under the GPL is in this release's builds, so there is no GPL source to attach.")
+        print("no GPL package in this environment: nothing to attach", file=sys.stderr)
+    for pkg in packages:
         name, version = pkg["name"], pkg["version"]
         try:
             sdist = pypi_sdist(name, version)

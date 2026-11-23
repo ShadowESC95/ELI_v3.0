@@ -69,10 +69,11 @@ def _h_stt_diagnostics(a, args):
             f"model: {wh.get('model', '?')} device: {wh.get('device_configured', '?')}",
             f"STT — output duck: {'✅' if combined.get('wake_duck_enabled') else 'off'} "
             f"media pause duck: {'✅' if combined.get('media_duck_enabled') else 'off'}",
-            f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('active_model') else '❌'}",
+            f"TTS — engine: {tts.get('engine', '?')} voice: {tts.get('speaking_voice') or tts.get('active_voice', '?')}",
+            f"TTS — Kokoro: {'✅' if tts.get('kokoro') else '❌'} files: {'✅' if tts.get('kokoro_ready') else '❌ (fetched on first use)'}"
+            + (f" did not load: {tts.get('kokoro_error')}" if tts.get('kokoro_error') else ""),
+            f"TTS — Qwen3-TTS (GPU): natural {'✅' if tts.get('neural_available') else '❌'} cloning {'✅' if tts.get('qwen3') else '❌'}",
             f"TTS — last speech: {_played_line(tts.get('last_playback') or {})}",
-            f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
-            f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
         ]
         msg = "\n".join(lines)
         return {"ok": True, "action": a, "content": msg, "response": msg, "diagnostics": combined}

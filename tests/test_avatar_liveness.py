@@ -41,14 +41,15 @@ def _dur(w):
 
 
 @pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg needed for pitch")
-def test_pitch_changes_audio_per_emotion():
+def test_pitch_changes_audio_per_emotion(monkeypatch):
+    import numpy as np
     from eli.cognition import tone_adaptor as ta
-    from eli.perception import tts_router as tr
-    if tr.find_voice_model("en_US-amy-medium") is None:
-        pytest.skip("no piper voice on this box")
+    from eli.perception import tts_kokoro, tts_router as tr
+    tone = np.sin(2 * np.pi * 220 * np.arange(12000) / 24000).astype("float32") * 0.4
+    monkeypatch.setattr(tts_kokoro, "synthesize_wav", lambda text, voice="af_heart", speed=1.0: tts_kokoro.to_wav(tone))
     text = "This is a short test sentence."
-    ta.clear_tone(); neutral = tr.synthesize_wav(text, "en_US-amy-medium")
-    ta.set_tone("sad"); sad = tr.synthesize_wav(text, "en_US-amy-medium")
+    ta.clear_tone(); neutral = tr.synthesize_wav(text, "af_heart")
+    ta.set_tone("sad"); sad = tr.synthesize_wav(text, "af_heart")
     ta.clear_tone()
     assert neutral and sad
     assert neutral != sad   # pitch (and pace) shift → distinct audio

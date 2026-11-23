@@ -530,12 +530,11 @@ class ConversationMixin:
             )
             backends = available_backends()
             active = get_active_voice()
-            voices = backends.get("piper_voices", [])
-            # A `natural:`/`clone:` voice that cannot synthesise falls back to Piper.
+            voices = [v for v in backends.get("voices", []) if not str(v).startswith(("char:", "clone:", "natural:", "sys:"))]
+            # A `natural:`/`clone:` voice that cannot synthesise falls back to the default voice.
             # This panel used to report only the SELECTED voice, so it read
             # "Active voice: natural:sophia" while every word was spoken by
-            # en_US-amy-medium — and the model-file line showed a third, unrelated
-            # voice. Say plainly what is actually coming out of the speakers.
+            # the default voice. Say plainly what is actually coming out of the speakers.
             _fb = neural_fallback_state() or {}
             txt_lines = [
                 f"Active voice:       {active}",
@@ -544,15 +543,21 @@ class ConversationMixin:
                 txt_lines += [
                     f"  ⚠ NOT IN USE:     '{_fb.get('requested')}' cannot synthesise —",
                     f"                    {_fb.get('reason')}.",
-                    f"  ▶ Actually speaking: {backends.get('default_voice') or '(piper default)'}",
+                    f"  ▶ Actually speaking: {backends.get('default_voice') or '(the default voice)'}",
                 ]
+            _engine_line = {"kokoro": "Kokoro-82M (CPU)", "qwen3": "Qwen3-TTS (GPU)",
+                            "system": "the operating system's voice", "neural": "a neural engine (not usable here)"}
+            txt_lines += [
+                f"Speaking engine:    {_engine_line.get(backends.get('engine'), backends.get('engine'))}",
+                f"Kokoro files:       {'on this machine' if backends.get('kokoro_ready') else 'not fetched yet (fetched the first time ELI speaks)'}",
+            ]
+            if backends.get("kokoro_error"):
+                txt_lines.append(f"  ⚠ Kokoro did not load: {backends.get('kokoro_error')}")
             txt_lines += [
                 f"Active model file:  {backends.get('active_model') or '(missing)'}",
-                f"Piper binary:       {backends.get('piper_bin') or '(not found)'}",
                 f"Installed voices:   {len(voices)} ({', '.join(voices[:6])}{'…' if len(voices) > 6 else ''})",
+                f"GPU voice (Qwen3):  natural {'yes' if backends.get('neural_available') else 'no'}, cloning {'yes' if backends.get('qwen3') else 'no'}",
                 f"pyttsx3 fallback:   {backends.get('pyttsx3')}",
-                f"espeak-ng fallback: {backends.get('espeak_ng')}",
-                f"espeak fallback:    {backends.get('espeak')}",
             ]
             self._tts_diag_label.setText("\n".join(txt_lines))
         except Exception as e:

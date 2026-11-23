@@ -1,8 +1,8 @@
-"""Voice library browser — acquire additional Piper voices, accents and tones.
+"""Voice library browser — ELI's Kokoro voices, by accent, gender and grade.
 
-ELI ships a small pack of voices; upstream (rhasspy/piper-voices) hosts ~166 across
-45 languages. ``eli.runtime.voice_assets`` could already fetch any of them, but
-nothing exposed that to the user — this dialog is that missing path.
+ELI's voice is Kokoro-82M: 28 English voices (American and British), fetched with the
+engine on first use (``eli.runtime.voice_assets``). This dialog lists them with the
+grade Kokoro's authors give each, and fetches any that is not on this machine yet.
 
 Usage (Settings ▸ VOICE / TTS):
 
@@ -11,10 +11,8 @@ Usage (Settings ▸ VOICE / TTS):
     dlg.voices_changed.connect(self._reload_voice_combos)
     dlg.exec()
 
-Licence note surfaced in the UI: a few voices (ryan / lessac / cori) are marked
-*restricted* — ELI does not redistribute them because their datasets are
-non-commercial or not cleared, but the user may still download them from upstream
-for their own personal use. That distinction is shown, never silently applied.
+Every Kokoro voice is Apache-2.0, so none is marked restricted; the dialog still shows
+the mark if a listed voice ever carries it.
 """
 from __future__ import annotations
 
@@ -46,7 +44,7 @@ _RESTRICTED_NOTE = (
 
 
 class VoiceDownloadDialog(QDialog):
-    """Browse every obtainable Piper voice and install one on demand."""
+    """Browse ELI's voices and fetch one on demand."""
 
     voices_changed = pyqtSignal()
     _rows_ready = pyqtSignal(list)
@@ -54,7 +52,7 @@ class VoiceDownloadDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Voice library — download more voices")
+        self.setWindowTitle("Voice library")
         self.resize(760, 520)
         self._rows: List[Dict[str, Any]] = []
         self._char_bases: Dict[str, List[str]] = {}
@@ -62,11 +60,10 @@ class VoiceDownloadDialog(QDialog):
 
         root = QVBoxLayout(self)
         blurb = QLabel(
-            "Voices download from the Piper library (redistributable accents). "
-            "Style presets (calm, robotic, …) layer ffmpeg effects on those Piper "
-            "bases — they are generic sound styles, not copyrighted character clones. "
-            "For a custom timbre, use voice cloning from your own reference clip "
-            "(optional XTTS extra in Settings)."
+            "ELI's voices are Kokoro's: American and British English, graded by the quality "
+            "of their training audio (A best). Style presets (calm, robotic, …) layer ffmpeg "
+            "effects on them — generic sound styles, not copyrighted character clones. "
+            "For a custom timbre, clone your own reference clip in Settings (the GPU voice)."
         )
         blurb.setWordWrap(True)
         blurb.setStyleSheet("color:#8eaac8;")
@@ -75,8 +72,9 @@ class VoiceDownloadDialog(QDialog):
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Language:"))
         self.lang_combo = QComboBox()
-        self.lang_combo.addItem("English", "en")
-        self.lang_combo.addItem("All languages", "")
+        self.lang_combo.addItem("All voices", "")
+        self.lang_combo.addItem("American English", "en_US")
+        self.lang_combo.addItem("British English", "en_GB")
         self.lang_combo.currentIndexChanged.connect(lambda _i: self._refresh_table())
         filters.addWidget(self.lang_combo)
         self.installed_only = QCheckBox("Installed only")
@@ -84,13 +82,13 @@ class VoiceDownloadDialog(QDialog):
         filters.addWidget(self.installed_only)
         filters.addStretch(1)
         self.refresh_btn = QPushButton("↻ Refresh list")
-        self.refresh_btn.setToolTip("Re-fetch the voice index from upstream (needs network)")
+        self.refresh_btn.setToolTip("Read again which voices are on this machine")
         self.refresh_btn.clicked.connect(self._refresh_index)
         filters.addWidget(self.refresh_btn)
         root.addLayout(filters)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Voice", "Accent / region", "Quality", "Size", "Status"])
+        self.table.setHorizontalHeaderLabels(["Voice", "Accent / region", "Grade", "Size", "Status"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_select)
@@ -108,7 +106,7 @@ class VoiceDownloadDialog(QDialog):
         root.addWidget(self.status)
 
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # indeterminate; sizes vary 60–115 MB
+        self.progress.setRange(0, 0)  # indeterminate: a voice, or the engine's files with it
         self.progress.setVisible(False)
         root.addWidget(self.progress)
 
@@ -174,8 +172,7 @@ class VoiceDownloadDialog(QDialog):
         lang = self.lang_combo.currentData() or ""
         out = self._rows
         if lang:
-            out = [r for r in out
-                   if str(r.get("language", "")).split("_")[0] == lang]
+            out = [r for r in out if str(r.get("language", "")).startswith(lang)]
         if self.installed_only.isChecked():
             out = [r for r in out if r.get("present")]
         return out
@@ -195,7 +192,8 @@ class VoiceDownloadDialog(QDialog):
             chars = self._char_bases.get(str(r.get("id", "")), [])
             if chars and not present:
                 state = f"upgrades {', '.join(chars)}"
-            cells = [str(r.get("id", "")), str(r.get("country") or r.get("language") or ""),
+            cells = [f"{r.get('desc') or r.get('id', '')} [{r.get('id', '')}]",
+                     str(r.get("country") or r.get("language") or ""),
                      str(r.get("quality", "")), size, state]
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)

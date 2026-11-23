@@ -1150,10 +1150,10 @@ if [ "$NO_MODEL" -eq 0 ]; then
     fi
 fi
 
-# Voice weights (browser voice + TTS): the faster-whisper STT model and a Piper
-# voice. Required for web-server mic (phone/PC browser) — always fetch, not gated
-# on chat-model download. Core install stays non-fatal here; the GUI wizard
-# hard-fails the voice stage until Piper + whisper are present.
+# Voice weights (browser voice + TTS): the faster-whisper STT model and the Kokoro
+# voice's files. Required for web-server mic (phone/PC browser) — always fetch, not
+# gated on chat-model download. Core install stays non-fatal here; the GUI wizard
+# hard-fails the voice stage until Kokoro + whisper are present.
 VOICE_STATUS="skipped"
 eli_progress assets 90 "Fetching voice models"
 info "Ensuring voice models (local STT + TTS, for browser/desktop voice) are present..."

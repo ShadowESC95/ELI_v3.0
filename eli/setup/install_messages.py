@@ -52,7 +52,7 @@ INSTALL_MESSAGES: Dict[str, List[str]] = {
     ],
     "assets": [
         "Memory embedder + voice models — ELI remembers and speaks without phoning home.",
-        "Piper + Whisper assets: local TTS/STT. Optional neural backends stay optional.",
+        "Kokoro + Whisper assets: local TTS/STT. The GPU voice (Qwen3-TTS) stays optional.",
         "Support assets are idempotent — re-running setup skips what is already present.",
     ],
     "desktop": [

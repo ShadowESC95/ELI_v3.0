@@ -56,7 +56,7 @@ def test_importing_eli_switches_library_telemetry_off():
 def test_onnxruntime_keeps_no_telemetry_queue(tmp_path):
     """onnxruntime 1.30+ creates ~/.cache/Microsoft/DeveloperTools/.onnxruntime (a device ID and an
     upload queue for Microsoft's collector) the first time it runs a model, unless switched off. That
-    holds for a program ELI starts as well: Piper, the speech voice, carries its own onnxruntime and
+    holds for a program ELI starts as well: the earlier speech voice (a Piper program) carried its own onnxruntime and
     queued Microsoft events whenever ELI spoke, so the switch must reach programs ELI starts."""
     import glob
     import subprocess

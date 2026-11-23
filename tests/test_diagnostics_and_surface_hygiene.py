@@ -48,13 +48,16 @@ def test_voice_agent_does_not_default_the_engine_to_espeak():
         "the espeak default is back"
 
 
-def test_live_tts_probe_reports_a_real_engine():
-    """On a machine with Piper installed, the probe must say piper."""
+def test_live_tts_probe_reports_a_real_engine(monkeypatch, tmp_path):
+    """The probe names the engine that speaks the active voice and the model file it reads."""
     from eli.perception import tts_router as tts
+    from eli.runtime import voice_assets
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(voice_assets, "kokoro_files", lambda: {"model": model})
+    monkeypatch.setenv("ELI_TTS_VOICE", "bm_george")
     backends = tts.available_backends() or {}
-    if not backends.get("active_model"):
-        pytest.skip("no Piper model resolved on this machine")
-    assert backends.get("active_voice"), "no active voice reported"
+    assert backends.get("engine") == "kokoro" and backends.get("active_voice") == "bm_george"
     assert str(backends["active_model"]).endswith(".onnx")
 
 

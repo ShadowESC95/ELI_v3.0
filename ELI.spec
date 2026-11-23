@@ -18,9 +18,9 @@ Design notes
 * The eli/ source tree ships as data as well as compiled modules: ELI
   self-inspects its own code (code examiner, truth report, plugin discovery,
   self-upgrade) and resolves its project root by locating that tree.
-* GGUF models, Piper voices and diffusion weights are runtime downloads —
-  never bundled (size + voice-license review; see
-  packaging/runtime_asset_manifest.json).
+* GGUF models and diffusion weights are runtime downloads — never bundled
+  (size; see packaging/runtime_asset_manifest.json). The Kokoro voice's files
+  are bundled (tts_kokoro/, fetched pinned by CI before the build).
 * Mutable-state routing for frozen installs lives in
   packaging/pyinstaller/rthook_eli_frozen_paths.py.
 """
@@ -145,20 +145,20 @@ _stamp_file = Path(_tempfile.mkdtemp(prefix="eli_stamp_")) / "build_stamp.txt"
 _stamp_file.write_text(_build_stamp() + "\n", encoding="utf-8")
 datas.append((str(_stamp_file), "."))
 
-# Piper TTS voices — full voice UX ships in the bundle. The .onnx weights are
-# NOT in git (too big); CI downloads them from the project's own
-# `local-assets-v2.1` release into tts_piper/piper before building (the same
-# voice set previous full tarballs shipped). ELI_REQUIRE_VOICES=1 (set in CI)
-# makes a voiceless build a hard failure instead of a silent regression.
-_voice_dir = ROOT / "tts_piper" / "piper"
-_voice_files = sorted(_voice_dir.glob("*.onnx*")) if _voice_dir.is_dir() else []
-if not any(f.suffix == ".onnx" for f in _voice_files):
+# The Kokoro voice (ELI's speech out) ships in the bundle, so a packaged ELI speaks without going
+# online. Its files are NOT in git (the model is 325 MB); CI fetches them, pinned and checksum-checked,
+# with ELI's own fetcher into tts_kokoro/ before building (`python -m eli.runtime.voice_assets
+# --kokoro-to tts_kokoro`), and the app reads them there in place (eli/runtime/voice_assets.py).
+# ELI_REQUIRE_VOICES=1 (set in CI) makes a build without them a hard failure.
+_voice_dir = ROOT / "tts_kokoro"
+_voice_files = sorted(p for p in _voice_dir.rglob("*") if p.is_file()) if _voice_dir.is_dir() else []
+if not (_voice_dir / "model.onnx").is_file() or not (_voice_dir / "voices").is_dir():
     if os.environ.get("ELI_REQUIRE_VOICES") == "1":
-        _fail("ELI_REQUIRE_VOICES=1 but no .onnx voices in tts_piper/piper — "
-              "run: gh release download local-assets-v2.1 --pattern '*.onnx*' --dir tts_piper/piper")
-    print("[ELI.spec] WARNING: no Piper voices in tts_piper/piper — bundle will rely on runtime voice download")
+        _fail("ELI_REQUIRE_VOICES=1 but tts_kokoro/ lacks the Kokoro model or its voices — "
+              "run: python -m eli.runtime.voice_assets --kokoro-to tts_kokoro")
+    print("[ELI.spec] WARNING: no Kokoro files in tts_kokoro/ — the bundle will fetch them on first use")
 for f in _voice_files:
-    datas.append((str(f), "tts_piper/piper"))
+    datas.append((str(f), str(Path("tts_kokoro") / f.parent.relative_to(_voice_dir))))
 
 # Text embedder (nomic-embed, ~84 MB) — REQUIRED for memory / RAG / knowledge-graph
 # recall. Not in git (a GGUF weight); CI downloads it to models/embeddings/ before
@@ -228,7 +228,7 @@ for pkg in ("meshio", "matplotlib", "mpl_toolkits", "pandas", "plotly", "scipy")
 # never sees it. The v2.1.65 AppImage proved the consequence: pip installed
 # coqui-tts on the runner (coqui_tts-0.27.5.dist-info is in the bundle) but the
 # TTS/ package itself was never collected, so `import TTS` failed at runtime and
-# every cloned voice fell back to Piper — with the extra bundled and unusable.
+# every cloned voice fell back to the default voice — with the extra bundled and unusable.
 # `trainer` is imported by coqui-tts at load time and has the same problem.
 # coqui-tts cannot be imported bare: it reaches for
 # `transformers.pytorch_utils.isin_mps_friendly`, which transformers>=5 removed.
@@ -271,6 +271,10 @@ _NEURAL_PKGS = (
     "num2words", "inflect", "anyascii", "librosa", "soundfile", "typeguard",
 )
 for pkg in _NEURAL_PKGS:
+    hiddenimports += _optional_collect(pkg)
+# The Kokoro voice (eli/perception/tts_kokoro.py) imports these lazily, on the first reply spoken.
+for pkg in ("misaki", "spacy", "thinc", "srsly", "cymem", "preshed", "murmurhash", "blis",
+            "spacy_legacy", "spacy_loggers", "pycrfsuite", "num2words", "onnxruntime"):
     hiddenimports += _optional_collect(pkg)
 if sys.platform == "win32":
     hiddenimports += ["pyttsx3.drivers.sapi5", "comtypes.stream"]
@@ -351,8 +355,18 @@ if sys.platform.startswith("linux"):
         binaries.append((str(_path), _qt_lib_dest))
         print(f"[ELI.spec] bundling Qt xcb dependency: {_path} -> {_qt_lib_dest}")
 
-for pkg in ("llama_cpp", "faster_whisper", "openwakeword", "piper"):
+for pkg in ("llama_cpp", "faster_whisper", "openwakeword"):
     datas += _optional_collect(pkg, data=True)
+# The Kokoro voice's text side: misaki reads its dictionaries (misaki/data/*.json) as package data,
+# spaCy and thinc register their parts through entry points read from the dist-info metadata, and
+# load the tagger's components by name, so all of it is collected whole.
+for pkg in ("misaki", "spacy", "thinc", "num2words"):
+    datas += _optional_collect(pkg, data=True)
+for _m in ("spacy", "spacy-legacy", "spacy-loggers", "thinc", "misaki", "confection", "catalogue", "weasel"):
+    try:
+        datas += copy_metadata(_m)
+    except Exception as _e:
+        print(f"[ELI.spec] no metadata for {_m}: {_e}")
 # coqui-tts ships model/config JSON inside the package; submodules alone leave the
 # engine importable but unable to build a model.
 # (2) and (4): these packages are read as SOURCE at import time, so .py files must

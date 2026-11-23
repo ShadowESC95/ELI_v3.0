@@ -75,7 +75,7 @@ Set-Location $Root
 $needVoice = $false
 & $Py -c "from eli.perception.local_whisper_stt import whisper_cache_ready; import sys; sys.exit(0 if whisper_cache_ready() else 1)" 2>$null
 if ($LASTEXITCODE -ne 0) { $needVoice = $true }
-& $Py -c "from eli.runtime.voice_assets import piper_voice_ready; import sys; sys.exit(0 if piper_voice_ready() else 1)" 2>$null
+& $Py -c "from eli.runtime.voice_assets import kokoro_ready; import sys; sys.exit(0 if kokoro_ready() else 1)" 2>$null
 if ($LASTEXITCODE -ne 0) { $needVoice = $true }
 if ($needVoice) {
     Write-Host "[eli-serve] Voice models not cached - fetching once..."

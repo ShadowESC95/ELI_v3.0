@@ -728,9 +728,9 @@ class SettingsModelMixin:
             )
             _be = _tts_backends()
             _status_lines = [
-                f"Piper (Python): ✅",
-                f"Piper binary:   {'✅ found' if _be.get('piper_bin') else '⚠ not found'}",
-                f"espeak-ng:      {'✅' if _be.get('espeak_ng') else '❌'}",
+                f"Kokoro (CPU):     {'✅' if _be.get('kokoro') else '❌ not installed'}"
+                + ("" if _be.get("kokoro_ready") else "  (files fetched the first time ELI speaks)"),
+                f"Qwen3-TTS (GPU):  {'✅ natural voices and cloning' if _be.get('neural_available') else '— not on this machine'}",
             ]
             _tts_lbl = QLabel("\n".join(_status_lines))
             _tts_lbl.setStyleSheet("color:#8eaac8; font-family:monospace; font-size:11px;")
@@ -755,9 +755,9 @@ class SettingsModelMixin:
                 self._voice_selector.setCurrentIndex(_active_idx)
 
             _styles_note = QLabel(
-                "Style presets (calm, robotic, …) = bundled Piper + ffmpeg effects — "
+                "Style presets (calm, robotic, …) = ELI's Kokoro voices + ffmpeg effects — "
                 "not movie/TV character clones. Clone your own timbre: drop a short "
-                "reference clip below (needs the optional Chatterbox voice engine)."
+                "reference clip below (spoken by Qwen3-TTS on a GPU with room for it)."
             )
             _styles_note.setWordWrap(True)
             _styles_note.setStyleSheet("color:#8eaac8; font-size:11px;")
@@ -798,25 +798,24 @@ class SettingsModelMixin:
             _test_btn.clicked.connect(_test_voice)
             tts_form.addRow(_test_btn)
 
-            # Voice library — the only user-facing path to the ~166 upstream voices
-            # (accents/qualities/languages). Repopulates every voice combo on close
-            # so a freshly downloaded voice is immediately selectable.
-            _get_btn = QPushButton("＋ Get more voices / accents…")
+            # Voice library — every Kokoro voice (US and UK English, by grade). Repopulates every
+            # voice combo on close so a freshly fetched voice is immediately selectable.
+            _get_btn = QPushButton("＋ Voice library…")
             _get_btn.setStyleSheet(
                 "QPushButton { background:#1e2a3a; color:#7aa7d0; border:1px solid #2a4a6a;"
                 " border-radius:4px; padding:4px 10px; }"
                 "QPushButton:hover { background:#25384a; }"
             )
             _get_btn.setToolTip(
-                "Browse and download additional Piper voices — more English accents, "
-                "other languages, and the ideal base voices for the character presets.")
+                "Browse ELI's voices — American and British English, female and male — "
+                "and fetch any that are not on this machine yet.")
 
             _get_btn.clicked.connect(self.open_voice_library)
             tts_form.addRow(_get_btn)
 
             # Create-your-own-voice — drop in a recording (wav/mp3/mp4) and ELI builds
-            # a voice from it (Chatterbox, XTTS if that is what is installed). Without
-            # either the voice is registered and ELI keeps its Piper voice.
+            # a voice from it (Qwen3-TTS on a GPU with room, else Chatterbox, else XTTS).
+            # Without any of them the voice is registered and ELI keeps its own voice.
             _VOICE_CLIP_EXTS = (".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".flac", ".aac", ".webm")
 
             def _create_voice_from_path(path: str):
@@ -853,15 +852,15 @@ class SettingsModelMixin:
                             if _packaged:
                                 extra = (
                                     "\n\nNOTE: this build cannot synthesise cloned voices — the "
-                                    "voice-cloning engine (Chatterbox) is not included, so "
+                                    "voice-cloning engine (Qwen3-TTS, for a GPU) is not included, so "
                                     f"'{name.strip()}' is saved but ELI will keep speaking in its "
-                                    "Piper voice.\nTo use it, run ELI from the source install "
-                                    "(README ▸ Install) with the chatterbox extra."
+                                    "own voice.\nTo use it, run ELI from the source install "
+                                    "(README ▸ Install) with the voice-gpu extra on a machine with a GPU."
                                 )
                             else:
                                 extra = (
                                     "\n\nInstall the voice-cloning engine to make it sound like the "
-                                    "recording:\n  pip install -e \".[chatterbox]\"  "
+                                    "recording (it runs on a GPU):\n  pip install -e \".[voice-gpu]\"  "
                                     "(from the ELI project root)"
                                 )
                         QMessageBox.information(self, "Voice created",

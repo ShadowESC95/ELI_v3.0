@@ -23,6 +23,18 @@ from eli.gui.panels._qt import (
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
+# The voice engines offered before the model loads (eli/perception/tts_router._engine_setting).
+_TTS_ENGINE_CHOICES = (
+    ("Automatic — the GPU voice where the GPU has room, Kokoro elsewhere (recommended)", "auto"),
+    ("Kokoro — runs on the CPU, keeps all VRAM for the model", "kokoro"),
+    ("Natural neural (Qwen3-TTS) — the most human voice, needs a GPU", "natural"),
+)
+_TTS_ENGINE_TIP = (
+    "Kokoro is ELI's voice on every machine: it runs on the CPU and leaves the GPU to the model. "
+    "Qwen3-TTS sounds more human and clones voices, but needs the voice-gpu extra, a GPU with "
+    "room for it beside the model, and fetches 2.5 to 4.5 GB on first use. Automatic uses it only "
+    "where the GPU has that room; ELI speaks with Kokoro, and says so, when it cannot.")
+
 from eli.core.mem_units import file_size_gib, bytes_to_gib
 
 try:
@@ -519,18 +531,15 @@ class StartupModelSelectionDialog(QDialog):
 
         # Voice engine — chosen HERE, before hardware tuning / GPU allocation, so a
         # heavy neural voice's VRAM is a deliberate up-front choice on a capable box,
-        # while a low-VRAM machine keeps fast Piper and all its VRAM for the model.
+        # while a low-VRAM machine keeps Kokoro on the CPU and all its VRAM for the model.
         self.tts_engine_combo = QComboBox()
-        self.tts_engine_combo.addItem("Piper — fast, low VRAM (recommended)", "piper")
-        self.tts_engine_combo.addItem("Natural neural (XTTS-v2) — human-like, uses GPU/VRAM", "natural")
-        self.tts_engine_combo.setToolTip(
-            "Piper is fast and light and runs anywhere. The natural neural voice (XTTS-v2) "
-            "sounds human — expressive, punctuation-aware — but needs the voice extra "
-            "(downloads ~1.8GB on first use) and more VRAM/compute. Pick it on a capable "
-            "machine; ELI falls back to Piper automatically if it can't load.")
+        for _label, _key in _TTS_ENGINE_CHOICES:
+            self.tts_engine_combo.addItem(_label, _key)
+        self.tts_engine_combo.setToolTip(_TTS_ENGINE_TIP)
         try:
             from eli.core.runtime_settings import load_settings as _ls
-            _cur_engine = str((_ls() or {}).get("tts_engine", "piper")).lower()
+            _cur_engine = str((_ls() or {}).get("tts_engine", "auto")).lower()
+            _cur_engine = {"piper": "kokoro"}.get(_cur_engine, _cur_engine)
             _ei = self.tts_engine_combo.findData(_cur_engine)
             if _ei >= 0:
                 self.tts_engine_combo.setCurrentIndex(_ei)
@@ -1375,15 +1384,15 @@ class StartupModelSelectionDialog(QDialog):
         return self.ollama_model_combo.currentText().strip()
 
     def selected_tts_engine(self) -> str:
-        """'piper' or 'natural' — the voice engine chosen before model load."""
+        """'auto', 'kokoro' or 'natural' — the voice engine chosen before model load."""
         try:
-            return str(self.tts_engine_combo.currentData() or "piper")
+            return str(self.tts_engine_combo.currentData() or "auto")
         except Exception:
-            return "piper"
+            return "auto"
 
     def selected_tts_voice(self) -> str:
         """The voice id implied by the engine choice: the natural engine's own default voice
-        (eli/perception/tts_xtts), or '' (empty = leave the Piper voice as-is)."""
+        (eli/perception/tts_xtts), or '' (empty = leave the chosen voice as-is)."""
         if self.selected_tts_engine() != "natural":
             return ""
         from eli.perception.tts_xtts import NATURAL_PREFIX, _DEFAULT_NATURAL
@@ -1466,7 +1475,7 @@ class _SupportAssetsThread(QThread):
             if not out.get("embedder"):
                 out["embedder"] = {"ok": False, "error": str(exc)}
             if not out.get("voice"):
-                out["voice"] = {"piper": {"ok": False, "error": str(exc)}, "whisper": {"ok": False}}
+                out["voice"] = {"kokoro": {"ok": False, "error": str(exc)}, "whisper": {"ok": False}}
         self.finished_result.emit(out)
 
 
@@ -1605,9 +1614,9 @@ class FirstBootWizard(QDialog):
             "   •  Chat model — the brain. Pick a GGUF file, download one, or use Ollama "
             "on step 2. Ollama works on Windows, macOS and Linux, local or on your LAN.\n"
             "   •  Embedder — nomic ~80 MiB (memory / RAG; automatic).\n"
-            "   •  Voice — Piper speech out + Whisper listening (automatic). More voices, "
-            "accents and generic voice styles (calm, robotic, synthetic…) are downloadable later "
-            "in Settings \u25b8 Runtime \u25b8 \"VOICE / TTS\".\n\n"
+            "   •  Voice — Kokoro speech out + Whisper listening (automatic). Its voices "
+            "(American and British English) and generic voice styles (calm, robotic, synthetic…) "
+            "are in Settings \u25b8 Runtime \u25b8 \"VOICE / TTS\".\n\n"
             "Pick a chat model, confirm hardware, and you're in."
         )
         body.setWordWrap(True)
@@ -1755,15 +1764,12 @@ class FirstBootWizard(QDialog):
         self._ollama_widget.setVisible(False)
 
         # Voice engine — same choice as the model picker, offered here for a brand-new
-        # user, before the model loads. Piper (fast) vs the human-like neural voice.
+        # user, before the model loads.
         v.addWidget(QLabel("Voice engine:"))
         self._wiz_tts_engine = QComboBox()
-        self._wiz_tts_engine.addItem("Piper — fast, works on any machine (recommended)", "piper")
-        self._wiz_tts_engine.addItem("Natural neural (XTTS-v2) — human-like, needs GPU/VRAM", "natural")
-        self._wiz_tts_engine.setToolTip(
-            "Piper is fast and light. The natural neural voice sounds human — expressive and "
-            "punctuation-aware — but downloads ~1.8GB on first use and needs more VRAM. ELI "
-            "falls back to Piper automatically if the neural voice can't load.")
+        for _label, _key in _TTS_ENGINE_CHOICES:
+            self._wiz_tts_engine.addItem(_label, _key)
+        self._wiz_tts_engine.setToolTip(_TTS_ENGINE_TIP)
         v.addWidget(self._wiz_tts_engine)
 
         self._wiz_provider.currentIndexChanged.connect(self._sync_wiz_provider)
@@ -1915,14 +1921,14 @@ class FirstBootWizard(QDialog):
                 self._embedder_status.setText(
                     f"○ Embedder missing — will download to models/embeddings/ "
                     f"({emb.get('size_gib_estimate','~80 MiB')})")
-            voices = tts_router.list_voices()
-            if voices:
+            from eli.runtime.voice_assets import kokoro_ready
+            if kokoro_ready():
                 self._voice_status.setText(
                     f"✓ Voice ready — default {tts_router.get_active_voice()} "
-                    f"({len(voices)} voice(s) found)")
+                    f"({len(tts_router.list_voices())} voice(s) found)")
             else:
                 self._voice_status.setText(
-                    "○ Voice missing — will fetch en_US-amy-medium (Piper) + whisper STT")
+                    "○ Voice missing — will fetch the Kokoro voice + whisper STT")
         except Exception as exc:
             self._embedder_status.setText(f"○ Embedder status unknown ({exc})")
             self._voice_status.setText("○ Voice status unknown")
@@ -1950,15 +1956,14 @@ class FirstBootWizard(QDialog):
                 f"✗ Embedder: {emb.get('error','failed')} — retry or run: "
                 "python -m eli.core.model_download --aux")
         voice = res.get("voice") or {}
-        piper = voice.get("piper") or {}
+        kokoro = voice.get("kokoro") or {}
         whisper = voice.get("whisper") or {}
-        if piper.get("ok") and whisper.get("ok"):
-            self._voice_status.setText(
-                f"✓ Voice ready — Piper {piper.get('voice','en_US-amy-medium')} + whisper STT")
+        if kokoro.get("ok") and whisper.get("ok"):
+            self._voice_status.setText("✓ Voice ready — Kokoro + whisper STT")
         else:
             parts = []
-            if not piper.get("ok"):
-                parts.append(f"Piper: {piper.get('error','missing')}")
+            if not kokoro.get("ok"):
+                parts.append(f"Kokoro: {kokoro.get('error','missing')}")
             if not whisper.get("ok"):
                 parts.append(f"whisper: {whisper.get('error','missing')}")
             self._voice_status.setText("✗ Voice: " + "; ".join(parts))
@@ -2170,9 +2175,9 @@ class FirstBootWizard(QDialog):
 
     def selected_tts_engine(self) -> str:
         try:
-            return str(self._wiz_tts_engine.currentData() or "piper")
+            return str(self._wiz_tts_engine.currentData() or "auto")
         except Exception:
-            return "piper"
+            return "auto"
 
     selected_tts_voice = StartupModelSelectionDialog.selected_tts_voice   # one rule for both windows
 

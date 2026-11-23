@@ -32,7 +32,7 @@ usage() {
 Usage: scripts/package_desktop_app.sh [options]
 
 Options:
-  --with-assets           Include local models/ and tts_piper/ in the tarball. Huge; off by default.
+  --with-assets           Include local models/ and tts_kokoro/ in the tarball. Huge; off by default.
   --skip-wheel            Do not rebuild the Python wheel before packaging.
   --out-dir PATH          Output directory. Default: $OUT_DIR
   --repo OWNER/REPO       GitHub asset repo recorded in install notes. Default: $REPO
@@ -89,10 +89,10 @@ echo "[package] exporting committed source from HEAD"
 if [ "$WITH_ASSETS" -eq 1 ]; then
   (cd "$ROOT" && git archive --format=tar HEAD) | tar -xf - -C "$STAGING"
 else
-  (cd "$ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_piper/**') | tar -xf - -C "$STAGING"
+  (cd "$ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_kokoro/**') | tar -xf - -C "$STAGING"
 fi
 
-mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper" "$STAGING/blueprints"
+mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/blueprints"
 # License docs live under models/ but models/** is excluded from the lean archive — copy explicitly
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
@@ -180,17 +180,17 @@ if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
   mkdir -p "$STAGING/models"; cp "$ASSET_ROOT/models/$STARTER_MODEL" "$STAGING/models/"
   # A "full" package (starter model present) also bundles the small aux weights the installer
   # would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
-  # Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
+  # Embedder (memory/RAG) + the Kokoro voice → a full install is genuinely offline-capable.
   _EMB="$ASSET_ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
   if [ -f "$_EMB" ]; then
     mkdir -p "$STAGING/models/embeddings"; cp "$_EMB" "$STAGING/models/embeddings/"
     echo "[package] bundling embedder (memory/RAG): $(du -h "$_EMB" | cut -f1)"
   fi
-  for _vd in "$ASSET_ROOT/tts_piper/piper" "$ASSET_ROOT/models/tts/piper"; do
-    if [ -f "$_vd/en_US-amy-medium.onnx" ]; then
-      mkdir -p "$STAGING/tts_piper/piper"
-      cp "$_vd/en_US-amy-medium.onnx" "$_vd/en_US-amy-medium.onnx.json" "$STAGING/tts_piper/piper/" 2>/dev/null || true
-      echo "[package] bundling default Piper voice (amy-medium)"
+  for _vd in "$ASSET_ROOT/tts_kokoro" "$ASSET_ROOT/models/tts/kokoro"; do
+    if [ -f "$_vd/model.onnx" ]; then
+      mkdir -p "$STAGING/tts_kokoro"
+      cp -a "$_vd/." "$STAGING/tts_kokoro/"
+      echo "[package] bundling the Kokoro voice ($(du -sh "$_vd" | cut -f1))"
       break
     fi
   done
@@ -201,7 +201,9 @@ fi
 if [ "$WITH_ASSETS" -eq 1 ]; then
   echo "[package] including model/voice assets from $ASSET_ROOT (this can be very large)"
   [ -d "$ASSET_ROOT/models" ] && cp -a "$ASSET_ROOT/models/." "$STAGING/models/"
-  [ -d "$ASSET_ROOT/tts_piper" ] && cp -a "$ASSET_ROOT/tts_piper/." "$STAGING/tts_piper/"
+  if [ -d "$ASSET_ROOT/tts_kokoro" ]; then
+    mkdir -p "$STAGING/tts_kokoro" && cp -a "$ASSET_ROOT/tts_kokoro/." "$STAGING/tts_kokoro/"
+  fi
 fi
 
 cat > "$STAGING/RUN_ELI.sh" <<'RUN_EOF'

@@ -3,6 +3,7 @@
 absl-py==2.4.0
 accelerate==1.13.0
 adb-shell==0.4.4
+addict==2.4.0
 aiofiles==25.1.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
@@ -17,15 +18,19 @@ attrs==26.1.0
 audioop-lts==0.2.2 ; python_version >= "3.13"
 av==17.0.1
 bleak==3.0.2
+blis==1.3.4
 build==1.5.0
 casttube==0.2.1
+catalogue==2.0.10
 certifi==2026.4.22
 cffi==2.0.0
 chacha20poly1305-reuseable==0.13.2
 charset-normalizer==3.4.7
 click==8.4.2
+cloudpathlib==0.26.0
 cmake==4.3.2
 comtypes==1.4.17 ; sys_platform == "win32"
+confection==1.3.4
 contourpy==1.3.3
 coverage==7.14.0
 cryptography==48.0.0
@@ -34,12 +39,14 @@ cuda-bindings==13.2.0
 cuda-pathfinder==1.5.4
 cuda-toolkit==13.0.2
 cycler==0.12.1
+cymem==2.0.16
 datasets==4.8.5
 dbus-fast==5.0.22 ; sys_platform == "linux"
 ddgs==9.15.0
 diffusers==0.38.0
 dill==0.4.1
 diskcache==5.6.3
+docopt==0.6.2
 faiss-cpu==1.13.2
 fastapi==0.136.3
 faster-whisper==1.2.1
@@ -73,13 +80,16 @@ mdurl==0.1.2
 mediapipe==0.10.35
 meshio==5.3.5
 miniaudio==1.73
+misaki==0.9.4
 MouseInfo==0.1.3
 mpmath==1.3.0
 mss==10.2.0
 multidict==6.7.1
 multiprocess==0.70.19
+murmurhash==1.0.16
 networkx==3.6.1
 ninja==1.13.0
+num2words==0.5.14
 numpy==2.4.4
 onnxruntime==1.26.0
 opencv-contrib-python==4.13.0.92
@@ -97,11 +107,11 @@ pdfminer.six==20251230
 pdfplumber==0.11.9
 peft==0.19.1
 pillow==12.2.0
-piper-tts==1.4.2
 platformdirs==4.9.6
 playwright==1.63.0
 pluggy==1.6.0
 plyer==2.1.0
+preshed==3.0.15
 propcache==0.5.2
 protobuf==7.35.1
 psutil==7.2.2
@@ -138,6 +148,7 @@ pytesseract==0.3.13
 pytest-cov==7.1.0
 pytest-timeout==2.4.0
 pytest==9.0.3
+python-crfsuite==0.9.12
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.2.2
@@ -159,16 +170,22 @@ setuptools==81.0.0
 shellingham==1.5.4
 shiboken6==6.11.1
 six==1.17.0
+smart-open==10.0.0
 sniffio==1.3.1
 sounddevice==0.5.5
 soundfile==0.13.1
+spacy==3.8.18
+spacy-legacy==3.0.12
+spacy-loggers==1.0.5
 SpeechRecognition==3.16.1
 srptools==2.0.0
+srsly==2.5.6
 sse-starlette==3.4.4
 starlette-context==0.5.1
 starlette==1.3.1
 sympy==1.14.0
 tabulate==0.10.0
+thinc==8.3.14
 tinytag==2.2.1
 tokenizers==0.22.2
 tomli==2.0.1 ; python_version < "3.11"
@@ -182,9 +199,12 @@ urllib3==2.7.0
 uvicorn==0.49.0
 uvloop==0.22.1 ; sys_platform != "win32"
 vulture==2.16
+wasabi==1.1.3
 watchfiles==1.2.0
+weasel==1.0.1
 websockets==16.0
 wheel==0.47.0
+wrapt==2.5.2
 xxhash==3.7.0
 yara-python==4.5.4 ; python_version < "3.14"
 yarl==1.23.0

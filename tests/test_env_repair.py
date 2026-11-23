@@ -658,29 +658,6 @@ def test_a_system_without_what_the_install_builds_with(tmp_path, root, can_add):
         assert not (tmp_path / "ran").exists()
 
 
-@pytest.mark.skipif(not POSIX, reason="uses shell scripts as stand-in programs")
-def test_a_piper_that_does_not_run_or_is_another_program_is_passed_over(tmp_path, monkeypatch):
-    """Some Linux distributions ship an unrelated `piper` (it configures gaming mice), and a
-    `piper` installed for a Python that has since gone still sits on PATH."""
-    from eli.perception import tts_router as tts
-    other = tmp_path / "other"; stale = tmp_path / "stale"; own = tmp_path / "own"
-    for d in (other, stale, own):
-        d.mkdir()
-    _fake_tool(other / "piper", 'echo "usage: piper [--version]  configure your mouse"')
-    _fake_tool(stale / "piper", 'echo "ModuleNotFoundError: No module named piper" >&2; exit 1')
-    real = _fake_tool(own / "piper", 'echo "usage: piper --model MODEL --output_file FILE"')
-    monkeypatch.setattr(tts, "_packaged_piper_binary_candidates", lambda: [])
-    monkeypatch.delenv("ELI_PIPER_BINARY", raising=False)
-    monkeypatch.delenv("ELI_PIPER_BIN", raising=False)
-    tts._PIPER_RUNS.clear()
-    monkeypatch.setattr(tts, "_own_piper_candidates", lambda: [])
-    monkeypatch.setenv("PATH", os.pathsep.join([str(other), str(stale)]))
-    monkeypatch.setenv("HOME", str(tmp_path / "nobody"))
-    assert tts._find_piper_bin() is None                                    # neither is the speech engine
-    monkeypatch.setenv("PATH", os.pathsep.join([str(other), str(stale), str(own)]))
-    assert tts._find_piper_bin() == str(real)
-
-
 # ── system libraries ELI cannot carry ────────────────────────────────────────
 # On a system without libGL the window failed with "Please install PySide6". The graphics
 # libraries belong to the GPU driver, so they are named and installed, not bundled.
@@ -827,51 +804,3 @@ def test_the_debian_package_depends_on_what_the_install_builds_with_and_the_wind
     depends = [line for line in text.splitlines() if line.startswith("Depends:")][0]
     for package in ("python3-venv", "python3-dev", "build-essential", "portaudio19-dev", "libgl1", "libegl1", "libxcb-cursor0"):
         assert package in depends, package
-
-
-@pytest.mark.skipif(not POSIX, reason="a script whose interpreter is gone is a POSIX case")
-def test_a_piper_whose_python_has_gone_is_passed_over_without_a_traceback(tmp_path, caplog):
-    """An old environment's piper names a Python that is gone. That is what the check is for,
-    and it printed a traceback at every start."""
-    from eli.perception import tts_router
-    stale = tmp_path / "piper"
-    stale.write_text("#!/nonexistent/python3\nprint('never runs')\n")
-    stale.chmod(0o755)
-    tts_router._PIPER_RUNS.pop(str(stale), None)
-    with caplog.at_level("DEBUG"):
-        assert tts_router._piper_runs(str(stale)) is False
-    assert "passed over" in caplog.text
-    assert "Traceback" not in caplog.text and not any(r.exc_info for r in caplog.records)
-
-
-@pytest.mark.skipif(not POSIX, reason="uses shell scripts as stand-in programs")
-def test_elis_own_piper_is_used_before_whatever_is_on_the_path(tmp_path, monkeypatch):
-    from eli.perception import tts_router as tts
-    mine = tmp_path / "env_bin"; theirs = tmp_path / "path_bin"
-    mine.mkdir(); theirs.mkdir()
-    own = _fake_tool(mine / "piper", 'echo "usage: piper --model MODEL"')
-    _fake_tool(theirs / "piper", 'echo "usage: piper --model MODEL"')
-    monkeypatch.setattr(tts, "_packaged_piper_binary_candidates", lambda: [])
-    monkeypatch.setattr(tts, "_own_piper_candidates", lambda: [own])
-    monkeypatch.delenv("ELI_PIPER_BINARY", raising=False)
-    monkeypatch.delenv("ELI_PIPER_BIN", raising=False)
-    tts._PIPER_RUNS.clear()
-    monkeypatch.setenv("PATH", str(theirs))
-    assert tts._find_piper_bin() == str(own)
-
-
-def test_elis_own_piper_is_looked_for_beside_the_python_that_is_running():
-    from eli.perception import tts_router as tts
-    beside = {os.path.normcase(str(Path(p).parent)) for p in tts._own_piper_candidates()}
-    assert os.path.normcase(str(Path(sys.executable).parent)) in beside
-
-
-def test_a_place_piper_could_be_is_not_run_or_reported(tmp_path, monkeypatch, caplog):
-    """The frozen app logged "piper at ~/.local/share/ELI_v3/.venv/bin/piper does not start (No such
-    file)": only a source install has that environment."""
-    import logging
-    from eli.perception import tts_router
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
-    with caplog.at_level(logging.DEBUG):
-        assert tts_router._piper_runs(str(tmp_path / "nowhere" / "piper")) is False
-    assert "does not start" not in caplog.text

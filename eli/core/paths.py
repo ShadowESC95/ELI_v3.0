@@ -393,7 +393,7 @@ def models_dir() -> Path:
     return data_dir() / "models"
 
 def voices_dir() -> Path:
-    """Voice model files (Piper ONNX)."""
+    """Voice files folder (the Kokoro voice keeps its files under models_dir()/tts/kokoro)."""
     if _is_dev_mode():
         return project_root() / "voices"
     return data_dir() / "voices"

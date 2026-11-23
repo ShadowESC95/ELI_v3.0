@@ -2,7 +2,7 @@
 """Self-trained, fully-local wake-word detector (openWakeWord features + a custom head).
 
 100% local, no account, no third-party service, and no unavailable pre-trained
-model: ELI trains its OWN "computer"/"eli" detector using its OWN Piper TTS to
+model: ELI trains its OWN "computer"/"eli" detector using its OWN voice (Kokoro) to
 synthesise the wake phrase across many voices/speeds, then MIXES those positives
 with music/noise at random SNRs — that augmentation is what makes the detector
 robust *over* background music, which is the whole point. Features come from
@@ -10,7 +10,7 @@ openWakeWord's open melspectrogram→embedding extractor; the trained part is a 
 classifier head we own.
 
 Pipeline:
-  synth positives (Piper) + augment (mix noise) + negatives → openWakeWord
+  synth positives (Kokoro) + augment (mix noise) + negatives → openWakeWord
   embeddings → train a small torch head → save → stream-detect in the mic loop.
 
 The mic loop falls back to the existing transcription matcher whenever no trained
@@ -69,7 +69,7 @@ def get_wake_phrases() -> List[str]:
 
 def set_wake_phrases(phrases: List[str]) -> List[str]:
     """Persist a custom wake phrase set. Returns the cleaned list. Does NOT train —
-    callers retrain (synth works for any phrase Piper can say)."""
+    callers retrain (synth works for any phrase ELI's voice can say)."""
     cleaned = [str(p).strip().lower() for p in (phrases or []) if str(p).strip()]
     if not cleaned:
         cleaned = list(_DEFAULT_PHRASES)
@@ -214,47 +214,40 @@ def _build_head(in_dim: int):
 
 
 
-# ── Piper synthesis of positives / negatives ────────────────────────────────
-def _load_voice(model_path: Path):
-    # the one in-process Piper loader, shared with speaking (a voice is loaded once)
-    from eli.perception.tts_router import piper_voice
-    return piper_voice(model_path)
-
-
-def _synth(text: str, model_path: Path, length_scale: float = 1.0) -> Optional[np.ndarray]:
+# ── synthesis of positives / negatives with ELI's own voices (Kokoro) ──────
+def _synth(text: str, voice: str, speed: float = 1.0) -> Optional[np.ndarray]:
     """Synthesise text → float32 16k clip, or None on failure."""
     try:
-        from piper import SynthesisConfig
-        v = _load_voice(model_path)
-        try:
-            cfg = SynthesisConfig(length_scale=length_scale)
-            chunks = list(v.synthesize(text, syn_config=cfg))
-        except Exception:
-            chunks = list(v.synthesize(text))
-        if not chunks:
+        from eli.perception import tts_kokoro
+        samples = tts_kokoro.synthesize(text, voice, speed=speed)
+        if samples is None or not len(samples):
             return None
-        pcm = b"".join(getattr(c, "audio_int16_bytes", b"") for c in chunks)
-        sr = int(getattr(chunks[0], "sample_rate", 22050) or 22050)
-        x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        return _resample(x, sr, SR)
+        return _resample(np.asarray(samples, dtype=np.float32), tts_kokoro.SAMPLE_RATE, SR)
     except Exception as e:
         log.debug(f"[WAKE] synth failed ({text!r}): {e}")
         return None
 
 
-def _voice_models(limit: int = 6) -> List[Path]:
-    out: List[Path] = []
+def _voices(limit: int = 6) -> List[str]:
+    """Up to `limit` of the Kokoro voices on this machine, spread over accents and genders (the
+    best-graded of each kind first), so the detector learns the phrase, not one speaker."""
     try:
-        from eli.perception.tts_router import list_voices, find_voice_model
-        for name in list_voices():
-            m = find_voice_model(name)
-            if m and Path(m).exists():
-                out.append(Path(m))
-            if len(out) >= limit:
-                break
+        from eli.perception import tts_kokoro
+        from eli.perception.tts_router import list_voices
+        have = [v for v in list_voices() if tts_kokoro.voice_id(v)]
+        kinds: dict = {}
+        for v in have:                               # VOICES is ordered best grade first per kind
+            meta = tts_kokoro.VOICES[v]
+            kinds.setdefault((meta["accent"], meta["gender"]), []).append(v)
+        out: List[str] = []
+        while len(out) < limit and any(kinds.values()):
+            for queue in kinds.values():
+                if queue and len(out) < limit:
+                    out.append(queue.pop(0))
+        return out
     except Exception as e:
         log.debug(f"[WAKE] voice discovery failed: {e}")
-    return out
+        return []
 
 
 # A small set of non-wake words/phrases for hard negatives (synthesised too).
@@ -304,15 +297,15 @@ def _noise_beds() -> List[np.ndarray]:
 FOLDS = 5   # the threshold is set on out-of-fold scores: five folds, the usual choice
 
 
-def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 1.0, 1.15),
+def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.87, 1.0, 1.18),
                 augment_per_clip: int = 4, epochs: int = 80) -> dict:
     """Synthesise + augment + embed + train the custom head. Local; CPU-fine.
     Returns {ok, positives, negatives, threshold, ...}."""
     import torch
     phrases = phrases or get_wake_phrases()
-    voices = _voice_models()
+    voices = _voices()
     if not voices:
-        return {"ok": False, "error": "no Piper voices found to synthesise the wake phrase"}
+        return {"ok": False, "error": "no voices of ELI's own to synthesise the wake phrase"}
     beds = _noise_beds()
 
     pos: List[np.ndarray] = []
@@ -324,11 +317,11 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 
             snr = float(np.random.uniform(0.0, 15.0))
             pos.append(_fix_len(_mix_snr(base, bed, snr)))
 
-    # Synthetic positives (ELI's own Piper voices) — breadth/generalisation.
+    # Synthetic positives (ELI's own voices) — breadth/generalisation.
     for ph in phrases:
         for vm in voices:
-            for ls in per_voice_speeds:
-                clip = _synth(ph, vm, length_scale=ls)
+            for speed in per_voice_speeds:
+                clip = _synth(ph, vm, speed=speed)
                 if clip is None or len(clip) < SR // 4:
                     continue
                 _add_positive(_fix_len(clip), augment_per_clip)
@@ -344,7 +337,7 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 
     neg: List[np.ndarray] = []
     for w in _NEG_WORDS:
         vm = voices[np.random.randint(len(voices))]
-        clip = _synth(w, vm, length_scale=float(np.random.uniform(0.85, 1.15)))
+        clip = _synth(w, vm, speed=float(np.random.uniform(0.87, 1.18)))
         if clip is not None and len(clip) >= SR // 4:
             neg.append(_fix_len(clip))
     # noise/music-only negatives (so music alone never fires)
@@ -466,5 +459,5 @@ def get_detector() -> Optional[WakeDetector]:
 
 
 if __name__ == "__main__":
-    print("[WAKE] training local wake-word model (Piper + augmentation)…")
+    print("[WAKE] training local wake-word model (ELI's voices + augmentation)…")
     print(json.dumps(train_model(), indent=2))

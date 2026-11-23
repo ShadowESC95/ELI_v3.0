@@ -10,7 +10,7 @@ import pytest
 
 from eli.cognition import tone_adaptor
 from eli.perception import voice_profile as vp
-from eli.perception.tts_router import _piper_prosody_args
+from eli.perception.tts_router import _prosody
 
 
 def _tone_clip(f0: float = 180.0, sr: int = 16000, dur: float = 0.5) -> np.ndarray:
@@ -65,16 +65,13 @@ def test_voice_prosody_shifts_for_detected_user_emotion(monkeypatch):
     assert float(prosody.get("length_scale", 1.0)) >= 1.0
 
 
-def test_piper_prosody_args_merge_tone(monkeypatch):
+def test_the_voice_takes_the_tone_s_delivery(monkeypatch):
     monkeypatch.setenv("ELI_TTS_PROSODY", "1")
     tone_adaptor.clear_tone()
     vp.set_last_tone({"emotion": "happy", "emotion_confidence": 0.9})
     tone_adaptor.note_user_text("this is amazing!")
-    args = _piper_prosody_args()
-    assert "--noise_scale" in args
-    idx = args.index("--noise_scale")
-    ns = float(args[idx + 1])
-    assert ns >= 0.75
+    vals = _prosody()
+    assert vals["noise_scale"] >= 0.75 and vals["length_scale"] == float(tone_adaptor.voice_prosody()["length_scale"])
 
 
 def test_labelled_samples_train_emotion_classifier(tmp_path, monkeypatch):

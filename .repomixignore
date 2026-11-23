@@ -9,7 +9,7 @@ eli/models/
 *.bin
 *.pt
 *.pth
-tts_piper/
+tts_kokoro/
 
 # ── repomix's own output (don't pack the pack) ───────────────────────────────────
 repomix-output.xml

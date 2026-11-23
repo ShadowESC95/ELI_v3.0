@@ -4135,10 +4135,10 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         try:
             from eli.perception.tts_router import list_voices, get_active_voice
             installed = [v for v in (list_voices() or []) if not str(v).startswith("sys:")]
-            piper = [v for v in installed if not v.startswith(("char:", "clone:"))]
+            own = [v for v in installed if not v.startswith(("char:", "clone:"))]
             char = [v.replace("char:", "") for v in installed if v.startswith("char:")]
             lines = [f"Active voice: {get_active_voice()}.",
-                     f"Installed ({len(piper)}): " + (", ".join(piper[:24]) or "none")]
+                     f"Installed ({len(own)}): " + (", ".join(own[:24]) or "none")]
             if char:
                 lines.append("Character voices: " + ", ".join(char))
             try:
@@ -4190,7 +4190,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 try:
                     sample = ", ".join(x["id"] for x in list_available_voices(language="en")[:6])
                 except Exception:
-                    sample = "en_US-amy-medium"
+                    from eli.perception.tts_kokoro import DEFAULT_VOICE as sample
                 msg = (f"I couldn't tell which voice you meant from \"{q}\". Try an accent or a "
                        f"name — e.g. \"download a British voice\". Options include: {sample}.")
                 return {"ok": False, "action": a, "content": msg, "response": msg}
@@ -4222,8 +4222,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             installed = set(list_voices() or [])
             r = resolve_voice_query(q)
             vid = r.get("voice") or ""
-            # char: (effect chains) and natural: (neural, graceful Piper fallback)
-            # are always selectable even when not in the installed .onnx list.
+            # char: (effect chains) and natural: (neural; the default voice speaks when the GPU
+            # engine cannot) are always selectable even when not in the installed list.
             if vid and vid not in installed and not vid.startswith(("char:", "natural:")):
                 alt = next((m for m in r.get("matches", []) if m in installed), "")
                 if alt:
@@ -4307,7 +4307,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             if not name:
                 name = _os.path.splitext(_os.path.basename(src))[0]
             from eli.perception import tts_xtts
-            res = tts_xtts.add_clone(name, src)
+            res = tts_xtts.add_clone(name, src, ref_text=str(args.get("transcript") or "").strip())
             if not res.get("ok"):
                 msg = f"Couldn't create that voice: {res.get('error')}"
                 return {"ok": False, "action": a, "content": msg, "response": msg}
@@ -4318,9 +4318,9 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             except Exception:
                 log.debug("[CREATE_VOICE] set-active failed", exc_info=True)
             extra = ("" if res.get("synth_ready") else
-                     " It'll sound like the sample once the neural voice extra is installed "
-                     "(`pip install -e \".[natural]\"` from the ELI project root); until then "
-                     "I'll use a normal voice.")
+                     " It'll sound like the sample on a machine whose GPU runs the cloning engine "
+                     "(the voice-gpu extra: `pip install -e \".[voice-gpu]\"` from the ELI project "
+                     "root); until then I'll use my normal voice.")
             msg = f"Created the voice '{name}' from your recording and set it active.{extra}"
             return {"ok": True, "action": a, "voice": vid, "content": msg, "response": msg}
         except Exception as e:

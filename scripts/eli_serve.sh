@@ -84,12 +84,12 @@ export ELI_API_HOST="$HOST" ELI_API_PORT="$PORT"
 [ "$HTTPS" -eq 1 ] && export ELI_API_HTTPS=1
 cd "$ROOT"
 
-# Web mic + TTS need whisper/piper on disk; offline mode blocks huggingface.co mid-request.
+# Web mic + TTS need whisper and the Kokoro voice on disk; offline mode blocks huggingface.co mid-request.
 _need_voice=0
 if ! "$PY" -c "from eli.perception.local_whisper_stt import whisper_cache_ready; import sys; sys.exit(0 if whisper_cache_ready() else 1)" 2>/dev/null; then
   _need_voice=1
 fi
-if ! "$PY" -c "from eli.runtime.voice_assets import piper_voice_ready; import sys; sys.exit(0 if piper_voice_ready() else 1)" 2>/dev/null; then
+if ! "$PY" -c "from eli.runtime.voice_assets import kokoro_ready; import sys; sys.exit(0 if kokoro_ready() else 1)" 2>/dev/null; then
   _need_voice=1
 fi
 if [ "$_need_voice" -eq 1 ]; then

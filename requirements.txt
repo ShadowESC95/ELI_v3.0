@@ -37,8 +37,11 @@ llama_cpp_python==0.3.20
 faiss-cpu==1.13.2
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
-piper-tts==1.4.2
 onnxruntime==1.25.0
+misaki==0.9.4          # Kokoro's phonemes; WITHOUT its [en] extra, which brings espeak-ng (GPL)
+spacy==3.8.18          # misaki's tagger (en_core_web_sm 3.8.0 is fetched with the voice)
+num2words==0.5.14      # misaki's numbers as words (LGPL-2.1)
+python-crfsuite==0.9.12  # the guess for words misaki's dictionaries lack
 openwakeword>=0.4.0  # local self-trained wake-word detector (no account)
 pyttsx3==2.99
 sounddevice==0.5.5

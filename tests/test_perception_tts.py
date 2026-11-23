@@ -1,142 +1,129 @@
-"""Tests for eli.perception.tts_router — ~100 tests."""
+"""Tests for eli.perception.tts_router and its default engine, eli.perception.tts_kokoro."""
 from __future__ import annotations
 
+import io
+import threading
+import wave
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import os
 import pytest
 
+from eli.perception import tts_kokoro
 from eli.perception.tts_router import (
     list_voices,
-    find_voice_model,
     get_active_voice,
     set_active_voice,
     available_backends,
-    _voice_dir,
     _DEFAULT_VOICE,
-    _VOICE_SEARCH_DIRS,
-    _is_system_voice,
     _run_tts,
     speak_if_enabled,
 )
 
 
-# ── Voice discovery ───────────────────────────────────────────────────────
+def _wav(seconds=0.2, rate=tts_kokoro.SAMPLE_RATE):
+    import numpy as np
+    t = np.arange(int(rate * seconds)) / rate
+    return tts_kokoro.to_wav((np.sin(2 * np.pi * 220 * t) * 0.4).astype("float32"), rate)
 
 
-def test_list_voices_at_least_three():
-    result = list_voices()
-    assert len(result) >= 3, f"Expected >=3 voices, got {result}"
-
-
-def test_list_voices_no_extension():
-    for v in list_voices():
-        assert not v.endswith(".onnx")
-
-def test_list_voices_no_duplicates():
-    voices = list_voices()
-    assert len(voices) == len(set(voices))
-
-def _installed_voices():
-    """The Piper voices on this machine (the shipped set on CI, any added ones here)."""
-    from eli.perception.tts_router import _voice_search_dirs
-    return sorted({f.stem for d in _voice_search_dirs() for f in Path(d).glob("*.onnx")
-                   if Path(str(f) + ".json").exists()})
-
-
-def test_every_installed_voice_is_found_and_the_natural_ones_listed():
-    """These tests named three high-quality voices that were only ever on the developer's machine;
-    the release ships a smaller set. What holds anywhere: every installed voice is found, and every
-    one that is not a robotic low-quality voice is offered."""
-    installed = _installed_voices()
-    if not installed:
-        pytest.skip("no Piper voices installed")
-    listed = list_voices()
-    for name in installed:
-        found = find_voice_model(name)
-        assert found is not None and found.exists() and found.stem == name, name
-        if not name.endswith("low"):
-            assert name in listed, name
-
-
-# ── Voice model finding ───────────────────────────────────────────────────
-
-
-def test_find_voice_model_onnx_extension():
-    result = find_voice_model("en_US-lessac-high")
-    if result:
-        assert result.suffix == ".onnx"
-
-def test_find_voice_env_override(monkeypatch, tmp_path):
-    model = tmp_path / "custom.onnx"
-    model.write_bytes(b"fake")
-    monkeypatch.setenv("ELI_PIPER_MODEL", str(model))
-    result = find_voice_model("en_US-ryan-high")
-    assert result == model
-
-
-# ── Active voice ──────────────────────────────────────────────────────────
-
-def test_get_active_voice_returns_string():
-    result = get_active_voice()
-    assert isinstance(result, str)
-    assert len(result) > 0
-
-def test_get_active_voice_default(monkeypatch, tmp_path):
-    """With NO override configured, the default must resolve to a real voice.
-
-    Isolated deliberately. `get_active_voice()` reads process-wide mutable state —
-    the ELI_PIPER_VOICE env var and the `tts_voice` key in whatever settings file
-    is active — so asserting on it unisolated made this order-dependent: any test
-    that had set a voice (SET_VOICE writes `char:calm`, for instance) decided the
-    outcome, and it failed intermittently in the full suite while passing alone.
-    Point it at an empty settings file and clear the env so this exercises the
-    fallback chain it is actually named after.
-    """
+@pytest.fixture
+def no_settings(monkeypatch, tmp_path):
+    """No voice chosen anywhere: an empty settings file, no voice in the environment."""
+    monkeypatch.delenv("ELI_TTS_VOICE", raising=False)
     monkeypatch.delenv("ELI_PIPER_VOICE", raising=False)
     settings = tmp_path / "settings.json"
     settings.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(settings))
-
-    result = get_active_voice()
-    assert result in list_voices() or result == _DEFAULT_VOICE
-
-def test_get_active_voice_env_override(monkeypatch):
-    monkeypatch.setenv("ELI_PIPER_VOICE", "en_US-ryan-high")
-    result = get_active_voice()
-    assert result == "en_US-ryan-high"
-
-def test_set_active_voice_changes_active(monkeypatch, tmp_path):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_path / "settings.json"))
-    set_active_voice("en_US-ryan-high")
-    assert get_active_voice() == "en_US-ryan-high"
+    from eli.perception import tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": False)
+    return settings
 
 
-# ── available_backends ────────────────────────────────────────────────────
+@pytest.fixture
+def kokoro_here(monkeypatch, tmp_path):
+    """Kokoro's voices on this machine (a file each in the test's own folder); rendering is a
+    stand-in that records what it was asked to say, at which speed."""
+    from eli.runtime import voice_assets
+    files = {}
+    for vid in tts_kokoro.VOICES:
+        f = tmp_path / f"{vid}.bin"
+        f.write_bytes(b"0")
+        files[vid] = f
+    monkeypatch.setattr(voice_assets, "kokoro_voice_file", lambda vid: files.get(vid))
+    said = []
+    monkeypatch.setattr(tts_kokoro, "synthesize_wav",
+                        lambda text, voice=tts_kokoro.DEFAULT_VOICE, speed=1.0: said.append((text, voice, speed)) or _wav())
+    return said
 
 
-def test_available_backends_has_piper_python():
-    result = available_backends()
-    assert "piper_python" in result
-    assert result["piper_python"] is True
+# ── Voices ────────────────────────────────────────────────────────────────
 
-def test_available_backends_has_piper_voices():
-    result = available_backends()
-    assert "piper_voices" in result
-    assert isinstance(result["piper_voices"], list)
+def test_every_kokoro_voice_is_offered_even_before_the_first_fetch(monkeypatch):
+    """Before the voice's files are fetched (they come with the first reply spoken) every Kokoro
+    voice is listed, so one can be chosen; after, the ones on this machine."""
+    from eli.runtime import voice_assets
+    monkeypatch.setattr(voice_assets, "kokoro_voice_file", lambda vid: None)
+    voices = list_voices()
+    assert all(v in voices for v in tts_kokoro.VOICES)
+    assert len(voices) == len(set(voices)) and list_voices() == voices
+    monkeypatch.setattr(voice_assets, "kokoro_voice_file", lambda vid: Path("x") if vid == "bf_emma" else None)
+    listed = [v for v in list_voices() if tts_kokoro.voice_id(v)]
+    assert listed == ["bf_emma"]
 
-def test_available_backends_has_active_voice():
-    result = available_backends()
-    assert "active_voice" in result
 
-def test_available_backends_has_active_model():
-    result = available_backends()
-    assert "active_model" in result
+def test_the_default_voice_is_kokoros_best_graded(no_settings):
+    assert _DEFAULT_VOICE == tts_kokoro.DEFAULT_VOICE == "af_heart"
+    assert tts_kokoro.VOICES[_DEFAULT_VOICE]["grade"] == "A"
+    assert get_active_voice() == "af_heart"
 
-def test_available_backends_active_model_exists():
-    result = available_backends()
-    if result["active_model"]:
-        assert Path(result["active_model"]).exists()
+
+@pytest.mark.parametrize("saved,speaks", [
+    ("en_US-amy-medium", "af_heart"), ("en_GB-alan-medium", "bm_george"),
+    ("en_GB-northern_english_male-medium", "bm_lewis"), ("en_US-hfc_male-medium", "am_michael"),
+    ("en_GB-some_other-medium", "bf_emma"), ("de_DE-thorsten-medium", "af_heart"),
+    ("bm_fable", "bm_fable"), ("kokoro:af_bella", "af_bella"),
+])
+def test_a_voice_saved_for_the_earlier_engine_speaks_with_the_nearest_kokoro_voice(no_settings, saved, speaks):
+    import json
+    no_settings.write_text(json.dumps({"tts_voice": saved}), encoding="utf-8")
+    assert get_active_voice() == speaks
+
+
+def test_the_chosen_voice_comes_from_the_environment_then_the_settings(no_settings, monkeypatch):
+    monkeypatch.setenv("ELI_TTS_VOICE", "bm_george")
+    assert get_active_voice() == "bm_george"
+    monkeypatch.delenv("ELI_TTS_VOICE")
+    set_active_voice("bf_isabella")
+    assert get_active_voice() == "bf_isabella"
+    set_active_voice("char:calm")
+    assert get_active_voice() == "char:calm"
+
+
+def test_on_a_machine_whose_gpu_runs_qwen3_the_automatic_engine_speaks_with_its_natural_voice(no_settings, monkeypatch):
+    import json
+    from eli.perception import tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    assert get_active_voice() == "natural:serena"
+    no_settings.write_text(json.dumps({"tts_engine": "kokoro"}), encoding="utf-8")
+    assert get_active_voice() == "af_heart", "Kokoro chosen: the GPU voice is not used"
+    no_settings.write_text(json.dumps({"tts_engine": "piper"}), encoding="utf-8")
+    assert get_active_voice() == "af_heart", "the earlier engine's setting reads as Kokoro"
+
+
+def test_the_backends_say_which_engine_speaks_and_whether_its_files_are_here(no_settings, monkeypatch, tmp_path):
+    from eli.runtime import voice_assets
+    monkeypatch.setattr(voice_assets, "kokoro_files", lambda: None)
+    b = available_backends()
+    assert b["engine"] == "kokoro" and b["kokoro_ready"] is False and b["active_model"] is None
+    assert b["active_voice"] == b["speaking_voice"] == "af_heart" and isinstance(b["voices"], list)
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"m")
+    monkeypatch.setattr(voice_assets, "kokoro_files", lambda: {"model": model})
+    b = available_backends()
+    assert b["kokoro_ready"] is True and b["active_model"] == str(model)
+    for key in ("piper_bin", "piper_voices", "espeak_ng", "espeak"):
+        assert key not in b
 
 
 # ── speak_if_enabled ─────────────────────────────────────────────────────
@@ -148,7 +135,6 @@ def test_speak_if_enabled_false_does_not_speak():
 
 def test_speak_if_enabled_true_calls_tts():
     """It asserted nothing: the reply is spoken on a thread of its own and the call says it started."""
-    import threading
     spoken = threading.Event()
     with patch("eli.perception.tts_router._run_tts",
                side_effect=lambda text, voice_name=None: spoken.set() or True) as mock_tts:
@@ -168,140 +154,121 @@ def test_text_with_nothing_to_say_is_not_spoken_and_says_so(blank):
     mock_tts.assert_not_called()
 
 
-def test_run_tts_speaks_more_than_three_chunks(monkeypatch):
+# ── Speaking: every sentence, the next rendered while one plays ──────────────
+
+def _record_playback(monkeypatch, *, ok=True, hold=None):
+    """A stand-in for playing a WAV: records each file's length and the tail asked for."""
+    from eli.perception import tts_router as tr
+    played = []
+
+    def _play(path, *, post_play_tail=None):
+        with wave.open(str(path)) as w:
+            played.append((w.getnframes() / w.getframerate(), post_play_tail))
+        if hold is not None:
+            hold(len(played))
+        return tr.Playback(ok, "a stand-in player" if ok else "", "" if ok else "the stand-in refused")
+    monkeypatch.setattr(tr, "_play_wav_blocking", _play)
+    return played
+
+
+def test_every_sentence_is_spoken_with_the_tones_pause_and_the_tail_only_after_the_last(
+        kokoro_here, monkeypatch, tmp_path):
+    from eli.cognition import tone_adaptor
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+    monkeypatch.setattr(tone_adaptor, "voice_prosody", lambda: {"length_scale": 1.25, "sentence_silence": 0.5})
+    played = _record_playback(monkeypatch)
+    text = "One short sentence. " * 5 + "And the last one."
+
+    result = _run_tts(text, voice_name="bm_george")
+
+    assert result and result.via == "a stand-in player"
+    assert [s for s, _v, _sp in kokoro_here] == ["One short sentence."] * 5 + ["And the last one."]
+    assert {v for _s, v, _sp in kokoro_here} == {"bm_george"}
+    assert all(abs(sp - 0.8) < 1e-9 for _s, _v, sp in kokoro_here), "the tone's pace is Kokoro's speed"
+    assert [tail for _d, tail in played] == [0.0] * 5 + [None], "the player's tail only after the last"
+    assert all(abs(d - 0.7) < 0.01 for d, _t in played[:-1]) and abs(played[-1][0] - 0.2) < 0.01, \
+        "the tone's pause follows every sentence but the last"
+
+
+def test_the_next_sentence_is_rendered_while_one_plays(kokoro_here, monkeypatch, tmp_path):
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+    monkeypatch.setenv("ELI_TTS_PROSODY", "0")
+    second_rendered = threading.Event()
+    real = tts_kokoro.synthesize_wav
+
+    def _render(text, voice=tts_kokoro.DEFAULT_VOICE, speed=1.0):
+        if text.startswith("Second"):
+            second_rendered.set()
+        return real(text, voice, speed=speed)
+    monkeypatch.setattr(tts_kokoro, "synthesize_wav", _render)
+    seen_during_first = []
+    _record_playback(monkeypatch, hold=lambda n: n == 1 and seen_during_first.append(second_rendered.wait(5)))
+
+    assert _run_tts("First sentence here. Second sentence here.", voice_name="af_heart")
+    assert seen_during_first == [True], "the second sentence waited for the first to finish playing"
+
+
+def test_a_reply_kokoro_cannot_render_is_reported_not_played_with_the_reason(monkeypatch, tmp_path):
+    from eli.perception import tts_router as tr
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+    monkeypatch.setattr(tts_kokoro, "synthesize_wav", lambda *a, **k: None)
+    monkeypatch.setattr(tts_kokoro, "_LOAD_ERROR", "RuntimeError: its files are not on this machine")
+    played = _record_playback(monkeypatch)
+    result = tr.speak_text("Nothing will be heard.", voice="af_heart")
+    assert result["ok"] is False and "not on this machine" in result["error"] and not played
+
+
+def test_the_browser_voice_gets_every_sentence_in_one_wav_with_the_pauses(kokoro_here, monkeypatch):
+    from eli.perception import tts_router as tr
+    from eli.cognition import tone_adaptor
+    monkeypatch.setattr(tone_adaptor, "voice_prosody", lambda: {"sentence_silence": 0.3})
+    wav = tr.synthesize_wav("Hello there. How are you today?", voice_name="af_heart")
+    with wave.open(io.BytesIO(wav)) as w:
+        assert abs(w.getnframes() / w.getframerate() - (0.2 + 0.3 + 0.2)) < 0.01
+    assert [s for s, _v, _sp in kokoro_here] == ["Hello there.", "How are you today?"]
+
+
+def test_a_style_voice_is_its_base_kokoro_voice_through_its_effects(kokoro_here, monkeypatch):
+    from eli.perception import tts_router as tr, voice_fx
+    applied = []
+    monkeypatch.setattr(voice_fx, "apply_fx", lambda wav, spec: applied.append(spec["base"]) or wav)
+    assert tr.synthesize_wav("A calm reply.", voice_name="char:calm")
+    assert applied == ["bm_george"] and kokoro_here[0][1] == "bm_george"
+
+
+# ── Delivery ─────────────────────────────────────────────────────────────────
+
+def test_kokoro_speaks_with_the_palettes_neutral_voice(monkeypatch):
+    """The prosody figures were typed out here and in the tone palette; the palette's pace is
+    Kokoro's speed, inverted."""
+    from eli.cognition.emotion_palette import NEUTRAL_VOICE
     from eli.perception import tts_router
-
-    spoken = []
-    monkeypatch.setenv("ELI_TTS_CHUNK_CHARS", "25")
-    monkeypatch.setattr(tts_router, "_speak_piper_cli", lambda chunk, voice_name=None: spoken.append(chunk) or True)
-
-    text = "One short sentence. " * 12
-
-    assert _run_tts(text, voice_name="test-voice")
-    assert len(spoken) > 3
+    assert tts_router._PROSODY_DEFAULTS == {k: v for k, v in NEUTRAL_VOICE.items() if k != "pitch"}
+    source = Path(tts_router.__file__).read_text(encoding="utf-8")
+    assert '"noise_scale": 0.72' not in source
+    assert abs(tts_router._speed({"length_scale": 0.8}) - 1.25) < 1e-9
+    assert tts_router._speed({}) == 1.0
+    monkeypatch.setenv("ELI_TTS_PROSODY", "0")
+    assert tts_router._prosody() == {}
 
 
-# ── Voice search dirs ─────────────────────────────────────────────────────
+# ── Never speak a degenerate fragment ─────────────────────────────────────────
 
-
-def test_voice_dir_contains_models_tts_piper():
-    assert "piper" in str(_voice_dir()) or "voices" in str(_voice_dir())
-
-def test_voice_models_have_json_config():
-    """Each .onnx should have a companion .onnx.json config."""
-    for v in list_voices():
-        model = find_voice_model(v)
-        if model:
-            config = model.parent / (model.name + ".json")
-            assert config.exists(), f"Missing config for {v}: {config}"
-
-
-# ── Default voice ─────────────────────────────────────────────────────────
-
-def test_default_voice_constant():
-    assert _DEFAULT_VOICE == "en_US-amy-medium"
-
-def _voices_here(monkeypatch, tmp_path, *names):
-    """Piper voices installed in a folder of this test's own (a model and its config each)."""
-    import eli.perception.tts_router as tr
-    for name in names:
-        (tmp_path / f"{name}.onnx").write_bytes(b"onnx")
-        (tmp_path / f"{name}.onnx.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(tr, "_voice_search_dirs", lambda: [tmp_path])
-
-
-def test_get_active_voice_resolves_to_usable_voice(monkeypatch, tmp_path):
-    """On a machine with voices installed (here, a folder of the test's own: a CI runner has none
-    downloaded), the active voice is one that can be used."""
-    _voices_here(monkeypatch, tmp_path, "en_US-amy-medium", "en_GB-alan-medium")
-    result = get_active_voice()
-    assert isinstance(result, str) and len(result) > 0
-    if _is_system_voice(result):
-        assert len(result) > len("sys:")
-    else:
-        assert result in list_voices() or find_voice_model(result) is not None
-
-
-# ── Edge cases ────────────────────────────────────────────────────────────
-
-
-def test_list_voices_sorted():
-    voices = list_voices()
-    # Check voices list is consistent (same order each call)
-    assert list_voices() == voices
-
-
-# ── Never speak a degenerate fragment (also avoids piper wave crash) ──────────
-import pytest as _pytest
-
-
-@_pytest.mark.parametrize("frag", ["-", "-G", "-Auto", "-Auto/G 5/", "", "   ", "/ "])
+@pytest.mark.parametrize("frag", ["-", "-G", "-Auto", "-Auto/G 5/", "", "   ", "/ "])
 def test_tts_refuses_unspeakable_fragment(frag):
     from eli.perception.tts_router import _eli_tts_is_unspeakable
     assert _eli_tts_is_unspeakable(frag) is True
 
 
-@_pytest.mark.parametrize("ok", ["No.", "34G", "Volume down", "I'm ELI.",
-                                 "Your first message was at 00:03:44 on 2026-06-06."])
+@pytest.mark.parametrize("ok", ["No.", "34G", "Volume down", "I'm ELI.",
+                                "Your first message was at 00:03:44 on 2026-06-06."])
 def test_tts_speaks_real_short_text(ok):
     from eli.perception.tts_router import _eli_tts_is_unspeakable
     assert _eli_tts_is_unspeakable(ok) is False
 
 
-def test_speaking_works_with_no_piper_program(monkeypatch, tmp_path):
-    """The packaged app ships Piper's library and voices but no piper program; on a machine with no
-    working piper program elsewhere ELI had no voice. With no program to run, the library speaks,
-    a pause kept between sentences."""
-    import io
-    import sys
-    import types
-    import wave
-    from eli.perception import tts_router as t
-
-    calls = []
-
-    class _Chunk:
-        sample_rate, sample_width, sample_channels = 22050, 2, 1
-        audio_int16_bytes = b"\x01\x00" * 22050          # one second
-
-    class _Voice:
-        @classmethod
-        def load(cls, path, config_path=None):
-            calls.append(("load", path))
-            return cls()
-
-        def synthesize(self, text, syn_config=None):
-            calls.append(("say", text, getattr(syn_config, "kw", None)))
-            return [_Chunk(), _Chunk()]
-
-    class _Config:
-        def __init__(self, **kw):
-            self.kw = kw
-
-    monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(PiperVoice=_Voice, SynthesisConfig=_Config))
-    monkeypatch.setattr(t, "_PIPER_LIB_VOICES", {})
-    model = tmp_path / "voice.onnx"
-    model.write_bytes(b"onnx")
-    monkeypatch.setattr(t, "find_voice_model", lambda name: model)
-    monkeypatch.setattr(t, "_find_piper_config", lambda m: None)
-    monkeypatch.setattr(t, "_find_piper_bin", lambda: None)
-    monkeypatch.setattr(t, "_packaged_piper_binary_candidates", lambda: [])
-    monkeypatch.delenv("ELI_PIPER_BINARY", raising=False)
-    monkeypatch.delenv("ELI_PIPER_BIN", raising=False)
-    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
-    played = []
-    monkeypatch.setattr(t, "_play_wav_blocking", lambda wav: played.append(wav.read_bytes()) or True)
-
-    assert t._speak_piper_cli("Hello there. A second sentence.") is True
-    assert ("load", str(model)) in calls
-    said = [c for c in calls if c[0] == "say"]
-    assert said and said[0][2] and "length_scale" in said[0][2], "the program's prosody is not passed on"
-    with wave.open(io.BytesIO(played[0])) as w:
-        assert w.getnframes() > 2 * 22050, "no pause between the sentences"
-
-
 def test_the_speaking_lock_is_held_for_the_whole_reply(tmp_path, monkeypatch):
-    """Only Piper set it, and only per chunk: other voices, and the gaps between chunks, reached the mic."""
+    """Only one engine set it, and only per chunk: other voices, and the gaps between chunks, reached the mic."""
     import eli.perception.tts_router as tr
     lock = tmp_path / "speaking.lock"
     monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(lock))
@@ -311,14 +278,106 @@ def test_the_speaking_lock_is_held_for_the_whole_reply(tmp_path, monkeypatch):
     assert seen == [str(os.getpid())] and not lock.exists()
 
 
-def test_piper_speaks_with_the_palettes_neutral_voice():
-    """The four Piper prosody figures were typed out here and in the tone palette."""
-    from eli.cognition.emotion_palette import NEUTRAL_VOICE
-    from eli.perception import tts_router
-    assert tts_router._PIPER_PROSODY_DEFAULTS == {k: v for k, v in NEUTRAL_VOICE.items() if k != "pitch"}
-    assert set(tts_router._PIPER_PROSODY_DEFAULTS) == {"length_scale", "noise_scale", "noise_w", "sentence_silence"}
-    source = __import__("pathlib").Path(tts_router.__file__).read_text(encoding="utf-8")
-    assert '"noise_scale": 0.72' not in source
+# ── The Kokoro engine ────────────────────────────────────────────────────────
+
+def test_misaki_is_built_with_every_attribute_its_own_constructor_sets():
+    """ELI builds misaki's G2P without its constructor, which installs a missing spaCy model with pip
+    at run time; what it sets must stay what misaki's constructor sets."""
+    import inspect
+    import re
+    en = pytest.importorskip("misaki.en")
+    theirs = set(re.findall(r"self\.(\w+)\s*=", inspect.getsource(en.G2P.__init__)))
+    g = tts_kokoro._misaki_g2p(object(), False, lambda lexicon: "fallback")
+    assert theirs and theirs <= set(vars(g)), f"misaki sets {sorted(theirs - set(vars(g)))} too"
+    assert g.fallback == "fallback" and g.unk == "" and g.british is False
+
+
+class _Lexicon:
+    golds = {"glimmer": "ɡlˈɪməɹ", "brook": "bɹˈʊk", "A": "ˈA", "B": "bˈi"}
+    silvers = {"is": "ɪz"}
+
+    def get_NNP(self, word):
+        ps = [self.golds.get(c.upper()) for c in word]
+        return ("".join(ps), 3) if None not in ps else (None, None)
+
+
+class _Token:
+    def __init__(self, text):
+        self.text = text
+
+
+def test_a_word_misaki_does_not_know_is_guessed_never_dropped(monkeypatch):
+    pytest.importorskip("misaki.en")
+    guessed = []
+
+    def _crf(word):
+        guessed.append(word)
+        return ["z", "ˈɑ", "ɹ", "v", "ə", "n", "t", "ə"]
+    fb = tts_kokoro._OovFallback(_Lexicon(), _crf, british=False)
+    assert fb(_Token("AB")) == ("ˈAbˈi", 1), "an all-capitals word is read letter by letter"
+    assert fb(_Token("glimmerbrook"))[0] == "ɡlˈɪməɹbɹˈʊk", "two dictionary words are read as those words"
+    assert fb(_Token("Zorvanta"))[0] == "zˈɑɹvəntə" and guessed == ["zorvanta"]
+    assert fb(_Token("Здравствуйте")) == (None, None), "a word in another script is not guessed as English"
+    nothing = tts_kokoro._OovFallback(_Lexicon(), None, british=False)
+    assert nothing(_Token("ab"))[0] == "ˈAbˈi", "without the guessing model it is spelt, not dropped"
+
+
+def test_the_guessing_models_ipa_becomes_kokoros_letters():
+    us = tts_kokoro.ipa_to_kokoro(["ˈaɪ", "d͡ʒ", "ˈoʊ", "t͡ʃ", "eɪ", "ˈɚ", "ɚ", "ˈæ"], british=False)
+    assert us == "ˈIʤˈOʧAˈɜɹəɹˈæ"
+    gb = tts_kokoro.ipa_to_kokoro(["k", "ˈɑ", "ɹ", "ˈoʊ", "ˈæ", "ɚ"], british=True)
+    assert gb == "kˈɑːˈQˈaə", "British: no r after a vowel, the GOAT and TRAP vowels misaki uses"
+    from misaki import en
+    assert set(us) <= set(en.US_VOCAB) | set("ˈˌ") and set(gb) <= set(en.GB_VOCAB)
+
+
+def test_phonemes_longer_than_the_model_takes_are_cut_after_a_mark_or_at_a_space():
+    pieces = tts_kokoro._split_phonemes("ab cd, ef gh. ij kl mn", 9)
+    assert pieces == ["ab cd,", "ef gh.", "ij kl mn"] and all(len(p) <= 9 for p in pieces)
+    assert tts_kokoro._split_phonemes("abcdefghijkl", 5) == ["abcde", "fghij", "kl"]
+
+
+def test_the_model_is_fed_as_kokoro_takes_it(monkeypatch, tmp_path):
+    """ids padded with 0 at both ends, the style row for that many phonemes (the reference
+    package's pack[len(ps) - 1]), the speed as one float."""
+    import json
+    import sys
+    import types
+    import numpy as np
+    from eli.runtime import voice_assets
+    feeds = []
+
+    class _Session:
+        def __init__(self, path, sess_options=None, providers=None):
+            assert providers == ["CPUExecutionProvider"]
+
+        def run(self, _outputs, feed):
+            feeds.append(feed)
+            return [np.zeros((1, 2400), dtype=np.float32)]
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace(
+        InferenceSession=_Session, SessionOptions=lambda: types.SimpleNamespace()))
+    (tmp_path / "tokenizer.json").write_text(json.dumps({"model": {"vocab": {"a": 43, "b": 44, " ": 16}}}))
+    pack = np.arange(16 * 256, dtype=np.float32).reshape(16, 1, 256)
+    pack.tofile(tmp_path / "v.bin")
+    monkeypatch.setattr(voice_assets, "kokoro_voice_file", lambda vid: tmp_path / "v.bin")
+    eng = tts_kokoro._Engine({"model": tmp_path / "m.onnx", "tokenizer": tmp_path / "tokenizer.json"})
+    monkeypatch.setattr(eng, "phonemes", lambda text, british: "ab ba❓")
+    monkeypatch.setattr(tts_kokoro, "_ENGINE", eng)
+    out = tts_kokoro.synthesize("ignored", "af_heart", speed=1.25)
+    assert out is not None and len(out) == 2400
+    (feed,) = feeds
+    assert feed["input_ids"].tolist() == [[0, 43, 44, 16, 44, 43, 0]], "the unknown mark is dropped"
+    assert np.array_equal(feed["style"], pack[4]) and feed["speed"].tolist() == [1.25]
+
+
+def test_without_its_files_and_offline_the_engine_says_why_and_makes_no_folder(monkeypatch, tmp_path):
+    from eli.runtime import voice_assets
+    monkeypatch.setattr(tts_kokoro, "_ENGINE", None)
+    monkeypatch.setattr(voice_assets, "kokoro_dir", lambda: tmp_path / "models" / "tts" / "kokoro")
+    monkeypatch.setattr(voice_assets, "_kokoro_roots", lambda: [tmp_path / "models" / "tts" / "kokoro"])
+    assert tts_kokoro.synthesize_wav("Hello.", "af_heart") is None
+    assert tts_kokoro.load_error(), "nothing said why the voice did not load"
+    assert not (tmp_path / "models").exists(), "a refused download made a folder"
 
 
 # ── Playback goes through the desktop's sound server ─────────────────────────
@@ -445,7 +504,7 @@ def test_a_refused_server_device_falls_to_the_system_player_and_says_so(tmp_path
 
 
 def test_speech_that_could_not_be_played_is_reported_as_not_played(tmp_path, monkeypatch, caplog):
-    """The log said "[TTS_FINAL_PIPER_ONLY] voice=… bytes=…" for every reply, heard or not."""
+    """The log said "voice=… bytes=…" for every reply, heard or not."""
     import logging
     from eli.perception import tts_router
     from eli.utils import platform_compat
@@ -457,12 +516,13 @@ def test_speech_that_could_not_be_played_is_reported_as_not_played(tmp_path, mon
     result = tts_router._play_wav_blocking(wav, post_play_tail=0)
     assert not result and "no system player" in result.detail
     with caplog.at_level(logging.WARNING, logger=tts_router.log.name):
-        tts_router._log_played("[TTS_FINAL_PIPER_ONLY] voice=v", 1234, result)
+        tts_router._log_played("[TTS] voice=v", 1234, result)
     assert "NOT played" in caplog.text and "no system player" in caplog.text
 
     monkeypatch.setattr(tts_router, "_eli_tts_is_unspeakable", lambda text: False)
-    monkeypatch.setattr(tts_router, "_speak_piper_cli", lambda chunk, voice=None: result)
-    said = tts_router.speak_text("A reply that was never heard.")
+    monkeypatch.setattr(tts_router, "_speak_kokoro", lambda text, voice: result)
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+    said = tts_router.speak_text("A reply that was never heard.", voice="af_heart")
     assert said["ok"] is False and "no system player" in said["error"]
 
 

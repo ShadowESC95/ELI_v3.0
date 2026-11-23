@@ -140,8 +140,8 @@ DEFAULTS: Dict[str, Any] = {
     "cache_type_k": "",
     "cache_type_v": "",
     "auto_speak": False,
-    "tts_voice": "en_US-amy-medium",
-    "tts_engine": "piper",
+    "tts_voice": "",        # none chosen: the engine's own default (tts_router.get_active_voice)
+    "tts_engine": "auto",   # Qwen3-TTS where the GPU has room for it, Kokoro elsewhere (tts_router)
     # Smart-home hub identity on Bluetooth pairing screens (TVs, speakers). Empty
     # bluetooth_display_name → "Eli · {hub_zone}". Override for a fixed label.
     "hub_zone": "Home",

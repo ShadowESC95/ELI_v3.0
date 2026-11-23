@@ -757,7 +757,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.voice_combo.setMinimumWidth(120)
         self.voice_combo.setMaximumWidth(150)
         self.voice_combo.setToolTip(
-            "Piper accent voices + Style presets (ffmpeg effects on bundled Piper). "
+            "Kokoro voices (US and UK English) + Style presets (ffmpeg effects on them). "
             "Not copyrighted character impersonations — use voice cloning for custom timbres."
         )
         self.voice_combo.setStyleSheet(_COMBO_BASE)

@@ -101,9 +101,10 @@ def _gpl_sources():
 
 
 def test_each_release_attaches_the_source_of_the_gpl_packages_it_carries():
-    """piper-tts and espeak-ng (GPL-3.0) are bundled, and no release said where their exact source was
+    """piper-tts and espeak-ng (GPL-3.0) were bundled, and no release said where their exact source was
     (THIRD_PARTY_NOTICES.md called piper-tts MIT): GPL-3.0 lets a binary be passed on only with its
-    source, or directions to it, beside it."""
+    source, or directions to it, beside it. The mechanism stays for any GPL package a build carries;
+    the voice is now Kokoro (Apache-2.0) and neither piper-tts nor espeak-ng is in v3."""
     import importlib.util
     gs = _gpl_sources()
     assert gs.is_gpl(["GPL-3.0-or-later"]) and gs.is_gpl(["GPLv2"])
@@ -125,18 +126,37 @@ def test_each_release_attaches_the_source_of_the_gpl_packages_it_carries():
         ("url", "https://example.org/data-1.0.tar.gz", "")]
     assert gs.github_archive("https://github.com/example-org/example-speech.git", "v1.0") == \
         "https://github.com/example-org/example-speech/archive/v1.0.tar.gz"
-    if importlib.util.find_spec("piper") is not None:
-        assert "piper-tts" in {d["name"] for d in gs.gpl_distributions()}
+    assert importlib.util.find_spec("piper") is None or "piper-tts" in {d["name"] for d in gs.gpl_distributions()}
 
     release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     linux = release.split("\n  build-linux:", 1)[1].split("\n  build-source-artifacts:", 1)[0]
     assert "python packaging/gpl_sources.py dist/gpl-sources" in linux and "-gpl-sources.tar.gz" in linux
-    assert "espeak-ng's source (compiled into piper-tts) is not in the GPL source archive" in linux
+    assert "piper" not in linux.lower() and "espeak" not in linux.lower(), "the Linux build still carries Piper or espeak"
     notes = release.split("Write release notes stub", 1)[1].split("Verify:", 1)[0]
     assert "gpl-sources.tar.gz" in notes, "the release notes do not say where the GPL source is"
     assert "body_path: dist/RELEASE_NOTES.md" in release.split("\n  release:", 1)[1]
     notices = (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     assert "gpl-sources.tar.gz" in notices and "packaging/gpl_sources.py" in notices
+
+
+def test_with_no_gpl_package_the_archive_says_so_and_the_release_goes_on(tmp_path, monkeypatch):
+    gs = _gpl_sources()
+    monkeypatch.setattr(gs, "gpl_distributions", lambda: [])
+    monkeypatch.setattr(gs, "lgpl_distributions", lambda: [])
+    out = tmp_path / "gpl-sources"
+    assert gs.fetch_all(out) == 0
+    assert "No package under the GPL" in (out / "SOURCES.md").read_text(encoding="utf-8")
+
+
+def test_no_install_route_brings_piper_or_espeak():
+    """The voice is Kokoro: misaki is declared without its [en] extra (espeakng-loader and
+    phonemizer-fork are GPL), and nothing installs piper-tts."""
+    for name in ("pyproject.toml", "requirements.txt", "requirements-full.txt", "requirements-windows.txt",
+                 "requirements-macos.txt", "requirements.lock.txt"):
+        text = (REPO / name).read_text(encoding="utf-8").lower()
+        reqs = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+        for bad in ("piper-tts", "espeakng-loader", "phonemizer", "misaki[en]", "kokoro-onnx", "g2p-en", "g2p_en"):
+            assert not any(r.startswith((bad, f'"{bad}')) or f'"{bad}' in r for r in reqs), f"{bad} in {name}"
 
 
 def test_the_gpl_source_archive_holds_each_sdist_and_what_its_build_fetches(tmp_path, monkeypatch, capsys):

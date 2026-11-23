@@ -12,9 +12,9 @@
 # run: the heavy pieces are gitignored and therefore absent.
 #
 #     .venv       ~7.6 G      models      ~465 M
-#     tts_piper   ~1.1 G      artifacts   ~299 M   (the SQLite stores)
+#     tts_kokoro  ~0.35 G     artifacts   ~299 M   (the SQLite stores)
 #
-# So this symlinks the read-mostly ones (.venv, models, tts_piper) back to the
+# So this symlinks the read-mostly ones (.venv, models, tts_kokoro) back to the
 # primary checkout — they are gitignored, so the links can never be committed —
 # and gives the worktree its OWN artifacts/, because two ELIs writing one set of
 # SQLite stores is a different race that symlinking would create.
@@ -30,7 +30,7 @@ PARENT="$(dirname "$ROOT")"
 BASENAME="$(basename "$ROOT")"
 
 # Gitignored, read-mostly, shared by symlink.
-SHARED=(.venv models tts_piper)
+SHARED=(.venv models tts_kokoro)
 # Gitignored, written at runtime — each worktree gets its own.
 PRIVATE=(artifacts)
 
@@ -54,7 +54,7 @@ case "${1:-}" in
             die "$target has uncommitted changes; commit them, or re-run with --force"
         fi
         # Drop the symlinks before deletion so nothing can walk into the shared
-        # .venv / models / tts_piper and delete the originals.
+        # .venv / models / tts_kokoro and delete the originals.
         for d in ${SHARED[@]+"${SHARED[@]}"}; do [ -L "$target/$d" ] && rm -f "$target/$d"; done
         git -C "$ROOT" worktree remove ${force:+$force} "$target" \
             || die "git refused to remove $target"

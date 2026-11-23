@@ -2,10 +2,13 @@
 """
 tts_router.py — TTS router for ELI.
 
-The active voice decides the path, and there is no fallback from one kind to another:
+The active voice decides the path, and there is no silent fallback from one kind to another:
 - character, cloned and natural voices (char:/clone:/natural:) are rendered by synthesize_wav;
+  natural and cloned voices by Qwen3-TTS on a GPU with room for it (tts_qwen3), and when it cannot
+  speak them, the Kokoro default voice speaks and neural_fallback_state() says so;
 - a system voice (sys:) is spoken by pyttsx3, only when that voice is the one chosen;
-- every other voice is a Piper ONNX voice.
+- every other voice is a Kokoro-82M voice (tts_kokoro), rendered on the CPU, one sentence ahead of
+  the one playing.
 """
 from __future__ import annotations
 
@@ -13,87 +16,37 @@ import io
 import os
 import re
 import shutil
-import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from eli.utils.platform_compat import play_wav_with_player as _platform_play_wav
 
 from eli.cognition.emotion_palette import NEUTRAL_VOICE as _NEUTRAL_VOICE
+from eli.perception import tts_kokoro as _kokoro
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-# Packaged builds place Piper assets under <project_root>/tts_piper/piper. Keep it as a search
-# location; don't duplicate or move assets. (PHASE13B_V2_PACKAGED_TTS_PIPER_SEARCH)
-_PROJECT_ROOT_TTS = Path(
-    os.environ.get("ELI_PROJECT_ROOT")
-    or Path(__file__).resolve().parents[2]
-).expanduser()
-
-_PACKAGED_TTS_PIPER_ROOT = _PROJECT_ROOT_TTS / "tts_piper" / "piper"
-_PACKAGED_TTS_PIPER_PARENT = _PROJECT_ROOT_TTS / "tts_piper"
-
-
-def _packaged_piper_voice_dirs() -> list[Path]:
-    candidates = [
-        _PACKAGED_TTS_PIPER_ROOT,
-        _PACKAGED_TTS_PIPER_ROOT / "voices",
-        _PACKAGED_TTS_PIPER_PARENT,
-        _PACKAGED_TTS_PIPER_PARENT / "voices",
-    ]
-    # A packaged app's own voices, read where the bundle keeps them: its code runs from the user
-    # folder, so the paths above never reached them, and the first start copied 600+ MB of
-    # voices there before any window appeared.
-    bundle = getattr(sys, "_MEIPASS", None)
-    if bundle:
-        candidates.append(Path(bundle) / "tts_piper" / "piper")
-    return candidates
-
-
-def _packaged_piper_binary_candidates() -> list[Path]:
-    return [
-        _PACKAGED_TTS_PIPER_ROOT / "piper",
-        _PACKAGED_TTS_PIPER_ROOT / "piper.exe",
-        _PACKAGED_TTS_PIPER_PARENT / "piper",
-        _PACKAGED_TTS_PIPER_PARENT / "piper.exe",
-        _PACKAGED_TTS_PIPER_PARENT / "bin" / "piper",
-        _PACKAGED_TTS_PIPER_PARENT / "bin" / "piper.exe",
-    ]
-
-
-# ── Voice discovery ────────────────────────────────────────────────────────
-
-_VOICE_SEARCH_DIRS = [
-    Path(__file__).resolve().parents[2] / "models" / "tts" / "piper",
-    Path(__file__).resolve().parents[1] / "voices",
-    Path(__file__).resolve().parents[2] / "voices",
-    Path(os.environ.get("ELI_PROJECT_ROOT", ".")) / "models" / "tts" / "piper",
-    Path(os.environ.get("ELI_PROJECT_ROOT", ".")) / "voices",
-    Path.home() / ".local" / "share" / "piper",
-    *_packaged_piper_voice_dirs(),
-]
-
-# Default Piper voice (can be overridden via setting or env).
-# Must match voice_assets._PIPER_VOICE and public bundle policy (no NC-SA ryan).
-_DEFAULT_VOICE = "en_US-amy-medium"
+# ELI's default voice (Kokoro's one A-graded voice); a saved voice of the earlier engine is mapped
+# onto its nearest Kokoro voice (tts_kokoro.voice_for_legacy).
+_DEFAULT_VOICE = _kokoro.DEFAULT_VOICE
 _SYSTEM_VOICE_PREFIX = "sys:"
 
-# Expressive Piper prosody. Bare defaults sound flat and clip full stops (CLI sentence silence
-# is ~0.2s, model noise/length defaults are conservative). These give a clear pause after each
-# sentence and a bit more pitch variation. All overridable via env: length_scale (pacing, >1
-# slower), noise_scale (expressiveness), noise_w (timing variation), sentence_silence (seconds
-# after '.', '?', '!').
-_PIPER_PROSODY_DEFAULTS = {k: v for k, v in _NEUTRAL_VOICE.items() if k != "pitch"}   # Piper takes no pitch
+# Delivery: the tone palette's values (eli/cognition/emotion_palette). Kokoro takes a speed, the
+# palette's pace (length_scale, >1 slower) inverted; the pause after each sentence is added between
+# the sentences; pitch is shifted afterwards (_apply_tone_pitch). noise_scale and noise_w (the
+# earlier engine's variation controls) have no Kokoro counterpart; the palette still reads them for
+# a cloned voice's exaggeration (tone_adaptor.voice_exaggeration).
+_PROSODY_DEFAULTS = {k: v for k, v in _NEUTRAL_VOICE.items() if k != "pitch"}
 
 
-def _piper_prosody_args() -> "list[str]":
-    """Build Piper CLI prosody flags from env overrides + expressive defaults.
-    Returns [] if disabled (ELI_TTS_PROSODY=0) so a user can fall back to Piper's
-    own per-voice defaults. Reads settings once; never raises."""
+def _prosody() -> Dict[str, float]:
+    """The delivery for the next reply: the neutral defaults, the saved tts_<key> settings, the current
+    tone (tone_adaptor), then ELI_TTS_<KEY> from the environment. {} when ELI_TTS_PROSODY=0 (the
+    engine's own pace). Never raises."""
     if os.environ.get("ELI_TTS_PROSODY", "1").strip().lower() in {"0", "false", "no", "off"}:
-        return []
-    vals = dict(_PIPER_PROSODY_DEFAULTS)
+        return {}
+    vals: Dict[str, Any] = dict(_PROSODY_DEFAULTS)
     try:
         from eli.core.runtime_settings import load_settings
         s = load_settings() or {}
@@ -103,9 +56,8 @@ def _piper_prosody_args() -> "list[str]":
                 vals[k] = v
     except Exception:
         log.debug("[TTS] prosody settings read failed", exc_info=True)
-    # Emotional delivery: the current tone (from tone_adaptor) overrides the base
-    # pace / expressiveness / sentence-pause so ELI's VOICE carries the emotion —
-    # slow+flat+long pauses for sad, fast+bright+short for ecstatic, etc.
+    # Emotional delivery: the current tone overrides the base pace and sentence pause so ELI's VOICE
+    # carries the emotion: slow with long pauses for sad, fast with short ones for ecstatic.
     try:
         from eli.cognition import tone_adaptor
         for k, v in (tone_adaptor.voice_prosody() or {}).items():
@@ -117,48 +69,19 @@ def _piper_prosody_args() -> "list[str]":
         ev = os.environ.get(f"ELI_TTS_{k.upper()}", "").strip()
         if ev:
             vals[k] = ev
-    args: "list[str]" = []
-    for flag, key in (("--length_scale", "length_scale"), ("--noise_scale", "noise_scale"),
-                      ("--noise_w", "noise_w"), ("--sentence_silence", "sentence_silence")):
+    out: Dict[str, float] = {}
+    for k, v in vals.items():
         try:
-            args += [flag, str(float(vals[key]))]
+            out[k] = float(v)
         except (TypeError, ValueError):
-            log.debug("[TTS] bad prosody value for %s: %r", key, vals[key])
-    return args
+            log.debug("[TTS] bad prosody value for %s: %r", k, v)
+    return out
 
 
-def _voice_dir() -> Path:
-    """Return the project's canonical TTS voice directory."""
-    try:
-        from eli.core.paths import models_dir
-
-        return models_dir() / "tts" / "piper"
-    except Exception:
-        return Path(__file__).resolve().parents[2] / "models" / "tts" / "piper"
-
-
-def _voice_search_dirs() -> list[Path]:
-    dirs = [_voice_dir(), *_VOICE_SEARCH_DIRS]
-    seen: set[str] = set()
-    unique: list[Path] = []
-    for d in dirs:
-        key = str(d.expanduser())
-        if key not in seen:
-            seen.add(key)
-            unique.append(d.expanduser())
-    return unique
-
-
-def _has_piper_config(model: Path) -> bool:
-    return any(
-        p.exists()
-        for p in (
-            Path(str(model) + ".json"),
-            model.with_suffix(".onnx.json"),
-            model.with_suffix(".json"),
-            model.parent / "config.json",
-        )
-    )
+def _speed(prosody: Dict[str, float]) -> float:
+    """Kokoro's speed from the palette's pace (length_scale 1.1 = ten per cent slower)."""
+    ls = prosody.get("length_scale") or 1.0
+    return 1.0 / ls if ls > 0 else 1.0
 
 
 class Playback:
@@ -457,50 +380,56 @@ def _list_system_voices(refresh: bool = False) -> list[str]:
     return out
 
 
-# Piper quality tiers that sound synthetic/robotic. Hidden by default so the voice
-# list is only natural-sounding voices; still loadable if explicitly named, and
-# surfaced as a genuine last resort when nothing better exists on the box.
-_LOW_QUALITY_SUFFIXES = ("-x_low", "-low")
-
-
-def _is_low_quality_piper(name: str) -> bool:
-    return str(name or "").endswith(_LOW_QUALITY_SUFFIXES)
-
-
 def _allow_robotic_voices() -> bool:
-    """Opt back in to espeak `sys:` + low-quality Piper voices (default: hidden)."""
+    """Opt back in to the operating system's own `sys:` voices (default: hidden)."""
     return os.environ.get("ELI_TTS_ALLOW_ROBOTIC", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def list_voices() -> list[str]:
-    """Runnable voices, natural-sounding only by default.
+def _kokoro_voices() -> List[str]:
+    """Kokoro's voices that are on this machine; every one of them before the first fetch (choosing
+    one fetches it with the engine, on first use)."""
+    present = [v for v in _kokoro.VOICES if _voice_file(v) is not None]
+    return present or list(_kokoro.VOICES)
 
-    Order: good Piper voices (medium/high), then character (`char:`) and cloned/
-    natural neural (`clone:`) voices. Robotic voices — espeak `sys:` and Piper
-    `low`/`x_low` — are HIDDEN unless ``ELI_TTS_ALLOW_ROBOTIC=1``, or unless the box
-    has no natural voice at all (then they return as a functional last resort so
-    ELI is never mute). This is the "get rid of the robotic voices" policy.
-    """
+
+def _voice_file(vid: str):
+    try:
+        from eli.runtime.voice_assets import kokoro_voice_file
+        return kokoro_voice_file(vid)
+    except Exception:
+        log.debug("[TTS] voice file lookup failed", exc_info=True)
+        return None
+
+
+def _natural_voices() -> List[str]:
+    """The built-in neural voices (natural:<id>): Qwen3-TTS's speakers on a machine whose GPU runs it,
+    else XTTS-v2's when that extra is installed, else none."""
+    try:
+        from eli.perception import tts_qwen3
+        found = tts_qwen3.list_natural_voices()
+        if found:
+            return found
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS voices unavailable", exc_info=True)
+    try:
+        from eli.perception import tts_xtts
+        return list(tts_xtts.list_natural_voices())
+    except Exception:
+        log.debug("[TTS] XTTS voices unavailable", exc_info=True)
+        return []
+
+
+def list_voices() -> list[str]:
+    """Runnable voices: Kokoro's (by grade, American then British), then the style presets (`char:`),
+    cloned voices (`clone:`) and natural neural voices (`natural:`). The operating system's own
+    voices (`sys:`) are hidden unless ``ELI_TTS_ALLOW_ROBOTIC=1``, or unless nothing else can speak
+    (then they return as a last resort so ELI is never mute)."""
     voices: list[str] = []
-    low: list[str] = []
     seen: set[str] = set()
-    allow_robotic = _allow_robotic_voices()
-    for d in _voice_search_dirs():
-        try:
-            for f in sorted(d.glob("*.onnx")):
-                if not _has_piper_config(f):
-                    continue
-                name = f.stem  # e.g. en_US-lessac-high
-                if name in seen:
-                    continue
-                seen.add(name)
-                if _is_low_quality_piper(name) and not allow_robotic:
-                    low.append(name)      # deferred; only used as last resort
-                else:
-                    voices.append(name)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    # Character voices (char:calm, char:robotic, …) — base voice + ffmpeg effect chain.
+    if _kokoro.available():
+        for vid in _kokoro_voices():
+            seen.add(vid)
+            voices.append(vid)
     try:
         from eli.perception import voice_fx
         for c in voice_fx.list_characters():
@@ -509,7 +438,6 @@ def list_voices() -> list[str]:
                 voices.append(c["id"])
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    # Cloned / natural neural voices (clone:<name>) — XTTS-v2.
     try:
         from eli.perception import tts_xtts
         for c in tts_xtts.list_clones():
@@ -518,24 +446,12 @@ def list_voices() -> list[str]:
                 voices.append(c["id"])
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    # Natural neural built-in voices (natural:<speaker>) — XTTS-v2, no clone needed.
-    try:
-        from eli.perception import tts_xtts
-        for nid in tts_xtts.list_natural_voices():
-            if nid not in seen:
-                seen.add(nid)
-                voices.append(nid)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    sys_voices = [sv for sv in _list_system_voices() if sv not in seen]
-    if allow_robotic:
-        voices.extend(sys_voices)
-        voices.extend(low)
-    elif not voices:
-        # Nothing natural on this box — return the robotic ones so ELI can still
-        # speak, rather than an empty list (mute).
-        voices.extend(low)
-        voices.extend(sys_voices)
+    for nid in _natural_voices():
+        if nid not in seen:
+            seen.add(nid)
+            voices.append(nid)
+    if _allow_robotic_voices() or not voices:
+        voices.extend(sv for sv in _list_system_voices() if sv not in seen)
     return voices
 
 
@@ -558,6 +474,8 @@ def voice_display_name(voice_id: str) -> str:
         return f"Neural: {vid[8:]}"
     if vid.startswith("sys:"):
         return f"System: {vid[4:]}"
+    if _kokoro.voice_id(vid):
+        return f"{_kokoro.describe(vid)} [{_kokoro.voice_id(vid)}]"
     return vid
 
 
@@ -566,12 +484,8 @@ def resolve_voice_id(selection: str) -> str:
     sel = str(selection or "").strip()
     if not sel:
         return sel
-    if sel.startswith(("char:", "clone:", "natural:", "sys:")) or "/" not in sel:
-        # Raw id or piper voice name (no path)
-        if sel.startswith("Style:") or sel.startswith("Clone:") or sel.startswith("Neural:"):
-            pass  # display label — fall through to scan
-        else:
-            return sel
+    if sel.startswith(("char:", "clone:", "natural:", "sys:")) or _kokoro.voice_id(sel):
+        return _kokoro.voice_id(sel) or sel
     for vid in list_voices():
         if sel == vid or sel == voice_display_name(vid):
             return vid
@@ -586,168 +500,74 @@ def _system_voice_id(name: str) -> str:
     return str(name or "")[len(_SYSTEM_VOICE_PREFIX):]
 
 
-def find_voice_model(voice_name: str) -> Optional[Path]:
-    """Locate the .onnx file for a named voice."""
-    # Exact override via env
-    env_model = os.environ.get("ELI_PIPER_MODEL", "").strip()
-    if env_model:
-        p = Path(env_model).expanduser()
-        if p.exists():
-            return p
+def kokoro_voice(voice_name: str) -> str:
+    """The Kokoro voice that speaks for `voice_name`: itself when it is one, the nearest one for a
+    voice saved for ELI's earlier engine, else the default."""
+    return _kokoro.voice_id(voice_name) or _kokoro.voice_for_legacy(voice_name) or _DEFAULT_VOICE
 
-    # Direct path check
-    vn = voice_name or _DEFAULT_VOICE
-    for d in _voice_search_dirs():
-        candidate = d / f"{vn}.onnx"
-        try:
-            if candidate.exists() and _has_piper_config(candidate):
-                return candidate.resolve()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
 
-    # Fallback: any runnable .onnx in search dirs
-    for d in _voice_search_dirs():
-        try:
-            hits = [p for p in sorted(d.glob("*.onnx")) if _has_piper_config(p)]
-            if hits:
-                return hits[0].resolve()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    return None
+def _engine_setting() -> str:
+    """The saved voice engine: 'auto' (Qwen3-TTS where the GPU has room, Kokoro elsewhere), 'kokoro'
+    or 'natural'. The earlier engine's 'piper' reads as 'kokoro'."""
+    try:
+        from eli.core.runtime_settings import load_settings
+        val = str((load_settings() or {}).get("tts_engine") or "auto").strip().lower()
+    except Exception:
+        val = "auto"
+    return {"piper": "kokoro"}.get(val, val)
+
+
+def _natural_default() -> str:
+    try:
+        from eli.perception import tts_qwen3
+        if tts_qwen3.usable("custom"):
+            return "natural:serena"
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS check failed", exc_info=True)
+    return ""
 
 
 def get_active_voice() -> str:
-    """Return the currently configured voice name."""
-    env = os.environ.get("ELI_PIPER_VOICE", "").strip()
-    if env:
-        return env
-    try:
-        from eli.core.runtime_settings import load_settings
-        s = load_settings()
-        v = s.get("tts_voice", "").strip()
-        if v:
-            return v
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    installed = list_voices()
-    if _DEFAULT_VOICE in installed:
-        return _DEFAULT_VOICE
-    piper_only = [v for v in installed if not _is_system_voice(v)]
-    if piper_only:
-        return piper_only[0]
-    if installed:
-        return installed[0]
+    """The voice that speaks: ELI_TTS_VOICE, else the saved tts_voice (a voice saved for the earlier
+    engine maps onto its nearest Kokoro voice), else the engine's default: Qwen3-TTS's natural voice
+    when the engine is 'auto' or 'natural' and this machine's GPU runs it, Kokoro's otherwise."""
+    env = (os.environ.get("ELI_TTS_VOICE", "") or os.environ.get("ELI_PIPER_VOICE", "")).strip()
+    chosen = env
+    if not chosen:
+        try:
+            from eli.core.runtime_settings import load_settings
+            chosen = str((load_settings() or {}).get("tts_voice", "") or "").strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+    if chosen:
+        if chosen.startswith(("char:", "clone:", "natural:", "sys:")):
+            return chosen
+        return kokoro_voice(chosen)
+    if _engine_setting() in {"auto", "natural"}:
+        natural = _natural_default()
+        if natural:
+            return natural
     return _DEFAULT_VOICE
 
 
 def set_active_voice(voice_name: str) -> None:
     """Persist the selected voice to settings."""
-    os.environ["ELI_PIPER_VOICE"] = voice_name
+    os.environ["ELI_TTS_VOICE"] = voice_name
     try:
         from eli.core.runtime_settings import save_settings
         save_settings({"tts_voice": voice_name})
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    # (Piper Python API voice cache was removed; nothing to clear here)
-
-
-def _find_piper_bin() -> Optional[str]:
-    """Locate the piper CLI binary. Used by available_backends() reporting."""
-    env_bin = os.environ.get("ELI_PIPER_BINARY", "").strip().strip('"') or os.environ.get("ELI_PIPER_BIN", "").strip()
-    if env_bin:
-        p = Path(env_bin).expanduser()
-        if p.exists():
-            return str(p)
-        if shutil.which(env_bin):
-            return env_bin
-    for packaged in _packaged_piper_binary_candidates():
-        try:
-            if packaged.exists() and packaged.is_file():
-                return str(packaged.resolve())
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    # ELI's own copy first (installed beside the Python that is running), then whatever is on
-    # PATH. PATH used to come first, and a name is all it matched: a `piper` left behind by a
-    # removed Python, or the unrelated mouse-configuration tool some Linux distributions also
-    # call piper, was run as the speech engine.
-    seen = set()
-    for candidate in [*_own_piper_candidates(), *_pipers_on_path(),
-                      Path.home() / ".local" / "bin" / "piper"]:
-        if not candidate:
-            continue
-        path = str(candidate)
-        if path in seen:
-            continue
-        seen.add(path)
-        try:
-            if Path(path).is_file() and _piper_runs(path):
-                return path
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    return None
-
-
-_PIPER_RUNS: Dict[str, bool] = {}
-
-
-def _pipers_on_path() -> list:
-    """Every `piper` on PATH, in order. shutil.which stops at the first, and the first may be
-    the wrong program while the right one sits further along."""
-    names = ("piper.exe", "piper") if os.name == "nt" else ("piper",)
-    out = []
-    for place in (os.environ.get("PATH") or "").split(os.pathsep):
-        for name in names:
-            path = Path(place) / name if place else None
-            if path is not None and path.is_file() and os.access(str(path), os.X_OK):
-                out.append(path)
-    return out
-
-
-def _own_piper_candidates() -> list:
-    """Where the Piper that was installed with ELI lives: beside the running interpreter (an
-    environment's bin/ or Scripts\\), then this checkout's own environment."""
-    import sys
-    import sysconfig
-    names = ("piper.exe", "piper") if os.name == "nt" else ("piper",)
-    places = [Path(sys.executable).parent]
-    try:
-        scripts = sysconfig.get_path("scripts")
-        if scripts:
-            places.append(Path(scripts))
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    root = Path(os.environ.get("ELI_PROJECT_ROOT") or Path(__file__).resolve().parents[2])
-    places += [root / ".venv" / "bin", root / ".venv" / "Scripts"]
-    out, seen = [], set()
-    for place in places:
-        for name in names:
-            path = place / name
-            if str(path) not in seen:
-                seen.add(str(path))
-                out.append(path)
-    return out
-
-
-def _piper_runs(path: str) -> bool:
-    """The file is the Piper speech engine and it starts. Asked once per file."""
-    key = str(path)
-    if key not in _PIPER_RUNS and not os.path.isfile(key):
-        _PIPER_RUNS[key] = False             # a place it could be, not a piper that failed
-    if key not in _PIPER_RUNS:
-        import subprocess
-        try:
-            out = subprocess.run([key, "--help"], capture_output=True, text=True, timeout=30)
-            _PIPER_RUNS[key] = out.returncode == 0 and "--model" in ((out.stdout or "") + (out.stderr or ""))
-        except Exception as exc:
-            # expected for a piper whose Python is gone: one line, no traceback
-            log.debug("piper at %s does not start (%s); passed over", key, exc)
-            _PIPER_RUNS[key] = False
-    return _PIPER_RUNS[key]
 
 
 def _neural_engine_available() -> bool:
-    """True when XTTS-v2 can actually synthesise (coqui-tts + torch present)."""
+    """True when a natural voice can synthesise: Qwen3-TTS on this GPU, or XTTS-v2 installed."""
+    try:
+        from eli.perception import tts_qwen3
+        if tts_qwen3.usable("custom"):
+            return True
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS check failed", exc_info=True)
     try:
         from eli.perception import tts_xtts
         return bool(tts_xtts.xtts_available())
@@ -756,47 +576,61 @@ def _neural_engine_available() -> bool:
 
 
 def _clone_backend_available(which: str) -> bool:
-    """Report whether a neural clone backend is importable — for diagnostics/UI. Never raises."""
+    """Report whether a clone backend can run — for diagnostics/UI. Never raises."""
     try:
+        if which == "qwen3":
+            from eli.perception import tts_qwen3
+            return bool(tts_qwen3.usable("base"))
         if which == "chatterbox":
             from eli.perception import tts_chatterbox
             return bool(tts_chatterbox.chatterbox_available())
-        return _neural_engine_available()
+        from eli.perception import tts_xtts
+        return bool(tts_xtts.xtts_available())
     except Exception:
         return False
 
 
 def available_backends() -> dict:
+    """What can speak on this machine, for the diagnostics, the voice panel and the voice status
+    answer: the engine that speaks the active voice, whether Kokoro's files are here (and why it did
+    not load when it did not), the neural engines, and the last playback."""
     installed = list_voices()
     active = get_active_voice()
-    # `natural:` / `clone:` / `char:` voices aren't Piper models. find_voice_model() can't resolve
-    # them and returns its fallback (alphabetically the first installed voice), so the panel showed
-    # "Active model file: cs_CZ-jirka-medium.onnx" while synthesis used en_US-amy-medium. Report the
-    # model that will really be used.
-    _is_neural = str(active).startswith(("natural:", "clone:"))
-    active_model = find_voice_model(_DEFAULT_VOICE if _is_neural else active)
+    files = None
+    try:
+        from eli.runtime.voice_assets import kokoro_files
+        files = kokoro_files()
+    except Exception:
+        log.debug("[TTS] Kokoro files lookup failed", exc_info=True)
+    if active.startswith(("natural:", "clone:")):
+        from eli.perception import tts_qwen3
+        engine = "qwen3" if tts_qwen3.usable("base" if active.startswith("clone:") else "custom") else "neural"
+    elif _is_system_voice(active):
+        engine = "system"
+    else:
+        engine = "kokoro"
     return {
-        "piper_python": True,
-        "piper_bin": _find_piper_bin(),
-        "piper_voices": installed,
+        "engine": engine,
+        "kokoro": _kokoro.available(),
+        "kokoro_ready": files is not None,
+        "kokoro_error": _kokoro.load_error(),
+        "voices": installed,
         "system_voices": [v for v in installed if _is_system_voice(v)],
         "active_voice": active,
+        "speaking_voice": kokoro_voice(active) if engine == "kokoro" else active,
         "default_voice": _DEFAULT_VOICE,
         "neural_available": _neural_engine_available(),
-        "active_model": str(active_model) if active_model else None,
+        # the model file the default engine reads, when it is here
+        "active_model": str(files["model"]) if files else None,
         "pyttsx3": True,
-        "espeak_ng": shutil.which("espeak-ng") is not None,
-        "espeak": shutil.which("espeak") is not None,
-        # Neural clone backends (clone:<name>): Chatterbox (MIT, preferred) → XTTS (legacy).
+        # neural engines: Qwen3-TTS (GPU extra) for natural and cloned voices, then Chatterbox (MIT),
+        # then XTTS-v2 (legacy)
+        "qwen3": _clone_backend_available("qwen3"),
         "chatterbox": _clone_backend_available("chatterbox"),
         "xtts": _clone_backend_available("xtts"),
         "last_playback": last_playback(),
     }
 
-
-# Piper-only TTS path, the final authoritative one: respects the GUI/config voice via
-# get_active_voice(); uses the known-working Piper CLI WAV path; doesn't use the Piper Python API
-# (this install lacks synthesize_stream_raw()); doesn't fall back to pyttsx3/espeak robot voices.
 
 def _tts_chunks(text, max_chars=None):
     import os as _os
@@ -854,33 +688,9 @@ def _tts_chunks(text, max_chars=None):
     return chunks
 
 
-def _find_piper_config(model_path):
-    from pathlib import Path as _Path
-
-    mp = _Path(model_path)
-    candidates = [
-        _Path(str(mp) + ".json"),
-        mp.with_suffix(".onnx.json"),
-        mp.with_suffix(".json"),
-        mp.parent / "config.json",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    return None
-
-# Piper CLI synthesise and play, with the speaking lock for the STT echo guard. The final
-# authoritative TTS path: Piper CLI only, blocking playback via sounddevice (lip-sync) with a
-# platform_compat.play_wav_blocking fallback, explicit rc logging, lock held through the
-# playback tail.
-
-# Set once if the piper binary can't use CUDA (build without GPU / CUDA
-# unavailable). Keeps the session on CPU after a single failed --cuda attempt.
-_PIPER_CUDA_FAILED = False
-
 # Neural-voice fallback state (observable, not silent). A `natural:` / `clone:` voice that
-# couldn't synthesise fell through to Piper with no log line, so Settings said "Active voice:
-# natural:sophia" while every reply was en_US-amy-medium, and a user who dropped in a clip
+# couldn't synthesise fell through to the default voice with no log line, so Settings said "Active
+# voice: natural:sophia" while every reply was the default voice, and a user who dropped in a clip
 # couldn't tell the clone was registered but unused. Record why so the panel and console match
 # the speakers.
 _NEURAL_FALLBACK: Dict[str, Any] = {"active": False, "requested": "", "reason": ""}
@@ -888,14 +698,22 @@ _NEURAL_FALLBACK: Dict[str, Any] = {"active": False, "requested": "", "reason": 
 
 def _neural_unavailable_reason() -> str:
     """Why a neural voice cannot synthesise right now, in one line."""
-    if _clone_backend_available("chatterbox") or _clone_backend_available("xtts"):
+    try:
+        from eli.perception import tts_qwen3
+        if tts_qwen3.installed() and not tts_qwen3.usable("custom") and not tts_qwen3.usable("base"):
+            return "no GPU on this machine has room for Qwen3-TTS beside the language model"
+        if tts_qwen3.last_error():
+            return f"Qwen3-TTS failed: {tts_qwen3.last_error()}"
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS state unknown", exc_info=True)
+    if _clone_backend_available("qwen3") or _clone_backend_available("chatterbox") or _clone_backend_available("xtts"):
         return "the neural engine is present but produced no audio for this voice"
     return ("the neural voice engine is not installed in this build "
-            "(chatterbox-tts for clones, coqui-tts + torch for natural voices)")
+            "(the voice-gpu extra: qwen-tts and PyTorch, on a machine with a GPU)")
 
 
 def _note_neural_fallback(requested) -> None:
-    """Record (and log once per change) that a neural voice fell back to Piper."""
+    """Record (and log once per change) that a neural voice fell back to the Kokoro default voice."""
     global _NEURAL_FALLBACK
     if not requested:
         if _NEURAL_FALLBACK.get("active"):
@@ -905,7 +723,7 @@ def _note_neural_fallback(requested) -> None:
     reason = _neural_unavailable_reason()
     if (not _NEURAL_FALLBACK.get("active")) or _NEURAL_FALLBACK.get("requested") != requested:
         log.warning(
-            "[TTS_NEURAL] '%s' could not synthesise — %s. Falling back to the Piper "
+            "[TTS_NEURAL] '%s' could not synthesise — %s. Falling back to the Kokoro "
             "voice '%s'. The selected voice is NOT what you are hearing.",
             requested, reason, _DEFAULT_VOICE,
         )
@@ -915,97 +733,6 @@ def _note_neural_fallback(requested) -> None:
 def neural_fallback_state() -> Dict[str, Any]:
     """Public read for the diagnostics panel. Empty dict-ish when all is well."""
     return dict(_NEURAL_FALLBACK)
-
-
-def _speak_piper_cli(text, voice_name=None):
-    import os as _os
-    import shutil as _shutil
-    import subprocess as _subprocess
-    import tempfile as _tempfile
-    from pathlib import Path as _Path
-
-    active = voice_name or get_active_voice()
-    model = find_voice_model(active)
-
-    if not model:
-        log.debug(f"[TTS_FINAL_PIPER_ONLY] no voice model for active={active}")
-        return False
-
-    _eli_packaged_cli_bins = [
-        _Path(p) for p in _packaged_piper_binary_candidates()
-    ]
-    _eli_packaged_cli_bin = next(
-        (str(p.resolve()) for p in _eli_packaged_cli_bins if p.exists() and p.is_file()),
-        "",
-    )
-
-    piper_bin = (
-        _os.environ.get("ELI_PIPER_BINARY", "").strip().strip('"')
-        or _os.environ.get("ELI_PIPER_BIN", "").strip()
-        or _eli_packaged_cli_bin
-        or _find_piper_bin()
-    )
-
-    _no_program = not piper_bin or not (_Path(piper_bin).exists() or _shutil.which(piper_bin))
-
-    cfg = _find_piper_config(model)
-
-    with _tempfile.NamedTemporaryFile(prefix="eli_piper_final_", suffix=".wav", delete=False) as tmp:
-        wav = _Path(tmp.name)
-
-    global _PIPER_CUDA_FAILED
-    _want_cuda = (
-        _os.environ.get("ELI_PIPER_CUDA", "1").strip().lower() in {"1", "true", "yes", "on"}
-        and not _PIPER_CUDA_FAILED
-    )
-    _base_cmd = [piper_bin, "--model", str(model), "--output_file", str(wav)]
-    if cfg:
-        _base_cmd.extend(["--config", str(cfg)])
-    _base_cmd.extend(_piper_prosody_args())  # expressive pacing + sentence pauses
-
-    def _run_piper(use_cuda):
-        _cmd = list(_base_cmd) + (["--cuda"] if use_cuda else [])
-        return _subprocess.run(
-            _cmd, input=str(text or ""), text=True,
-            stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, timeout=45,
-        )
-
-    try:
-        if _no_program:
-            # No piper program to run (the packaged app ships none): the library it does ship.
-            _data = _piper_lib_render(text, model, cfg)
-            if not _data:
-                log.debug(f"[TTS_FINAL_PIPER_ONLY] no piper program ({piper_bin}) and the library failed")
-                return False
-            wav.write_bytes(_data)
-        else:
-            proc = _run_piper(_want_cuda)
-            # GPU not supported by this piper build / CUDA unavailable → remember and
-            # use CPU for the rest of the session (piper is fast on CPU anyway).
-            if proc.returncode != 0 and _want_cuda:
-                _PIPER_CUDA_FAILED = True
-                log.debug(
-                    f"[TTS_FINAL_PIPER_ONLY] --cuda failed rc={proc.returncode}; "
-                    f"falling back to CPU: {proc.stderr[-300:]}")
-                proc = _run_piper(False)
-
-            if proc.returncode != 0:
-                log.debug(f"[TTS_FINAL_PIPER_ONLY] piper failed rc={proc.returncode}: {proc.stderr[-800:]}")
-                return False
-
-        if not wav.exists() or wav.stat().st_size < 1000:
-            log.debug(f"[TTS_FINAL_PIPER_ONLY] wav missing/empty: {wav}")
-            return False
-
-        played = _play_wav_blocking(wav)
-        _log_played(f"[TTS_FINAL_PIPER_ONLY] voice={active} model={_Path(model).name}", wav.stat().st_size, played)
-        return played
-
-    finally:
-        try:
-            wav.unlink(missing_ok=True)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
 
 
 def _eli_tts_visible_text(text) -> str:
@@ -1027,9 +754,9 @@ def _eli_tts_visible_text(text) -> str:
 def _eli_tts_is_unspeakable(text) -> bool:
     """True for degenerate output that must never be spoken — empty, too short,
     punctuation-only, or a leading-symbol stub ('-', '-Auto', '-Auto/G 5/').
-    Speaking these is meaningless and crashed piper ('# channels not specified')
-    on a lone '-'. Mirrors the engine fragment guard so '34G', 'No.', 'Volume
-    down' remain speakable."""
+    Speaking these is meaningless (the earlier engine crashed on a lone '-',
+    '# channels not specified'). Mirrors the engine fragment guard so '34G',
+    'No.', 'Volume down' remain speakable."""
     s = str(text or "").strip()
     if len(s) < 2:
         return True
@@ -1081,7 +808,7 @@ def _run_tts(text: str, voice_name: str | None = None) -> bool:
     except Exception:
         _es = None
         log.debug("[TTS] speaking-state set failed", exc_info=True)
-    # Held for the whole reply, every chunk and every voice: only Piper set it, and only per chunk.
+    # Held for the whole reply, every sentence and every voice (it was once set per chunk by one engine alone).
     _lock = _speaking_lock()
     try:
         _lock.write_text(str(__import__("os").getpid()), encoding="utf-8")
@@ -1101,28 +828,116 @@ def _run_tts(text: str, voice_name: str | None = None) -> bool:
                 log.debug("[TTS] speaking-state clear failed", exc_info=True)
 
 
+def _speech_pieces(text: str) -> List[str]:
+    """The reply as the pieces Kokoro renders one at a time: its sentences, each no longer than the
+    chunk budget (_tts_chunks splits one that is). The first starts playing as soon as it is
+    rendered, while the next renders."""
+    pieces: List[str] = []
+    for chunk in _tts_chunks(text):
+        for sentence in re.split(r'(?<=[.!?])\s+', chunk):
+            sentence = sentence.strip()
+            if sentence:
+                pieces.append(sentence)
+    return pieces
+
+
+def _render_piece(piece: str, voice: str, prosody: Dict[str, float]) -> Optional[bytes]:
+    """One sentence in a Kokoro voice, as WAV bytes, with the tone's pitch; None when it could not be
+    rendered (tts_kokoro logs why)."""
+    wav = _kokoro.synthesize_wav(piece, voice, speed=_speed(prosody))
+    return _apply_tone_pitch(wav) if wav else None
+
+
+def _silence_wav(seconds: float, like: bytes) -> Optional[bytes]:
+    """`seconds` of silence in the format of the WAV `like`."""
+    import wave
+    if seconds <= 0 or not like:
+        return None
+    with wave.open(io.BytesIO(like), "rb") as w:
+        params = w.getparams()
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setparams(params)
+        w.writeframes(b"\x00" * int(params.framerate * seconds) * params.sampwidth * params.nchannels)
+    return out.getvalue()
+
+
+def _speak_kokoro(text: str, voice: str) -> Playback:
+    """Render the reply sentence by sentence on a thread of its own and play each one as soon as it
+    is ready, the next rendering while this one plays; the tone's pause is added after each sentence
+    and the player's tail only after the last. A Playback: where it played, or why not."""
+    import queue
+    import threading
+
+    pieces = _speech_pieces(text)
+    if not pieces:
+        return Playback(False, detail="nothing to say")
+    prosody = _prosody()
+    pause = float(prosody.get("sentence_silence") or 0.0)
+    ready: "queue.Queue[Optional[bytes]]" = queue.Queue()
+    stop = threading.Event()
+
+    def _render_all() -> None:
+        for piece in pieces:
+            if stop.is_set():
+                break
+            ready.put(_render_piece(piece, voice, prosody))
+        ready.put(b"")                                   # the end
+
+    threading.Thread(target=_render_all, daemon=True, name="eli-tts-render").start()
+    played = Playback(False, detail="nothing was spoken")
+    spoken = 0
+    try:
+        while True:
+            wav = ready.get()
+            if wav == b"":
+                break
+            if not wav:
+                why = _kokoro.load_error() or "the voice could not be synthesised"
+                return Playback(False, detail=why)
+            spoken += 1
+            last = spoken == len(pieces)
+            if not last and pause > 0:
+                wav = _concat_wavs([wav, _silence_wav(pause, wav)])
+            path = ""
+            try:
+                with tempfile.NamedTemporaryFile(prefix="eli_tts_", suffix=".wav", delete=False) as f:
+                    f.write(wav)
+                    path = f.name
+                played = _play_wav_blocking(path, post_play_tail=None if last else 0.0)
+            finally:
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        log.debug("[TTS] temporary voice file not removed: %s", path, exc_info=True)
+            _log_played(f"[TTS] voice={voice} sentence {spoken}/{len(pieces)}", len(wav), played)
+            if not played:
+                return played
+    finally:
+        stop.set()
+    return played
+
+
 def _run_tts_impl(text: str, voice_name: str | None = None) -> bool:
     import os as _os
 
     active = voice_name or get_active_voice()
     # Character (char:) / cloned (clone:) / natural neural (natural:) voice → render via
-    # synthesize_wav (which owns the effect chain / XTTS + fallback), then play the WAV.
+    # synthesize_wav (which owns the effect chain / Qwen3-TTS + fallback), then play the WAV.
     if str(active).startswith(("char:", "clone:", "natural:")):
         wav = synthesize_wav(text, voice_name=active)
         return _play_wav_bytes(wav) if wav else False
-    # Never voice a degenerate fragment (also avoids the piper wave crash on '-').
+    # Never voice a degenerate fragment.
     if _eli_tts_is_unspeakable(text):
-        log.debug(f"[TTS_FINAL_PIPER_ONLY] skipped unspeakable text: {str(text)[:24]!r}")
+        log.debug(f"[TTS] skipped unspeakable text: {str(text)[:24]!r}")
         return False
     chunks = _tts_chunks(text)
 
     if not chunks:
         return False
 
-    use_system = _is_system_voice(active) or (
-        _os.environ.get("ELI_TTS_BACKEND", "").strip().lower() in {"system", "pyttsx3"}
-    )
-    if use_system and _is_system_voice(active):
+    if _is_system_voice(active):
         ok_all = True
         for i, chunk in enumerate(chunks, 1):
             log.debug(f"[TTS_SYSTEM] {i}/{len(chunks)} voice={active[:48]} chars={len(chunk)}")
@@ -1155,24 +970,19 @@ def _run_tts_impl(text: str, voice_name: str | None = None) -> bool:
         # but do not silently pretend the spoken response was complete.
         chunks = chunks[:max_chunks]
 
-    ok_all = True
-    played = Playback(False, detail="nothing was spoken")
-    for i, chunk in enumerate(chunks, 1):
-        log.debug(f"[TTS_FINAL_PIPER_ONLY_CHUNK] {i}/{len(chunks)} voice={active} chars={len(chunk)}")
-        ok = _speak_piper_cli(chunk, active)
-        if not ok and _os.environ.get("ELI_TTS_FALLBACK", "").strip().lower() in {
-            "1", "true", "yes", "on", "system", "pyttsx3",
-        }:
-            sys_voices = _list_system_voices()
-            if sys_voices:
-                log.debug("[TTS] Piper failed; falling back to system voice.")
-                ok = _speak_pyttsx3(chunk, sys_voices[0]) and Playback(True, "the system's own voice")
-        # _speak_piper_cli says False alone when no audio was made (no voice model, piper failed)
-        played = ok if isinstance(ok, Playback) else Playback(bool(ok), detail="" if ok else "the voice could not be synthesised")
-        if not ok:
-            log.debug("[TTS_FINAL_PIPER_ONLY] failed; no further fallback.")
-            ok_all = False
-            break
+    voice = kokoro_voice(active)
+    played = _speak_kokoro(" ".join(chunks), voice)
+    if not played and _os.environ.get("ELI_TTS_FALLBACK", "").strip().lower() in {
+        "1", "true", "yes", "on", "system", "pyttsx3",
+    }:
+        sys_voices = _list_system_voices()
+        if sys_voices:
+            log.debug("[TTS] Kokoro failed; falling back to system voice.")
+            if all(_speak_pyttsx3(c, sys_voices[0]) for c in chunks):
+                played = Playback(True, "the system's own voice")
+    ok_all = bool(played)
+    if not ok_all:
+        log.debug("[TTS] not spoken; no further fallback.")
 
     try:
         from eli.runtime.evidence_ledger import record_event as _eli_record_event
@@ -1180,7 +990,7 @@ def _run_tts_impl(text: str, voice_name: str | None = None) -> bool:
             "tts_playback",
             source="tts_router",
             action="SPEAK",
-            subject=active,
+            subject=voice,
             content=str(text or "")[:1000],
             payload={"chunks": len(chunks), "ok": ok_all,
                      "played_through": played.via if ok_all else "", "detail": played.detail},
@@ -1228,127 +1038,19 @@ def maybe_speak(response, tts_engine=None, enabled: bool = False, voice_name: st
     return None
 
 
-def speak_text(text: str, *, piper_path: str | None = None, model_path: str | None = None, rate: str = "165") -> dict:
+def speak_text(text: str, *, voice: str | None = None, **_unused) -> dict:
+    """Speak `text` and wait: {"ok", "backend", "played_through", "error"}. `voice` picks the voice
+    (the active one when None); keyword arguments the earlier engine took are accepted and ignored."""
     text = _eli_tts_visible_text(text)
-    voice_name = None
-    if model_path:
-        from pathlib import Path as _Path
-        voice_name = _Path(model_path).stem
-    ok = _run_tts(str(text or ""), voice_name=voice_name)
+    ok = _run_tts(str(text or ""), voice_name=voice)
     # where it was heard, or why it was not: what a status line about the voice may say
-    return {"ok": bool(ok), "backend": "piper_cli_final" if ok else None,
+    return {"ok": bool(ok), "backend": available_backends().get("engine") if ok else None,
             "played_through": getattr(ok, "via", "") if ok else "",
             "error": "" if ok else (getattr(ok, "detail", "") or "the reply was not played")}
 
 
 # ── Synthesise to WAV bytes (no host playback) — powers browser voice ───────
-# The browser plays the audio itself, so the host must NOT use aplay/afplay here.
-# Reuses the same Piper binary/voice discovery + CUDA→CPU fallback as _speak_piper_cli.
-
-_PIPER_LIB_VOICES: Dict[str, Any] = {}
-
-
-def piper_voice(model, cfg=None):
-    """A Piper voice loaded in this process from its library, loaded once per model file and shared
-    (speaking, and the wake word's training). Raises when the library or the model cannot load."""
-    key = str(model)
-    voice = _PIPER_LIB_VOICES.get(key)
-    if voice is None:
-        from piper import PiperVoice
-        voice = PiperVoice.load(key, config_path=str(cfg) if cfg else None)
-        _PIPER_LIB_VOICES[key] = voice
-    return voice
-
-
-def _piper_lib_render(text: str, model, cfg) -> Optional[bytes]:
-    """Piper run in this process from its Python library, as WAV bytes. The packaged app ships the
-    library and the voices but no piper program, so on a machine without a working piper program
-    elsewhere ELI had no voice. Same voice, same prosody (_piper_prosody_args) as the program path,
-    the pause between sentences included. None when the library is missing or fails."""
-    try:
-        import io
-        import wave
-        try:
-            from piper import SynthesisConfig
-        except ImportError:             # an older library: Piper's own pacing
-            SynthesisConfig = None
-        voice = piper_voice(model, cfg)
-        flags = _piper_prosody_args()
-        vals = {flags[i].lstrip("-"): float(flags[i + 1]) for i in range(0, len(flags) - 1, 2)}
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as out:
-            if SynthesisConfig is None:
-                voice.synthesize(str(text or ""), out)
-            else:
-                syn = SynthesisConfig(**{k: v for k, v in (("length_scale", vals.get("length_scale")),
-                                                           ("noise_scale", vals.get("noise_scale")),
-                                                           ("noise_w_scale", vals.get("noise_w")))
-                                         if v is not None})
-                opened = False
-                for chunk in voice.synthesize(str(text or ""), syn_config=syn):
-                    if not opened:
-                        out.setframerate(chunk.sample_rate)
-                        out.setsampwidth(chunk.sample_width)
-                        out.setnchannels(chunk.sample_channels)
-                        opened = True
-                    else:
-                        gap = int(chunk.sample_rate * vals.get("sentence_silence", 0.0))
-                        out.writeframes(b"\x00" * gap * chunk.sample_width * chunk.sample_channels)
-                    out.writeframes(chunk.audio_int16_bytes)
-                if not opened:
-                    return None
-        data = buf.getvalue()
-        return data if len(data) > 1000 else None
-    except Exception:
-        log.debug("[TTS] in-process piper failed", exc_info=True)
-        return None
-
-
-def _piper_render_wav(text: str, model, cfg, piper_bin: str) -> Optional[bytes]:
-    """Run Piper once for `text`, returning WAV bytes (CUDA→CPU fallback). No playback."""
-    import os as _os
-    import subprocess as _subprocess
-    import tempfile as _tempfile
-    from pathlib import Path as _Path
-
-    with _tempfile.NamedTemporaryFile(prefix="eli_piper_wav_", suffix=".wav", delete=False) as tmp:
-        wav = _Path(tmp.name)
-
-    global _PIPER_CUDA_FAILED
-    _want_cuda = (
-        _os.environ.get("ELI_PIPER_CUDA", "1").strip().lower() in {"1", "true", "yes", "on"}
-        and not _PIPER_CUDA_FAILED
-    )
-    base_cmd = [piper_bin, "--model", str(model), "--output_file", str(wav)]
-    if cfg:
-        base_cmd.extend(["--config", str(cfg)])
-    base_cmd.extend(_piper_prosody_args())  # same expressive prosody as host playback
-
-    def _run(use_cuda):
-        cmd = list(base_cmd) + (["--cuda"] if use_cuda else [])
-        return _subprocess.run(cmd, input=str(text or ""), text=True,
-                               stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, timeout=45)
-    try:
-        proc = _run(_want_cuda)
-        if proc.returncode != 0 and _want_cuda:
-            _PIPER_CUDA_FAILED = True
-            log.debug(f"[TTS_WAV] --cuda failed rc={proc.returncode}; CPU fallback: {proc.stderr[-300:]}")
-            proc = _run(False)
-        if proc.returncode != 0:
-            log.debug(f"[TTS_WAV] piper failed rc={proc.returncode}: {proc.stderr[-400:]}")
-            return None
-        if not wav.exists() or wav.stat().st_size < 1000:
-            return None
-        return wav.read_bytes()
-    except Exception:
-        log.debug("[TTS_WAV] render failed", exc_info=True)
-        return None
-    finally:
-        try:
-            wav.unlink(missing_ok=True)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
+# The browser plays the audio itself, so the host must NOT play it here.
 
 def _concat_wavs(wavs: list[bytes]) -> Optional[bytes]:
     """Concatenate same-format WAV chunks into a single WAV (PCM frame splice)."""
@@ -1375,7 +1077,7 @@ def _concat_wavs(wavs: list[bytes]) -> Optional[bytes]:
 def _apply_tone_pitch(wav_bytes: Optional[bytes]) -> Optional[bytes]:
     """Shift the synthesized audio by the current emotion's pitch (semitones) so a
     `sad` reply sounds lower and an `ecstatic` one higher — the pitch dimension the
-    Piper CLI can't do itself. No-op when pitch≈0 or ffmpeg is missing (fail open)."""
+    voice engines do not take themselves. No-op when pitch≈0 or ffmpeg is missing (fail open)."""
     if not wav_bytes:
         return wav_bytes
     try:
@@ -1420,32 +1122,66 @@ def _wav_sample_rate_bytes(wav_bytes: bytes) -> int:
         return 22050
 
 
+def _tone_instruct() -> str:
+    """The current tone as Qwen3-TTS's style instruction ("" for the neutral tone)."""
+    try:
+        from eli.cognition import tone_adaptor
+        tone = str((tone_adaptor.current_tone() or {}).get("tone") or "")
+    except Exception:
+        log.debug("[TTS_WAV] tone read skipped", exc_info=True)
+        return ""
+    return "" if tone in {"", "neutral"} else f"Speak in a {tone.replace('_', ' ')} tone."
+
+
 def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
-    """Render `text` to WAV bytes with the active Piper voice — for clients that
-    play audio themselves (browser voice). Returns None if nothing speakable or
-    no Piper voice/binary is available. Never plays on the host."""
+    """Render `text` to WAV bytes with the active voice — for clients that play audio themselves
+    (browser voice) and for the neural and style voices. None when nothing is speakable or no engine
+    can render it. Never plays on the host."""
     text = _eli_tts_visible_text(text)
     if _eli_tts_is_unspeakable(text):
         return None
     active = voice_name or get_active_voice()
-    # Natural neural voice (natural:<id>): XTTS-v2 built-in speaker, human-like, no
-    # clone needed. If the neural extra isn't installed, returns None → Piper default.
+    # Natural neural voice (natural:<id>): Qwen3-TTS's built-in speaker on a GPU with room for it,
+    # steered by the tone; then XTTS-v2's when that extra is installed; else the default voice.
     if str(active).startswith("natural:"):
+        try:
+            from eli.perception import tts_qwen3
+            wav = tts_qwen3.synthesize_natural_wav(text, active, instruct=_tone_instruct())
+            if wav:
+                _note_neural_fallback(None)
+                return wav               # the tone is in the instruction, no pitch shift after
+        except Exception:
+            log.debug("[TTS_WAV] Qwen3-TTS natural voice failed", exc_info=True)
         try:
             from eli.perception import tts_xtts
             wav = tts_xtts.synthesize_natural_wav(text, active)
             if wav:
                 _note_neural_fallback(None)
                 return _apply_tone_pitch(wav)
-            _note_neural_fallback(active)
         except Exception:
             log.debug("[TTS_WAV] natural voice resolve failed", exc_info=True)
-            _note_neural_fallback(active)
+        _note_neural_fallback(active)
         active = _DEFAULT_VOICE
-    # Cloned voice (clone:<name>): Chatterbox (MIT, preferred) from the reference sample, then
-    # Coqui XTTS-v2. Either returns None when its extra isn't installed or there is no
-    # reference, and we fall back to the default voice.
+    # Cloned voice (clone:<name>): Qwen3-TTS from the reference recording on a GPU with room for it,
+    # then Chatterbox (MIT), then Coqui XTTS-v2. Each returns None when it cannot, and the default
+    # voice speaks.
     if str(active).startswith("clone:"):
+        spec = None
+        try:
+            from eli.perception import tts_xtts
+            spec = tts_xtts.get_clone(active)
+        except Exception:
+            log.debug("[TTS_WAV] clone registry read failed", exc_info=True)
+        try:
+            from eli.perception import tts_qwen3
+            if spec:
+                wav = tts_qwen3.synthesize_clone_wav(text, str(spec.get("ref_wav") or ""),
+                                                     ref_text=str(spec.get("ref_text") or ""))
+                if wav:
+                    _note_neural_fallback(None)
+                    return _apply_tone_pitch(wav)
+        except Exception:
+            log.debug("[TTS_WAV] Qwen3-TTS clone failed", exc_info=True)
         try:
             from eli.cognition import tone_adaptor as _ta
             _exag = _ta.voice_exaggeration()
@@ -1466,37 +1202,33 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             if wav:
                 _note_neural_fallback(None)
                 return _apply_tone_pitch(wav)
-            _note_neural_fallback(active)
         except Exception:
             log.debug("[TTS_WAV] clone voice resolve failed", exc_info=True)
-            _note_neural_fallback(active)
+        _note_neural_fallback(active)
         active = _DEFAULT_VOICE
-    # Character voice (char:calm, char:robotic, …): synth the base Piper voice, then run
-    # its ffmpeg effect chain over the result. Recurses once with a real base voice.
+    # Style voice (char:calm, char:robotic, …): render its base Kokoro voice, then run its ffmpeg
+    # effect chain over the result.
     if str(active).startswith("char:"):
         try:
             from eli.perception import voice_fx
             spec = voice_fx.get_preset(active)
             if spec:
-                # Resolve to a base voice that's installed: the ideal `base`, else each gender-matched
-                # `fallback` in order, else the English default. Never let a missing base fall to the generic
-                # resolver, which picks the first .onnx alphabetically (a foreign-language voice in the shipped
-                # pack) and garbles the text.
-                base = voice_fx.resolve_base_voice(
-                    spec, list_voices(), default=_DEFAULT_VOICE)
+                base = voice_fx.resolve_base_voice(spec, list_voices(), default=_DEFAULT_VOICE)
                 base_wav = synthesize_wav(text, voice_name=base)
                 return voice_fx.apply_fx(base_wav, spec) if base_wav else None
         except Exception:
             log.debug("[TTS_WAV] character voice resolve failed", exc_info=True)
         active = _DEFAULT_VOICE  # unknown character → safe default
-    model = find_voice_model(active)
-    if not model:
-        log.debug(f"[TTS_WAV] no voice model for active={active}")
-        return None
-    piper_bin = _find_piper_bin()
-    cfg = _find_piper_config(model)
-    chunks = _tts_chunks(text) or [text]
-    # No piper program (the packaged app ships none): the library it does ship.
-    rendered = [_piper_render_wav(c, model, cfg, piper_bin) if piper_bin else _piper_lib_render(c, model, cfg)
-                for c in chunks]
-    return _apply_tone_pitch(_concat_wavs([r for r in rendered if r]))
+    voice = kokoro_voice(active)
+    prosody = _prosody()
+    pause = float(prosody.get("sentence_silence") or 0.0)
+    rendered: List[bytes] = []
+    for piece in _speech_pieces(text) or [text]:
+        wav = _render_piece(piece, voice, prosody)
+        if wav is None:
+            log.debug(f"[TTS_WAV] voice={voice} not rendered: {_kokoro.load_error() or 'see the log above'}")
+            return None
+        if rendered and pause > 0:
+            rendered.append(_silence_wav(pause, wav))
+        rendered.append(wav)
+    return _concat_wavs(rendered)

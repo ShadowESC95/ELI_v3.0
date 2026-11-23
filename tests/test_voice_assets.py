@@ -1,4 +1,4 @@
-"""Voice asset readiness — catches false positives from OS/espeak voices."""
+"""Voice asset readiness — catches false positives from the operating system's own voices."""
 from __future__ import annotations
 
 import os
@@ -8,26 +8,28 @@ from unittest.mock import patch
 from eli.runtime import voice_assets as va
 
 
-def test_piper_voice_ready_ignores_system_voices_only(monkeypatch, tmp_path):
-    """Linux hosts expose many sys: espeak voices; Piper must not count as present."""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setattr(va, "_piper_dest", lambda: empty / "models" / "tts" / "piper")
-    with patch("eli.perception.tts_router.find_voice_model", return_value=None):
-        with patch("eli.perception.tts_router.list_voices", return_value=["sys:gmw/en-us", "sys:gmw/en"]):
-            with patch("eli.core.paths.project_root", return_value=empty):
-                assert va._piper_present() is False
-                assert va.piper_voice_ready() is False
+def test_the_voice_is_ready_only_with_kokoros_own_files_not_the_systems_voices(monkeypatch, tmp_path):
+    """Linux hosts expose many sys: voices; they do not make ELI's voice present."""
+    monkeypatch.setattr(va, "_kokoro_roots", lambda: [tmp_path / "empty"])
+    with patch("eli.perception.tts_router.list_voices", return_value=["sys:gmw/en-us", "sys:gmw/en"]):
+        assert va.kokoro_ready() is False
 
 
-def test_piper_voice_ready_detects_onnx_on_disk(monkeypatch, tmp_path):
-    dest = tmp_path / "models" / "tts" / "piper"
-    dest.mkdir(parents=True)
-    (dest / "en_US-amy-medium.onnx").write_bytes(b"x" * 64)
-    (dest / "en_US-amy-medium.onnx.json").write_text("{}")
-    monkeypatch.setattr(va, "_piper_dest", lambda: dest)
-    with patch("eli.perception.tts_router.find_voice_model", return_value=None):
-        assert va.piper_voice_ready() is True
+def test_the_voice_is_ready_when_its_files_and_the_default_voice_are_on_disk(monkeypatch, tmp_path):
+    for entry in [*va.KOKORO_ENGINE_FILES.values(), va.kokoro_voice_entry("af_heart")]:
+        path = tmp_path / entry.rel
+        if entry.unpack:
+            path.mkdir(parents=True)
+            (path / va._MARKER).write_text(entry.sha256, encoding="utf-8")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.truncate(entry.size)
+    monkeypatch.setattr(va, "_kokoro_roots", lambda: [tmp_path])
+    assert va.kokoro_ready() is True
+    assert va.kokoro_ready("bm_george") is False, "a voice not fetched is not ready"
+    (tmp_path / "model.onnx").write_bytes(b"short")          # a truncated model is not the model
+    assert va.kokoro_ready() is False
 
 
 def test_whisper_cache_ready_resolves_relative_to_project_root(monkeypatch, tmp_path):

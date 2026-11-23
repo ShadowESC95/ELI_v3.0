@@ -16,49 +16,5 @@
       "bundle_policy": "required_for_full_vector_recall_profile"
     }
   ],
-  "tts_voice_assets": [
-    {
-      "id": "en_GB-cori-high",
-      "onnx_path": "tts_piper/piper/en_GB-cori-high.onnx",
-      "onnx_json_path": "tts_piper/piper/en_GB-cori-high.onnx.json",
-      "onnx_exists": true,
-      "onnx_json_exists": true,
-      "onnx_bytes": 114219352,
-      "onnx_sha256": "470b4dd634c98f8a4850d7626ffc3dfc90774628eeef6605a6dd8f88f30a5903",
-      "commercial_distribution_default": "manual_review",
-      "risk": "Upstream model card identifies a public-domain LibriVox dataset; still retain upstream model-card/license evidence before shipping.",
-      "status": "review_before_ship"
-    },
-    {
-      "id": "en_US-lessac-high",
-      "onnx_path": "tts_piper/piper/en_US-lessac-high.onnx",
-      "onnx_json_path": "tts_piper/piper/en_US-lessac-high.onnx.json",
-      "onnx_exists": true,
-      "onnx_json_exists": true,
-      "onnx_bytes": 113895201,
-      "onnx_sha256": "4cabf7c3a638017137f34a1516522032d4fe3f38228a843cc9b764ddcbcd9e09",
-      "commercial_distribution_default": "manual_review",
-      "risk": "Upstream MODEL_CARD points to the Blizzard 2013 Lessac dataset license; commercial redistribution requires explicit review.",
-      "status": "license_review_required"
-    },
-    {
-      "id": "en_US-ryan-high",
-      "onnx_path": "tts_piper/piper/en_US-ryan-high.onnx",
-      "onnx_json_path": "tts_piper/piper/en_US-ryan-high.onnx.json",
-      "onnx_exists": true,
-      "onnx_json_exists": true,
-      "onnx_bytes": 120786792,
-      "onnx_sha256": "b3990d7606e183ec8dbfba70a4607074f162de1a0c412e0180d1ff60bb154eca",
-      "commercial_distribution_default": "exclude",
-      "risk": "Upstream MODEL_CARD dataset license is CC BY-NC-SA 4.0.",
-      "status": "noncommercial_risk"
-    }
-  ],
-  "commercial_bundle_exclusions_default": [
-    "en_US-ryan-high"
-  ],
-  "manual_license_review_required": [
-    "en_GB-cori-high",
-    "en_US-lessac-high"
-  ]
+  "tts_voice_policy": "The voice is Kokoro-82M (Apache-2.0): every file pinned to a revision and SHA-256 in eli/runtime/voice_assets.py (KOKORO_ENGINE_FILES, kokoro_manifest), fetched on first use or bundled by the release workflow into tts_kokoro/. No voice needs licence review."
 }

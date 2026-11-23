@@ -1,7 +1,7 @@
 """Voice-library actions are real routable capabilities, not just GUI buttons.
 
-Before this, the 166-voice download library was reachable only from Settings ▸ Voice;
-a user could not ask ELI to list/download/switch voices by voice or text.
+Before this, the voice library was reachable only from Settings ▸ Voice; a user could
+not ask ELI to list/download/switch voices by voice or text.
 """
 from __future__ import annotations
 
@@ -64,7 +64,8 @@ def test_install_firefox_is_not_a_voice_download():
 
 # ── resolver ────────────────────────────────────────────────────────────────
 def test_resolve_voice_query_kinds():
-    assert va.resolve_voice_query("install en_US-amy-medium")["voice"] == "en_US-amy-medium"
+    assert va.resolve_voice_query("install en_US-amy-medium")["voice"] == "af_heart", \
+        "a voice id of the earlier engine names its Kokoro voice"
     assert va.resolve_voice_query("use the calm voice")["voice"] == "char:calm"
     assert va.resolve_voice_query("a British voice")["kind"] == "accent"
     assert va.resolve_voice_query("something sarcastic")["voice"] == ""

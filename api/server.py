@@ -1350,7 +1350,7 @@ _WEB_UI = """<!doctype html>
   /* live: refresh the dashboard while it's open (no manual reload) */
   setInterval(function(){const v=$('#view-overview'); if(v&&v.classList.contains('active')&&!document.hidden&&!OV_EDIT&&!isOvEditingField())loadOverview();},6000);
 
-  /* voice — local STT (whisper) in, local TTS (piper) out; nothing leaves the box */
+  /* voice — local STT (whisper) in, local TTS (kokoro) out; nothing leaves the box */
   const mic=$('#mic'),spk=$('#spk'),vstat=$('#vstat');
   spk.checked=localStorage.getItem('eli_speak')==='1';
   spk.onchange=()=>localStorage.setItem('eli_speak',spk.checked?'1':'0');
@@ -1391,7 +1391,7 @@ _WEB_UI = """<!doctype html>
   }
   let _ttsAudio=null;
   async function speakReply(text){
-    // Strip markdown/code so Piper reads prose, not asterisks and backticks.
+    // Strip markdown/code so the voice reads prose, not asterisks and backticks.
     const clean=(''+text).replace(/```[\\s\\S]*?```/g,' ').replace(/`([^`]+)`/g,'$1')
       .replace(/[*_#>~]/g,'').replace(/\\[(.*?)\\]\\(.*?\\)/g,'$1').replace(/\\s+/g,' ').trim();
     if(!clean){return;}
@@ -3533,7 +3533,7 @@ _SETTINGS_SCHEMA = {
     "repeat_penalty":         ("float","Generation", "Repeat penalty", "", 1.0, 1.5, 0.01),
     "model_thinking":         ("bool", "Generation", "Deep thinking (reasoning models)", "Higher quality, slower"),
     "auto_speak":             ("bool", "Voice",      "Speak replies aloud", ""),
-    "tts_voice":              ("str",  "Voice",      "Voice", "Local Piper voice"),
+    "tts_voice":              ("str",  "Voice",      "Voice", "Local voice (Kokoro, or a style, clone or natural voice)"),
     "stt_model":              ("str",  "Voice",      "Speech-to-text model",
                                "A faster-whisper model name (small.en, medium.en, large-v3, …); one not on "
                                "this computer downloads on first use. ELI_WHISPER_MODEL in the environment wins."),
@@ -5264,7 +5264,7 @@ def research_query(req: ResearchQuery, principal: Principal = Depends(require_me
 
 # ----------------------------------------------------------------------
 # Browser voice  (powers "Talk to ELI" from any phone — fully local)
-# Mic audio → ELI's local faster-whisper STT → text; reply text → local Piper
+# Mic audio → ELI's local faster-whisper STT → text; reply text → local Kokoro
 # TTS → WAV the browser plays itself. No cloud STT/TTS; nothing leaves the box.
 # ----------------------------------------------------------------------
 @app.get("/v1/voice/voices", tags=["Voice"], dependencies=[Depends(_require_token)])
@@ -5311,7 +5311,7 @@ async def voice_stt(request: Request, ext: str = "webm"):
 
 @app.post("/v1/voice/tts", tags=["Voice"], dependencies=[Depends(require_member)])
 def voice_tts(req: TTSRequest):
-    """Render text to a WAV with ELI's local Piper voice (the browser plays it)."""
+    """Render text to a WAV with ELI's local voice (the browser plays it)."""
     try:
         from eli.perception import tts_router
         wav = tts_router.synthesize_wav(req.text, voice_name=req.voice)

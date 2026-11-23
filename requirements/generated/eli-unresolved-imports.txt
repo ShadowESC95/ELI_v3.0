@@ -31,7 +31,6 @@ mpi4py
 nlopt
 panel
 petsc4py
-piper
 playwright
 plyer
 pycaw

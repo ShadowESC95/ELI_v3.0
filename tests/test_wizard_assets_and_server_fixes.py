@@ -1,4 +1,4 @@
-"""Setup wizard must hard-fail missing nomic/piper correctly."""
+"""Setup wizard must hard-fail missing nomic/voice assets correctly."""
 from __future__ import annotations
 
 from pathlib import Path

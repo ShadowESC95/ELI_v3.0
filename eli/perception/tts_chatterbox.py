@@ -9,8 +9,8 @@ Design:
 - Shares the SAME clone registry as ``tts_xtts`` — ``add_clone`` (the record /
   upload flow) stores backend-agnostic reference clips, so a voice captured once
   works on whichever backend is installed.
-- ``tts_router`` prefers this backend for ``clone:<name>`` voices, falling back to
-  XTTS, then to a normal Piper voice.
+- ``tts_router`` tries Qwen3-TTS first for ``clone:<name>`` voices (on a GPU with
+  room for it), then this backend, then XTTS, then the default Kokoro voice.
 - Emotional delivery is NATIVE here: the active tone maps to Chatterbox's
   ``exaggeration`` parameter (no post-hoc pitch shift needed).
 
@@ -119,7 +119,7 @@ def synthesize_wav(text: str, clone_name: str, *,
         log.debug("tts_chatterbox: missing reference for '%s'", clone_name)
         return None
     if not chatterbox_available():
-        log.info("tts_chatterbox: %s needs the clone extra — `pip install \"eli-v3.0[chatterbox]\"`",
+        log.info("tts_chatterbox: %s needs the clone extra — `pip install \"eli-v3[chatterbox]\"`",
                  str(clone_name))
         return None
     try:

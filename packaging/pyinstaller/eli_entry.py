@@ -199,14 +199,23 @@ def _assert_paths_outside_bundle() -> None:
             raise RuntimeError("selftest: a recording cannot be read into 16 kHz samples for speech input")
     print("selftest: speech input reads a recording into 16 kHz samples")
     if os.environ.get("ELI_REQUIRE_VOICES") == "1":
-        if not list((bundle / "tts_piper" / "piper").glob("*.onnx")):
-            raise RuntimeError("selftest: no Piper voices bundled (tts_piper/piper/*.onnx)")
+        # The voice must SPEAK in the frozen app, not merely be on disk: misaki, spaCy's tagger, the
+        # unknown-word model and onnxruntime each load on the first reply, and a piece the spec did
+        # not collect fails only there.
+        from eli.runtime import voice_assets as _va
+        from eli.perception import tts_kokoro as _tk
+        if _va.kokoro_files() is None or _va.kokoro_voice_file(_tk.DEFAULT_VOICE) is None:
+            raise RuntimeError("selftest: the Kokoro voice is not bundled (tts_kokoro/)")
+        _samples = _tk.synthesize("Selftest, one two three.", _tk.DEFAULT_VOICE)
+        if _samples is None or not len(_samples):
+            raise RuntimeError(f"selftest: the Kokoro voice did not render: {_tk.load_error() or 'no audio'}")
+        print(f"selftest: the Kokoro voice renders ({len(_samples) / _tk.SAMPLE_RATE:.1f} s of speech)")
     # Neural voice engine: assert the FROZEN app can actually import it, not merely
     # that pip installed it on the runner. v2.1.65 and v2.1.66 both shipped
     # coqui_tts-*.dist-info with no usable TTS package — the spec's bare
     # `__import__("TTS")` raised on a transformers incompatibility ELI already
     # carries a shim for, so collection was skipped and every cloned voice fell back
-    # to Piper. A directory listing cannot settle this: collect_submodules puts pure
+    # to the default voice. A directory listing cannot settle this: collect_submodules puts pure
     # Python in the PYZ inside the executable, so `_internal/TTS/` legitimately holds
     # only data files. The import is the only honest check.
     if os.environ.get("ELI_REQUIRE_NEURAL_VOICE") == "1":
@@ -219,7 +228,7 @@ def _assert_paths_outside_bundle() -> None:
                 pass
             raise RuntimeError(
                 "selftest: the neural voice engine is NOT usable in this bundle — "
-                "cloned/natural voices would silently fall back to Piper. "
+                "cloned/natural voices would silently fall back to the default voice. "
                 f"Import failed with: {why or 'unknown (no reason recorded)'}. "
                 "Check that ELI.spec collected TTS and its transitive imports."
             )

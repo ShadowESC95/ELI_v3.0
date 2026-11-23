@@ -74,19 +74,16 @@ def has_embedder() -> bool:
 
 def has_voice_assets() -> bool:
     try:
-        from eli.runtime.voice_assets import piper_voice_ready
+        from eli.runtime.voice_assets import kokoro_ready
         from eli.perception.local_whisper_stt import whisper_cache_ready
-        return bool(piper_voice_ready() and whisper_cache_ready())
+        return bool(kokoro_ready() and whisper_cache_ready())
     except Exception:
         root = project_root()
-        piper_ok = False
-        for base in (root / "tts_piper" / "piper", root / "models" / "tts" / "piper"):
-            if base.exists() and any(base.rglob("*.onnx")):
-                piper_ok = True
-                break
+        kokoro_ok = any((base / "model.onnx").is_file()
+                        for base in (root / "tts_kokoro", root / "models" / "tts" / "kokoro"))
         whisper = root / "models" / "whisper"
         whisper_ok = whisper.exists() and any(whisper.rglob("snapshots"))
-        return piper_ok and whisper_ok
+        return kokoro_ok and whisper_ok
 
 
 def has_desktop_launcher() -> bool:

@@ -15,9 +15,9 @@
 #             + windows-portable-full.zip + wheelhouse(-arm64).tar.gz + WHEELHOUSE(-arm64).txt
 # plus SHA256SUMS.txt + RELEASE_NOTES.md.
 #
-# Piper TTS voices ARE bundled (pulled from the project's local-assets-v2.1
-# release — same set previous full tarballs shipped). GGUF model weights are
-# runtime downloads (too big to bundle). Binaries are unsigned; see
+# The Kokoro voice IS bundled (ELI's fetcher pulls its files at pinned revisions,
+# checksum-checked, into tts_kokoro/). GGUF model weights are runtime downloads
+# (too big to bundle). Binaries are unsigned; see
 # docs/RELEASE_PIPELINE.md for optional Windows/Apple signing steps.
 #
 # Linux jobs run on ubuntu-24.04 by name, never ubuntu-latest. The build machine's
@@ -150,26 +150,24 @@ jobs:
           python -m eli.core.init_data
           python tools/bootstrap_claims_artifacts.py
 
-      - name: Bundle Piper voices (from the project's local-assets release)
+      - name: Bundle the Kokoro voice (fetched pinned and checksum-checked by ELI's own fetcher)
         shell: bash
         run: |
-          mkdir -p tts_piper/piper
-          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
-          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          # Hugging Face and GitHub occasionally 5xx mid-release; retry with backoff (files already
+          # fetched and checked are kept, so a retry fetches only what is missing).
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+            if python -m eli.runtime.voice_assets --kokoro-to tts_kokoro; then
               _voice_ok=1
               break
             fi
             echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
             sleep $((_attempt * 5))
           done
-          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
-          count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
-          echo "voices downloaded: $count"
-          [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not fetch the Kokoro voice after 5 attempts"; exit 1; }
+          count=$(ls tts_kokoro/voices/*.bin 2>/dev/null | wc -l)
+          echo "Kokoro voices fetched: $count"
+          [ -f tts_kokoro/model.onnx ] && [ "$count" -ge 1 ] || { echo "::error::the Kokoro model or its voices are missing after the fetch"; exit 1; }
 
       - name: Bundle text embedder (nomic-embed, required for memory/RAG)
         shell: bash
@@ -211,7 +209,7 @@ jobs:
 
       - name: Reclaim disk before packaging
         shell: bash
-        run: rm -rf build/ELI tts_piper
+        run: rm -rf build/ELI tts_kokoro
 
       - name: Portable zip
         shell: bash
@@ -311,25 +309,23 @@ jobs:
           python -m eli.core.init_data
           python tools/bootstrap_claims_artifacts.py
 
-      - name: Bundle Piper voices (from the project's local-assets release)
+      - name: Bundle the Kokoro voice (fetched pinned and checksum-checked by ELI's own fetcher)
         run: |
-          mkdir -p tts_piper/piper
-          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
-          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          # Hugging Face and GitHub occasionally 5xx mid-release; retry with backoff (files already
+          # fetched and checked are kept, so a retry fetches only what is missing).
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+            if python -m eli.runtime.voice_assets --kokoro-to tts_kokoro; then
               _voice_ok=1
               break
             fi
             echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
             sleep $((_attempt * 5))
           done
-          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
-          count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
-          echo "voices downloaded: $count"
-          [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not fetch the Kokoro voice after 5 attempts"; exit 1; }
+          count=$(ls tts_kokoro/voices/*.bin 2>/dev/null | wc -l)
+          echo "Kokoro voices fetched: $count"
+          [ -f tts_kokoro/model.onnx ] && [ "$count" -ge 1 ] || { echo "::error::the Kokoro model or its voices are missing after the fetch"; exit 1; }
 
       - name: Bundle text embedder (nomic-embed, required for memory/RAG)
         shell: bash
@@ -398,11 +394,11 @@ jobs:
       # blows GitHub's 2 GiB asset limit) means XTTS runs on CPU, and on a GPU machine
       # the startup picker pinned ELI_XTTS_DEVICE=cuda, so it crashed with "Torch not
       # compiled with CUDA enabled" — and even working, it costs GPU/CPU far out of
-      # proportion to a voice. Piper is the shipped engine. Cloning still works from a
+      # proportion to a voice. Kokoro is the shipped engine. Cloning still works from a
       # source install (`pip install -e ".[chatterbox]"`), where torch matches the host.
       #
       # Linux-only: the Chatterbox clone engine IS bundled, so `clone:` voices actually
-      # synthesise instead of silently falling back to Piper. Chatterbox is MIT and
+      # synthesise instead of silently falling back to the default voice. Chatterbox is MIT and
       # commercial-clean, while the XTTS-v2 *model* is non-commercial — v3 prefers
       # Chatterbox for exactly that reason (tts_router: "Chatterbox (MIT, preferred) ->
       # XTTS (legacy)"). Safe here and only here: this job installs the CPU torch stack
@@ -430,7 +426,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
           df -h /
 
-      - name: System build deps (portaudio, espeak, Qt/GL runtime libs)
+      - name: System build deps (portaudio, Qt/GL runtime libs)
         run: |
           sudo apt-get update
           # xcb-util family: Qt 6.5+'s xcb platform plugin (libqxcb.so) links the
@@ -443,7 +439,7 @@ jobs:
             portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-util1 libxcb-shape0 libxcb-randr0 libxcb-render0 \
-            libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 libxkbcommon0 espeak-ng xvfb
+            libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 libxkbcommon0 xvfb
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
@@ -483,7 +479,7 @@ jobs:
                   importlib.import_module(mod)
                   print(f"  {mod}: present ({why})")
               except Exception as e:
-                  print(f"::warning::{mod} unavailable — {why} will degrade to Piper: {e}")
+                  print(f"::warning::{mod} unavailable — {why} will degrade to the Kokoro voice: {e}")
           PY
 
       - name: Generate capability manifests (bundled introspection data)
@@ -491,25 +487,23 @@ jobs:
           python -m eli.core.init_data
           python tools/bootstrap_claims_artifacts.py
 
-      - name: Bundle Piper voices (from the project's local-assets release)
+      - name: Bundle the Kokoro voice (fetched pinned and checksum-checked by ELI's own fetcher)
         run: |
-          mkdir -p tts_piper/piper
-          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
-          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          # Hugging Face and GitHub occasionally 5xx mid-release; retry with backoff (files already
+          # fetched and checked are kept, so a retry fetches only what is missing).
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+            if python -m eli.runtime.voice_assets --kokoro-to tts_kokoro; then
               _voice_ok=1
               break
             fi
             echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
             sleep $((_attempt * 5))
           done
-          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
-          count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
-          echo "voices downloaded: $count"
-          [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not fetch the Kokoro voice after 5 attempts"; exit 1; }
+          count=$(ls tts_kokoro/voices/*.bin 2>/dev/null | wc -l)
+          echo "Kokoro voices fetched: $count"
+          [ -f tts_kokoro/model.onnx ] && [ "$count" -ge 1 ] || { echo "::error::the Kokoro model or its voices are missing after the fetch"; exit 1; }
 
       - name: Bundle GPU acceleration packs (offline-first CUDA/Vulkan)
         run: |
@@ -576,11 +570,11 @@ jobs:
           # The neural voice engine must be COLLECTED, not merely pip-installed.
           # v2.1.65 and v2.1.66 both shipped coqui_tts-*.dist-info with no TTS/
           # package: the spec's import probe raised on a transformers incompatibility
-          # and silently skipped collection, so every cloned voice fell back to Piper
+          # and silently skipped collection, so every cloned voice fell back to the default voice
           # with the extra sitting unused in the bundle. Metadata is not the package.
           if ls dist/ELI/_internal/coqui_tts-*.dist-info >/dev/null 2>&1; then
             if [ ! -d dist/ELI/_internal/TTS ]; then
-              echo "::error::coqui-tts is installed but the TTS/ package was NOT collected — voice cloning would silently fall back to Piper"
+              echo "::error::coqui-tts is installed but the TTS/ package was NOT collected — voice cloning would silently fall back to the default voice"
               exit 1
             fi
             echo "TTS/ package collected: $(du -sh dist/ELI/_internal/TTS | cut -f1)"
@@ -630,8 +624,8 @@ jobs:
           mv dist/app_packages/ELI_v3.0-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
-      # GPL-3.0 lets the bundles carry piper-tts (espeak-ng inside it) and the other GPL packages when
-      # their exact source goes with them. This environment installs the extras every build does (and
+      # GPL-3.0 lets the bundles carry a GPL package when its exact source goes with them; with none
+      # left in the build, SOURCES.md says so. This environment installs the extras every build does (and
       # chatterbox, Linux's own). A source that cannot be fetched fails the release. Beside it,
       # LGPL_SOURCES.md says where the source of each LGPL package (Qt for Python and the Qt inside it
       # among them) is, at the version the builds carry; one it cannot find fails it too.
@@ -640,15 +634,6 @@ jobs:
           python packaging/gpl_sources.py dist/gpl-sources
           cat dist/gpl-sources/SOURCES.md
           cat dist/gpl-sources/LGPL_SOURCES.md
-          # piper-tts compiles espeak-ng in: its source has to be here, fetched or inside piper's sdist
-          # (each listing is read into a variable first: a piped grep -q under pipefail fails when it matches)
-          if ls dist/gpl-sources/piper* >/dev/null 2>&1; then
-            fetched=$(ls dist/gpl-sources)
-            in_piper=$(tar -tzf dist/gpl-sources/piper*.tar.gz 2>/dev/null || true)
-            if ! grep -qi espeak <<<"$fetched" && ! grep -qi "espeak-ng/src/" <<<"$in_piper"; then
-              echo "::error::espeak-ng's source (compiled into piper-tts) is not in the GPL source archive"; exit 1
-            fi
-          fi
           tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-gpl-sources.tar.gz" -C dist gpl-sources
           rm -rf dist/gpl-sources
 
@@ -760,8 +745,8 @@ jobs:
           \`ldd --version\`; docs/CROSS_PLATFORM.md lists which distributions that is).
           On an older system use the linux-portable package, which installs from source.
 
-          Third-party source: the builds carry packages under the GPL (piper-tts with espeak-ng
-          compiled into it, and PyAutoGUI's helpers; THIRD_PARTY_NOTICES.md names them). Their exact
+          Third-party source: any package under the GPL the builds carry (THIRD_PARTY_NOTICES.md
+          names them; SOURCES.md says when there is none). Their exact
           source, at the versions these builds carry, is attached here as
           \`ELI_v3-${V}-gpl-sources.tar.gz\`; the SOURCES.md inside lists each file and where it came from.
           The packages under the LGPL (Qt for Python and the Qt libraries inside it, zeroconf,

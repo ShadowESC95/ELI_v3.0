@@ -1,6 +1,6 @@
 """Character-voice effects layer.
 
-A "character voice" (`char:<name>`) is a base Piper voice plus a DSP effect chain
+A "character voice" (`char:<name>`) is a base Kokoro voice plus a DSP effect chain
 applied to the synthesized WAV via ffmpeg — so it needs no extra ML model, just
 ffmpeg (already required for media/TTS).
 
@@ -30,49 +30,45 @@ log = logging.getLogger(__name__)
 CHAR_PREFIX = "char:"
 
 # Built-in character presets. `filters` is a raw ffmpeg -af chain (pitch in semitones, speed a
-# tempo multiplier). `base` is the ideal Piper voice, `fallback` is an ordered list of stand-ins.
-# The best matches for HAL/TARS/Rick are licence-restricted, so they can't be bundled. Every
-# candidate is gender-matched and the effect chain carries the personality. Download the ideal
-# base (Settings > Get more voices) and it's picked up automatically.
-_MALE_FALLBACKS = ["en_GB-northern_english_male-medium", "en_GB-alan-medium",
-                   "en_US-hfc_male-medium", "en_US-joe-medium", "en_US-kusal-medium"]
-_FEMALE_FALLBACKS = ["en_US-amy-medium", "en_US-hfc_female-medium",
-                     "en_GB-jenny_dioco-medium", "en_US-kathleen-low"]
-# Built-in voice styles, redistributable only: each preset is Piper (MIT/CC-BY bundled voices) plus
-# an ffmpeg effect chain. ELI ships no impersonations of copyrighted characters (HAL, JARVIS, Rick,
-# TARS); users may clone locally from their own reference clips via XTTS (opt-in extra).
+# tempo multiplier). `base` is the ideal Kokoro voice, `fallback` an ordered list of stand-ins,
+# each gender-matched; the effect chain carries the personality.
+_MALE_FALLBACKS = ["bm_george", "bm_fable", "am_michael", "am_fenrir", "am_puck"]
+_FEMALE_FALLBACKS = ["af_heart", "af_bella", "bf_emma", "af_nicole"]
+# Built-in voice styles: each preset is a Kokoro voice (Apache-2.0) plus an ffmpeg effect chain.
+# ELI ships no impersonations of copyrighted characters (HAL, JARVIS, Rick, TARS); users may clone
+# locally from their own reference clips (CREATE_VOICE).
 _BUILTIN: Dict[str, Dict[str, Any]] = {
     "calm": {
         "label": "Calm & measured",
-        "base": "en_GB-alan-medium", "fallback": _MALE_FALLBACKS,
+        "base": "bm_george", "fallback": _MALE_FALLBACKS,
         "pitch": -1.5, "speed": 0.92,
         "filters": "aecho=0.8:0.88:60:0.32,lowpass=f=3000,acompressor=threshold=-20dB:ratio=3",
         "desc": "Calm and smooth — measured, unhurried, slightly warm (style preset, not a character impersonation)",
     },
     "robotic": {
         "label": "Robotic assistant",
-        "base": "en_GB-northern_english_male-medium", "fallback": _MALE_FALLBACKS,
+        "base": "bm_lewis", "fallback": _MALE_FALLBACKS,
         "pitch": -2.5, "speed": 0.96,
         "filters": "tremolo=f=48:d=0.42,aphaser=type=t:speed=0.45,highpass=f=140,lowpass=f=4200,acompressor=threshold=-14dB:ratio=5",
         "desc": "Robotic — deadpan, metallic, assistant-like (style preset; not HAL/TARS/JARVIS)",
     },
     "energetic": {
         "label": "Energetic / animated",
-        "base": "en_GB-northern_english_male-medium", "fallback": _MALE_FALLBACKS,
+        "base": "am_puck", "fallback": _MALE_FALLBACKS,
         "pitch": 1.0, "speed": 1.04,
         "filters": "vibrato=f=6.5:d=0.35,tremolo=f=8:d=0.2,acompressor=threshold=-12dB:ratio=6,treble=g=4",
         "desc": "Energetic — animated, a little frayed at the edges (style preset)",
     },
     "synthetic": {
         "label": "Synthetic / machine",
-        "base": "en_US-amy-medium", "fallback": _FEMALE_FALLBACKS,
+        "base": "af_heart", "fallback": _FEMALE_FALLBACKS,
         "pitch": -1.5, "speed": 0.95,
         "filters": "aphaser=type=t:speed=0.35,flanger=depth=5:speed=0.25,lowpass=f=3200,highpass=f=200,acompressor=threshold=-16dB:ratio=4",
         "desc": "Synthetic — flat, processed, machine-like (style preset)",
     },
     "refined": {
         "label": "Refined British",
-        "base": "en_GB-alan-medium", "fallback": ["en_GB-alan-medium"] + _MALE_FALLBACKS,
+        "base": "bm_fable", "fallback": _MALE_FALLBACKS,
         "pitch": 0.0, "speed": 0.97,
         "filters": "treble=g=3,aecho=0.9:0.9:45:0.18,highpass=f=90,acompressor=threshold=-18dB:ratio=2.5",
         "desc": "Refined British — crisp, with a subtle sheen (style preset; not a butler/AI character clone)",
@@ -134,17 +130,20 @@ def resolve_base_voice(spec: Dict[str, Any], installed, default: str = "") -> st
     """Best *installed* base voice for a character preset.
 
     Order: the ideal ``base`` → each ``fallback`` in turn → ``default``. ``installed``
-    is the set of runnable voice names (tts_router.list_voices() already filters out
-    models with no config), so this can never select an unusable or foreign-language
-    voice. ``fallback`` accepts a single id or an ordered list.
+    is the set of runnable voice names (tts_router.list_voices()), so this can never
+    select an unusable voice. ``fallback`` accepts a single id or an ordered list. A
+    preset saved with a voice of ELI's earlier engine (a Piper name) is read as the
+    nearest Kokoro voice (tts_kokoro.voice_for_legacy).
     """
+    from eli.perception.tts_kokoro import voice_for_legacy
     have = set(installed or ())
     fb = (spec or {}).get("fallback") or []
     candidates = [(spec or {}).get("base")] + ([fb] if isinstance(fb, str) else list(fb))
     for cand in candidates:
         name = str(cand or "").strip()
-        if name and name in have:
-            return name
+        for each in (name, voice_for_legacy(name)):
+            if each and each in have:
+                return each
     return default
 
 
@@ -157,7 +156,8 @@ def save_preset(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     base = dict(_BUILTIN.get(key, {}))
     base.update({k: v for k, v in (spec or {}).items() if v is not None})
     if not base.get("base"):
-        base["base"] = "en_US-amy-medium"
+        from eli.perception.tts_kokoro import DEFAULT_VOICE
+        base["base"] = DEFAULT_VOICE
     p = _presets_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     existing = {}

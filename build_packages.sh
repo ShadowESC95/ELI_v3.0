@@ -142,7 +142,7 @@ _stage_windows_common() {
     local ARCH_LABEL="${3:-x64}"
     rm -rf "$STAGING"
     mkdir -p "$STAGING/dist"
-    (cd "$PROJECT_ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_piper/**') | tar -xf - -C "$STAGING"
+    (cd "$PROJECT_ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_kokoro/**') | tar -xf - -C "$STAGING"
     cp "$PROJECT_ROOT/install.bat" "$PROJECT_ROOT/install.ps1" "$PROJECT_ROOT/eli.bat" "$STAGING/"
     cp "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/requirements.txt"
     cp "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/"

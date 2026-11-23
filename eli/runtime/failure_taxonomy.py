@@ -114,7 +114,7 @@ _BY_MESSAGE: Tuple[Tuple[str, str], ...] = (
 # Subsystem -> area. Matched against the traceback's module path first (evidence),
 # then against the failing action name (inference).
 _AREA_BY_MODULE: Tuple[Tuple[str, str], ...] = (
-    (r"eli/perception|audio_stt|/tts|piper|whisper", "audio"),
+    (r"eli/perception|audio_stt|/tts|kokoro|qwen3|whisper", "audio"),
     (r"eli/vision|vision_|qwen.?vl|ocr|screenshot", "vision"),
     (r"eli/memory|vector_store|knowledge_graph", "memory"),
     (r"eli/cognition|inference_broker|gguf", "inference"),
