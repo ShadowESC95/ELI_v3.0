@@ -78,6 +78,16 @@ def _patch_root() -> Path:
     return source_root()
 
 
+def __getattr__(name: str) -> Any:
+    """PROJECT_ROOT, which the packaged app's launch check reads (packaging/pyinstaller/eli_entry.py:
+    "code_examiner_root", the tree the examiner and self-improvement write must be outside the
+    read-only bundle): the source root as it is when asked (_patch_root). It was a constant fixed at
+    import, which nothing here reads any more."""
+    if name == "PROJECT_ROOT":
+        return _patch_root()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _safe_str(x: Any) -> str:
     try:
         return "" if x is None else str(x)

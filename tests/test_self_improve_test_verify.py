@@ -22,3 +22,11 @@ def test_run_patch_cycle_accepts_verify_flag_and_is_stable_with_no_failures():
     # With no recurring failures, the cycle is a safe no-op — and must accept verify_tests.
     r = eng.run_patch_cycle(max_patches=1, dry_run=True, verify_tests=True)
     assert "summary" in r and r["dry_run"] is True
+
+
+def test_the_root_the_packaged_launch_check_reads_is_the_source_tree_in_use(source_tree):
+    """The packaged app's launch check reads PROJECT_ROOT ("code_examiner_root", which must be outside
+    the read-only bundle); it was a constant fixed at import, so a source tree named afterwards was
+    not the one checked."""
+    import eli.runtime.self_improvement as SI
+    assert SI.PROJECT_ROOT == source_tree
