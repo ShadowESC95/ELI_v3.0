@@ -820,7 +820,7 @@ class SettingsModelMixin:
             tts_form.addRow(_get_btn)
 
             # Create-your-own-voice — drop in a recording (wav/mp3/mp4) and ELI builds
-            # a voice from it (Qwen3-TTS on a GPU with room, else Chatterbox, else XTTS).
+            # a voice from it (Qwen3-TTS, on a GPU with room for it).
             # Without any of them the voice is registered and ELI keeps its own voice.
             _VOICE_CLIP_EXTS = (".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".flac", ".aac", ".webm")
 
@@ -899,8 +899,8 @@ class SettingsModelMixin:
                     self.setToolTip(
                         "Build a custom ELI voice from a short, clean recording (~6–20s) of "
                         "the voice you want — .wav, .mp3, .mp4, .m4a, .ogg, .flac, .aac, .webm. "
-                        "Needs the Chatterbox voice engine to actually reproduce it "
-                        "(pip install -e \".[chatterbox]\" from the ELI project root).")
+                        "Qwen3-TTS reproduces it, on a GPU with room for it beside the "
+                        "language model; elsewhere the default voice speaks.")
 
                 def _first_local_clip(self, event) -> str:
                     if not event.mimeData().hasUrls():
@@ -2375,7 +2375,6 @@ class SettingsModelMixin:
             from eli.core.runtime_settings import save_settings as _rs_save_tts
             _rs_save_tts(_tts_updates)
             if _tts_engine == "natural":
-                os.environ["ELI_XTTS_DEVICE"] = "cuda"  # user chose it up-front → prefer GPU
                 try:
                     from eli.perception.tts_router import set_active_voice as _sav
                     _sav(_tts_voice)   # the natural engine's default voice (dlg.selected_tts_voice)

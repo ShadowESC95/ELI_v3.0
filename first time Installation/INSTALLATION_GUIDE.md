@@ -58,7 +58,7 @@ OS tools such as `mpv`, `ffmpeg`, `tesseract`, `yt-dlp` (pip), clipboard/screens
 **Not claimed as “100% on every machine”:**
 
 - A chat model larger than your RAM/VRAM will be slow or fail to load — pick a smaller GGUF.
-- Optional extras (XTTS “natural” voice, large vision models, CUDA *toolkit* via `--install-cuda`) are opt-in.
+- Optional extras (large vision models, CUDA *toolkit* via `--install-cuda`) are opt-in; the natural voice (Qwen3-TTS) is made where the GPU has room.
 - Frozen **AppImage** GPU packs are separate from portable `.venv` Vulkan builds.
 - Phones/tablets are **clients** of the PC/laptop web server — not native tablet apps.
 - The voice speaks American and British English and Mandarin (Kokoro). On a machine whose NVIDIA GPU has room for it beside the model, the installer also sets up Qwen3-TTS (ten languages, voice cloning; a runtime of its own, a few GB, once); elsewhere replies in other languages use your system's own voices.

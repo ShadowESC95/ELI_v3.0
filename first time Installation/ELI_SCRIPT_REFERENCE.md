@@ -405,7 +405,7 @@ Opens a command in a detected terminal emulator (GNOME/KDE/XFCE/…); holds wind
 
 ### `scripts/package_desktop_app.sh`
 
-Builds `dist/app_packages/ELI_v3-<ver>-linux-portable.tar.gz` via git archive; embeds `INSTALL_ELI.sh`, `RUN_ELI.sh`, `ELI_Setup.sh`. Options: `--with-assets`, `--skip-wheel`.
+Builds `dist/app_packages/ELI_v3-<ver>-linux-portable.tar.gz` via git archive; embeds `INSTALL_ELI.sh`, `RUN_ELI.sh`, `ELI_Setup.sh`. A starter model when `models/` holds one ELI may pass on: the catalog's smallest chat model whose licence is permissive (`scripts/asset_release_policy.py --starter`; `ELI_STARTER_MODEL` picks one by hand, held to the same licence). `--with-assets` adds only what the asset release may publish, and every model in the package gets its licence beside it (`--licences`). Options: `--with-assets`, `--skip-wheel`.
 
 ---
 
@@ -877,7 +877,7 @@ The `eli/` package contains **452 Python modules** across **26 subpackages** (ex
 - `perception/screen_analysis.py` — Local screen analysis — depth modes, memory recall, research context.
 - `perception/screen_locator.py` — Screenshot-to-element locator for ELI.
 - `perception/tts_router.py` — tts_router.py — TTS router for ELI.
-- `perception/tts_xtts.py` — Voice cloning backend (Coqui XTTS-v2).
+- `perception/tts_xtts.py` — The cloned-voice registry (Qwen3-TTS speaks the clones).
 - `perception/ui_ground.py` — Optional UI grounding backends — 100% local by default.
 - `perception/ui_tree.py` — Accessibility-tree UI targeting (Linux / AT-SPI).
 - `perception/vision.py` — ELI local vision — true image understanding via a local GGUF vision-language

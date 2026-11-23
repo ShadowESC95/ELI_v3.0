@@ -127,8 +127,10 @@ dependencies = [
     "androidtv[async]>=0.0.70",  # Fire TV / Android TV
     "adb-shell>=0.4",         # Fire TV / Android TV pairing keys
     "pyatv>=0.16",            # Apple TV / AirPlay (0.16 read tags with tinytag, not the GPL's mutagen)
-    # Gaze cursor + on-screen OCR.
-    "opencv-python>=4.8",
+    # Gaze cursor + on-screen OCR. Not on macOS: OpenCV's macOS wheels (opencv-python and -headless alike)
+    # link an FFmpeg built with x264, x265 and other GPL parts, loaded with cv2; its Linux and Windows
+    # wheels carry an LGPL FFmpeg. The gaze cursor says so on a Mac.
+    "opencv-python>=4.8; sys_platform != 'darwin'",
     "pytesseract>=0.3",
     # Web search + browser automation plugins.
     "ddgs>=9.0",
@@ -185,16 +187,8 @@ full = [
 # The GPU voice, Qwen3-TTS (Apache-2.0), is not an extra: qwen-tts needs transformers 4.57.3 and
 # accelerate 1.12.0, older than this environment's, so ELI makes it a runtime of its own on a machine whose
 # GPU has room for it (eli/perception/qwen3_runtime.py, eli/perception/qwen3_runtime.txt).
-# Neural voice cloning — Chatterbox (Resemble AI, MIT-licensed code + weights).
-# Commercial-clean replacement for XTTS (Coqui's model licence is non-commercial):
-# zero-shot cloning from a short reference clip + native emotion/exaggeration control.
-# Heavy (pulls torch), opt-in — NOT part of `full`; downloads a model on first use.
-# Powers clone:<name> voices; the record/upload flow feeds it via the shared registry.
-chatterbox = [
-    "chatterbox-tts>=0.1",
-    "torch>=2.0",
-    "torchaudio>=2.0",
-]
+# Qwen3-TTS also clones voices (clone:<name>). Chatterbox, which did on other machines, is no extra any
+# more: chatterbox-tts brings pykakasi (GPL-3.0), and ELI v3 passes on and installs nothing under the GPL.
 # LoRA fine-tuning (heavy, opt-in — NOT part of full). See training/README.md.
 training = [
     "torch>=2.0",
@@ -245,6 +239,7 @@ exclude = ["tests*", "ops*", "build*"]
     "cognition/persona*.txt",
     "licensing/keys/*.pub",
     "licensing/keys/*.md",
+    "perception/wake_features/*.onnx",
 ]
 
 # Never let dev-tooling / dot-directories (.claude, .git, caches) get hoovered into the

@@ -325,6 +325,7 @@ the `.desktop` files from `~/.local/share/applications/`.)
 
 ---
 
-*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95). Source-available under the PolyForm
-Internal Use License 1.0.0 (free to use and modify on your own machine; not for
-redistribution). Questions: jaybridgeman0095@gmail.com*
+*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95). Proprietary commercial software,
+licensed under the ELI End User Licence Agreement (COMMERCIAL_EULA.md): a purchased licence or a trial
+lets you install and use it on the machines it covers; it may not be copied, redistributed or resold.
+Questions: jaybridgeman0095@gmail.com*

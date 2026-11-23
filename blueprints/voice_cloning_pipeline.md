@@ -6,9 +6,12 @@
 > **Since 3.0.172 (the Kokoro voice):** the presets are a Kokoro base voice plus the effect chain,
 > and a cloned voice (`clone:<name>`) is spoken first by **Qwen3-TTS** (Apache-2.0, Base model, from
 > the reference clip and, when given, its transcript) on a GPU with room for it beside the language
-> model (`eli/perception/tts_qwen3.py`, in the runtime ELI makes for it, `qwen3_runtime.py`), then Chatterbox, then XTTS-v2. When
-> none can speak it the Kokoro default voice speaks, visibly. The dated sections below record the
-> XTTS work as it was done; "Piper" there is the earlier default voice.
+> model (`eli/perception/tts_qwen3.py`, in the runtime ELI makes for it, `qwen3_runtime.py`). When
+> it cannot speak it the Kokoro default voice speaks, visibly. Chatterbox and Coqui XTTS-v2 are no
+> engines of v3 any more: chatterbox-tts brings pykakasi (GPL-3.0), and XTTS-v2's model is under the
+> non-commercial CPML, to which ELI agreed on the user's behalf (`COQUI_TOS_AGREED`); a product sold
+> under its own licence may do neither. The dated sections below record the XTTS work as it was done;
+> "Piper" there is the earlier default voice.
 
 How ELI turns a short audio/video clip of *any* voice — a character, an actor, a
 friend — into a usable ELI voice. Covers the full path from a dropped-in file to
@@ -23,7 +26,7 @@ trade off very differently:
 | | Character presets (`voice_fx.py`) | Voice cloning (`tts_xtts.py`) |
 |---|---|---|
 | Built-in styles | calm, robotic, energetic, synthetic, refined | none — always from *your* clip |
-| How it works | base Kokoro voice + an ffmpeg `-af` effect chain (pitch/speed/filters) | Qwen3-TTS (GPU) zero-shot cloning from a ~6–20s reference clip; Chatterbox, then XTTS-v2, without it |
+| How it works | base Kokoro voice + an ffmpeg `-af` effect chain (pitch/speed/filters) | Qwen3-TTS (GPU) zero-shot cloning from a ~6–20s reference clip; the default voice without it |
 | Fidelity | an approximation / vibe | reproduces the actual voice characteristics |
 | Cost | free, instant, always available | opt-in ~1.8GB neural model, GPU preferred |
 | Covers characters with no preset (Cartman, Vader, …) | no | yes |
@@ -193,11 +196,9 @@ at both step 4 and step 5.
 
 ## Licensing note
 
-XTTS-v2 is Coqui's model under the **CPML (Coqui Public Model License)** —
-non-commercial personal use, which is exactly what this feature is for (a local,
-personal voice, never redistributed by ELI). A commercial deployment would need a
-paid licence from Coqui directly; that is a deployment decision, not something
-this pipeline enforces.
+XTTS-v2 is Coqui's model under the **CPML (Coqui Public Model License)**, non-commercial.
+ELI v3 is sold under its own licence, so it no longer agrees to the CPML for the user, fetches
+XTTS-v2 or carries its engine: Qwen3-TTS (Apache-2.0) clones voices instead.
 
 ## Known limitations
 

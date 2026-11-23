@@ -159,7 +159,9 @@ if [ "${ELI_FULL_WHEELHOUSE:-0}" = "1" ] && [ -f "$ROOT/requirements.lock.txt" ]
       --prefer-binary -q 2>/dev/null || echo "[package]   (some wheels unavailable — install will fetch those)"
 fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
-  # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the package here
+  # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the package here; the files a
+  # kept package holds under such a licence (LEFT_OUT_FILES) are taken out of its wheel first
+  "$PYTHON" "$ROOT/packaging/gpl_sources.py" --leave-out "$STAGING/wheelhouse" || exit 1
   "$PYTHON" "$ROOT/packaging/gpl_sources.py" --check-wheels "$STAGING/wheelhouse" || exit 1
   _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l || true)"
   echo "[package] wheelhouse: ${_wh_count} wheel(s)"
@@ -176,10 +178,17 @@ else
 fi
 cp "$ROOT/requirements-portable-bootstrap.txt" "$STAGING/" 2>/dev/null || true
 
-# Starter model — bundle ONE small GGUF so a fresh install answers immediately with no
-# model download. Set ELI_STARTER_MODEL to a filename in models/ (default: tinyllama).
-STARTER_MODEL="${ELI_STARTER_MODEL:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
-if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
+# Starter model — bundle ONE GGUF so a fresh install answers immediately with no model download. By
+# default the catalog's smallest chat model whose licence lets ELI pass it on that models/ holds
+# (scripts/asset_release_policy.py starter_model): the package goes to every user, and a model under a
+# non-commercial or research licence (Qwen2.5-3B's, the default here before) never is. ELI_STARTER_MODEL
+# names one by hand; it is held to the same licence.
+STARTER_MODEL="${ELI_STARTER_MODEL:-$("$PYTHON" "$ROOT/scripts/asset_release_policy.py" --starter "$ASSET_ROOT/models" 2>/dev/null || true)}"
+if [ -n "$STARTER_MODEL" ] && ! (cd "$ROOT" && "$PYTHON" -c 'import sys; sys.path.insert(0, "scripts"); import asset_release_policy as p; sys.exit(0 if sys.argv[1] in p.catalog_model_filenames() else 1)' "$STARTER_MODEL"); then
+  echo "[package] $STARTER_MODEL is not a catalog model ELI may pass on (scripts/asset_release_policy.py) — not bundled" >&2
+  STARTER_MODEL=""
+fi
+if [ -n "$STARTER_MODEL" ] && [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
   echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ASSET_ROOT/models/$STARTER_MODEL" | cut -f1))"
   mkdir -p "$STAGING/models"; cp "$ASSET_ROOT/models/$STARTER_MODEL" "$STAGING/models/"
   # A "full" package (starter model present) also bundles the small aux weights the installer
@@ -199,16 +208,39 @@ if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
     fi
   done
 else
-  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
+  echo "[package] no starter model (${STARTER_MODEL:-none ELI may pass on} in $ASSET_ROOT/models) — skipping (installer will download one)"
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
   echo "[package] including model/voice assets from $ASSET_ROOT (this can be very large)"
-  [ -d "$ASSET_ROOT/models" ] && cp -a "$ASSET_ROOT/models/." "$STAGING/models/"
+  # Only what the asset release may publish (scripts/github_asset_manifest.py): catalog models under a
+  # licence that lets ELI pass them on, never the person's own recordings, wake words or adapters, and no
+  # model whose licence forbids it, whatever else models/ holds.
+  if [ -d "$ASSET_ROOT/models" ]; then
+    (cd "$ASSET_ROOT" && find models -type f -print0) | (cd "$ROOT/scripts" && "$PYTHON" -c '
+import sys
+import github_asset_manifest as m
+for rel in sys.stdin.read().split("\0"):
+    if rel:
+        print(("bundle " if m._classify(rel)["upload_recommended"] else "skip ") + rel)
+') | while IFS= read -r _line; do
+      _rel="${_line#* }"
+      if [ "${_line%% *}" = "bundle" ]; then
+        mkdir -p "$STAGING/$(dirname "$_rel")" && cp -a "$ASSET_ROOT/$_rel" "$STAGING/$_rel"
+      else
+        echo "[package]   not bundled (asset policy): $_rel"
+      fi
+    done
+  fi
   if [ -d "$ASSET_ROOT/tts_kokoro" ]; then
     mkdir -p "$STAGING/tts_kokoro" && cp -a "$ASSET_ROOT/tts_kokoro/." "$STAGING/tts_kokoro/"
   fi
 fi
+
+# Each model the package carries has its licence beside it (eli/runtime/model_licences.py; a catalog
+# model's from its entry); a model whose licence nothing records stops the package.
+"$PYTHON" "$ROOT/scripts/asset_release_policy.py" --licences "$STAGING" || {
+  echo "[package] ERROR: a model in the package has no licence ELI knows (above)" >&2; exit 1; }
 
 cat > "$STAGING/RUN_ELI.sh" <<'RUN_EOF'
 #!/usr/bin/env bash

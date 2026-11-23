@@ -80,8 +80,7 @@ system.
   window, the server, documents, vision, web search, wake words, the device drivers and
   yt-dlp are `pyproject.toml`'s dependencies, so every build installs them and fails if one
   cannot be installed. The extras are what is built for, or chosen by, the machine's GPU:
-  `llm` (the inference engine) is in `REQUIRED_EXTRAS`; `image` (and, on Linux, `chatterbox`)
-  in `OPTIONAL_EXTRAS`. `tests/claims/test_runtime_dependencies.py` fails when ELI imports a
+  `llm` (the inference engine) is in `REQUIRED_EXTRAS`; `image` in `OPTIONAL_EXTRAS`. `tests/claims/test_runtime_dependencies.py` fails when ELI imports a
   package that is not declared this way.
 * **Optional extras without wheels for a platform** — each `OPTIONAL_EXTRAS`
   group in `release.yml` installs independently; a group with no wheels for

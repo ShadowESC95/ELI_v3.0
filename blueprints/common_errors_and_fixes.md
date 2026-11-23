@@ -702,6 +702,8 @@ GUI has no terminal for that prompt to read from.
 which is always the correct branch here (a local, personal voice, never redistributed by ELI). No
 action needed on an up-to-date checkout; using this feature at all implies agreeing to the
 non-commercial CPML (a commercial deployment needs a separate paid licence directly from Coqui).
+**Since then:** ELI v3, sold under its own licence, carries no XTTS-v2 engine and agrees to the CPML
+for nobody; Qwen3-TTS (Apache-2.0) speaks cloned voices.
 
 ## Natural voice / cloning: `ModuleNotFoundError: No module named 'torchaudio'` (or `torchcodec`)
 **Symptom:** `xtts_available()` / a clone attempt fails with a missing `torchaudio` or `torchcodec`
@@ -927,7 +929,10 @@ affected: the installers keep to `requirements.lock.txt`.
 **Fix (v3.0.137):** ELI reads the recording itself and hands faster-whisper 16 kHz samples, so
 faster-whisper never opens a file. The release build now installs under the lock as well
 (`packaging/lock_constraints.py`), and the packaged app's `--selftest` checks that a recording
-can be read for speech input.
+can be read for speech input. Since then no release carries PyAV at all (its wheels' FFmpeg holds
+x264 and x265, under the GPL; `packaging/gpl_sources.py`, LEFT_OUT): ELI reads WAV, FLAC, Ogg and
+MP3 itself and anything else through the system's `ffmpeg` program when there is one
+(`eli/perception/audio_samples.read_mono`), and the web page sends a WAV its browser decoded.
 
 ---
 

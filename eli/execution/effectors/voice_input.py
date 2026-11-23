@@ -92,9 +92,8 @@ def _h_transcribe(a, args):
             if not src_path.exists():
                 return {"ok": False, "action": a, "error": f"File not found: {src_path}",
                         "content": f"File not found: {src_path}", "response": f"File not found: {src_path}"}
-            from faster_whisper import WhisperModel
-            from eli.perception.local_whisper_stt import _audio_for_whisper
-            model = WhisperModel("small", device="cpu", compute_type="int8")
+            from eli.perception.local_whisper_stt import _audio_for_whisper, faster_whisper
+            model = faster_whisper().WhisperModel("small", device="cpu", compute_type="int8")
             segments, _ = model.transcribe(_audio_for_whisper(src_path), vad_filter=True)
             text = " ".join(seg.text.strip() for seg in segments).strip()
             msg = f"Transcription of {src_path.name}:\n\n{text}" if text else "No speech detected."
@@ -102,7 +101,7 @@ def _h_transcribe(a, args):
         else:
             # Live microphone transcription — single utterance
             import numpy as np, sounddevice as sd
-            from faster_whisper import WhisperModel
+            from eli.perception.local_whisper_stt import faster_whisper
             sr = 16000
             chunk = 0.05
             start_rms = 0.02
@@ -130,7 +129,7 @@ def _h_transcribe(a, args):
                 return {"ok": False, "action": a, "error": "No audio captured",
                         "content": "No audio captured.", "response": "No audio captured."}
             audio = np.concatenate(frames).astype("float32")
-            model = WhisperModel("small", device="cpu", compute_type="int8")
+            model = faster_whisper().WhisperModel("small", device="cpu", compute_type="int8")
             # the samples themselves, recorded at 16 kHz: no file for PyAV to open
             segments, _ = model.transcribe(audio, vad_filter=True)
             text = " ".join(seg.text.strip() for seg in segments).strip()

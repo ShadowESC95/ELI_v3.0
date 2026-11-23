@@ -120,7 +120,11 @@ class _GazeEngineService:
             try:
                 import cv2  # noqa: F401
             except ImportError:
-                msg = "cv2 (OpenCV) not installed. Run: pip install opencv-python-headless"
+                if sys.platform == "darwin":
+                    msg = ("The gaze cursor needs OpenCV, which ELI does not install on a Mac: its macOS builds "
+                           "carry an FFmpeg under the GPL (x264), which ELI may not pass on.")
+                else:
+                    msg = "cv2 (OpenCV) not installed. Run: pip install opencv-python-headless"
                 self._error = msg
                 return {"ok": False, "error": msg, "message": msg}
             self._camera = camera

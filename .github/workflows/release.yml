@@ -67,11 +67,9 @@ env:
   REQUIRED_EXTRAS: "llm"
   # Extras bundled when their wheels resolve on the runner; skipped (loudly)
   # otherwise — every optional import in ELI degrades cleanly by design.
-  # NOTE: this list is consumed by ALL THREE build jobs. The XTTS-v2 neural voice engine
-  # (`natural`) is deliberately NOT here — it is added as a job-level override on
-  # build-linux only, which is the one job that installs the CPU torch stack first and
-  # verifies no CUDA wheels crept in. Adding it globally makes windows/macos resolve
-  # torch from PyPI, and their bundles then fail the 2 GiB asset guard below.
+  # NOTE: this list is consumed by ALL THREE build jobs. No neural voice engine is in it: an extra
+  # that brings torch makes windows/macos resolve it from PyPI, and their bundles then fail the
+  # 2 GiB asset guard below.
   OPTIONAL_EXTRAS: "image"
 
 jobs:
@@ -195,6 +193,10 @@ jobs:
       - name: PyInstaller build (ELI.spec)
         shell: bash
         run: pyinstaller --noconfirm --clean ELI.spec
+
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI
 
       - name: Smoke check — bundle structure + REAL launch selftest
         shell: bash
@@ -356,6 +358,10 @@ jobs:
       - name: PyInstaller build (ELI.spec)
         run: pyinstaller --noconfirm --clean ELI.spec
 
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI.app
+
       - name: Smoke check — .app structure + REAL launch selftest
         run: |
           test -x dist/ELI.app/Contents/MacOS/ELI || { echo "::error::ELI.app executable missing"; exit 1; }
@@ -397,22 +403,9 @@ jobs:
       ELI_REQUIRE_VOICES: "1"
       ELI_REQUIRE_EMBEDDER: "1"
       GH_TOKEN: ${{ github.token }}
-      # The XTTS-v2 neural engine is deliberately NOT bundled. It shipped briefly in
-      # v2.1.72 and was pulled: the CPU-only torch the bundle must use (a CUDA build
-      # blows GitHub's 2 GiB asset limit) means XTTS runs on CPU, and on a GPU machine
-      # the startup picker pinned ELI_XTTS_DEVICE=cuda, so it crashed with "Torch not
-      # compiled with CUDA enabled" — and even working, it costs GPU/CPU far out of
-      # proportion to a voice. Kokoro is the shipped engine. Cloning still works from a
-      # source install (`pip install -e ".[chatterbox]"`), where torch matches the host.
-      #
-      # Linux-only: the Chatterbox clone engine IS bundled, so `clone:` voices actually
-      # synthesise instead of silently falling back to the default voice. Chatterbox is MIT and
-      # commercial-clean, while the XTTS-v2 *model* is non-commercial — v3 prefers
-      # Chatterbox for exactly that reason (tts_router: "Chatterbox (MIT, preferred) ->
-      # XTTS (legacy)"). Safe here and only here: this job installs the CPU torch stack
-      # from the pytorch CPU index before the extras loop and fails on any nvidia-*
-      # wheel. Model weights are NOT bundled; they download on first use.
-      OPTIONAL_EXTRAS: "image chatterbox"
+      # No neural voice engine is bundled. Qwen3-TTS (Apache-2.0) is made into a runtime of its own on a
+      # machine whose GPU has room for it (eli/perception/qwen3_runtime.py). Coqui XTTS-v2 (its model is
+      # non-commercial) and Chatterbox (it brings pykakasi, GPL-3.0) are no engines of v3 any more.
     name: linux (AppImage)
     needs: guard
     runs-on: ubuntu-24.04
@@ -444,10 +437,29 @@ jobs:
           #   misleadingly as "libxcb-cursor0 is needed" whichever member is missing.
           # xvfb: virtual X server for the real-xcb GUI selftest in the smoke check.
           sudo apt-get install -y --no-install-recommends \
-            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
+            libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-util1 libxcb-shape0 libxcb-randr0 libxcb-render0 \
             libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 libxkbcommon0 xvfb
+
+      - name: PortAudio without JACK (Ubuntu's links JACK, and JACK links Berkeley DB, under the Sleepycat licence)
+        run: |
+          set -euo pipefail
+          # PyAudio is compiled against PortAudio here, and PyInstaller bundles the PortAudio it links.
+          # Ubuntu's libportaudio2 is built with JACK, whose libjack links Berkeley DB 5.3: under the
+          # Sleepycat licence the source of every program using it has to be offered, so the AppImage could
+          # not carry it. ALSA alone reaches the sound server (PulseAudio, PipeWire) through ALSA's plug-ins.
+          src=pa_stable_v190700_20210406.tgz
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/$src" "https://files.portaudio.com/archives/$src"
+          # 1,462,695 bytes; this sha256 was checked against the archive files.portaudio.com serves (2026-11-23)
+          echo "47efbf42c77c19a05d22e627d42873e991ec0c1357219c0d74ce6a2948cb2def  $RUNNER_TEMP/$src" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$src" -C "$RUNNER_TEMP"
+          ( cd "$RUNNER_TEMP/portaudio" && ./configure --prefix=/usr/local --with-alsa --without-jack --without-oss \
+              --disable-static && make -j"$(nproc)" && sudo make install )
+          sudo ldconfig
+          if ldd /usr/local/lib/libportaudio.so.2 | grep -i -E 'jack|libdb'; then
+            echo "::error::the PortAudio built here still links JACK or Berkeley DB"; exit 1
+          fi
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
@@ -455,11 +467,10 @@ jobs:
           python -m pip install --upgrade pip wheel
           pip install -r requirements-build.txt
           # CPU torch stack FIRST — default PyPI torch drags ~6 GB of CUDA libs into the
-          # bundle. torchaudio is included here for the same reason: the `natural`
-          # (XTTS-v2) extra requires it, and resolving it from PyPI afterwards pulls the
-          # CUDA build of torch straight back in.
+          # bundle. torchaudio is included here for the same reason: a package that asks for it
+          # and resolves it from PyPI afterwards pulls the CUDA build of torch straight back in.
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          # an extra that pins its own torch (chatterbox: torch==2.6.0) gets the CPU build of it too
+          # an extra that pins its own torch gets the CPU build of it too
           export PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
           llama_src="$(python packaging/llama_source.py)"
           pip install "$llama_src"
@@ -480,15 +491,6 @@ jobs:
             echo "$cuda" | sed 's/^/  /'
             exit 1
           fi
-          python - <<'PY'
-          import importlib
-          for mod, why in (("torch", "neural voice engine"), ("TTS", "XTTS-v2 (coqui-tts)")):
-              try:
-                  importlib.import_module(mod)
-                  print(f"  {mod}: present ({why})")
-              except Exception as e:
-                  print(f"::warning::{mod} unavailable — {why} will degrade to the Kokoro voice: {e}")
-          PY
 
       - name: Leave out the GPL packages PyAutoGUI declares (ELI runs without them; ELI.spec stops on any GPL package)
         shell: bash
@@ -558,39 +560,22 @@ jobs:
 
       - name: PyInstaller build (ELI.spec)
         run: |
-          pyinstaller --noconfirm --clean ELI.spec 2>&1 | tee /tmp/pyi.log
-          # collect_submodules imports the package in an ISOLATED SUBPROCESS, so a
-          # package that only imports with an in-process shim fails collection and
-          # PyInstaller merely WARNS — buried in ~250k log lines. That is how four
-          # releases shipped an AppImage whose neural engine could not load.
-          if grep -q "Failed to collect submodules for 'TTS'" /tmp/pyi.log; then
-            echo "::error::PyInstaller could not collect TTS — the neural engine will not load:"
-            grep -m1 -A2 "Failed to collect submodules for 'TTS'" /tmp/pyi.log
-            exit 1
-          fi
+          pyinstaller --noconfirm --clean ELI.spec
 
       - name: No GTK or GLib I/O library in the bundle (they would load the user's system's plug-ins)
         run: |
           python packaging/linux/trim_bundle.py dist/ELI/_internal
           python packaging/linux/trim_bundle.py --check dist/ELI/_internal
 
+      - name: Nothing in the bundle a closed, paid product may not pass on (GPL libraries, non-commercial models)
+        shell: bash
+        run: python packaging/gpl_sources.py --check-bundle dist/ELI
+
       - name: Smoke check — bundle structure + REAL launch selftest (headless + xcb)
         run: |
           test -x dist/ELI/ELI || { echo "::error::dist/ELI/ELI missing"; exit 1; }
           test -x dist/ELI/ELI-Server || { echo "::error::dist/ELI/ELI-Server missing"; exit 1; }
           test -d dist/ELI/_internal/eli || { echo "::error::eli source tree missing from bundle"; exit 1; }
-          # The neural voice engine must be COLLECTED, not merely pip-installed.
-          # v2.1.65 and v2.1.66 both shipped coqui_tts-*.dist-info with no TTS/
-          # package: the spec's import probe raised on a transformers incompatibility
-          # and silently skipped collection, so every cloned voice fell back to the default voice
-          # with the extra sitting unused in the bundle. Metadata is not the package.
-          if ls dist/ELI/_internal/coqui_tts-*.dist-info >/dev/null 2>&1; then
-            if [ ! -d dist/ELI/_internal/TTS ]; then
-              echo "::error::coqui-tts is installed but the TTS/ package was NOT collected — voice cloning would silently fall back to the default voice"
-              exit 1
-            fi
-            echo "TTS/ package collected: $(du -sh dist/ELI/_internal/TTS | cut -f1)"
-          fi
           # Self-containment guard: the Qt xcb plugin (libqxcb.so) links the whole
           # xcb-util family at runtime and resolves them via its RUNPATH from
           # PySide6/Qt/lib. Assert EACH member is bundled IN THAT EXACT DIRECTORY —
@@ -637,13 +622,14 @@ jobs:
           ls -lh dist/*.tar.gz
 
       # GPL-3.0 lets the bundles carry a GPL package when its exact source goes with them; SOURCES.md
-      # says so plainly when the builds carry none (PyAutoGUI's are left out above). This environment installs the extras every build does (and
-      # chatterbox, Linux's own). A source that cannot be fetched fails the release. Beside it,
+      # says so plainly when the builds carry none (PyAutoGUI's are left out above). This environment installs the extras every build does.
+      # A source that cannot be fetched fails the release. Beside it,
       # LGPL_SOURCES.md says where the source of each LGPL package (Qt for Python and the Qt inside it
       # among them) is, at the version the builds carry; one it cannot find fails it too.
       - name: Source of the GPL packages the bundles carry (attached to the release)
         run: |
-          python packaging/gpl_sources.py dist/gpl-sources
+          # the native LGPL libraries inside the AppImage's bundle too (Ubuntu's, OpenCV's FFmpeg and Qt 5, libsndfile)
+          python packaging/gpl_sources.py dist/gpl-sources --bundle dist/ELI
           cat dist/gpl-sources/SOURCES.md
           cat dist/gpl-sources/LGPL_SOURCES.md
           tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-gpl-sources.tar.gz" -C dist gpl-sources

@@ -78,12 +78,15 @@ build_windows_wheelhouse_for() {
                 PyAutoGUI*|pyautogui*) continue ;;
                 accelerate*) extra_download_args=(--no-deps) ;;
             esac
+            # the stable ABI and pure wheels too: tokenizers, cryptography and others publish only cp3x-abi3
+            # wheels, and with --abi cpXY alone the wheelhouse went without them, so an offline install of
+            # faster-whisper (and what needs those) could not finish
             if ! python3 -m pip download \
                     --dest "$OUT_DIR" \
                     --platform "$PLATFORM" \
                     --python-version "$pyver" \
                     --implementation cp \
-                    --abi "$abi" \
+                    --abi "$abi" --abi abi3 --abi none \
                     --only-binary=:all: \
                     --prefer-binary \
                     ${extra_download_args[@]+"${extra_download_args[@]}"} \
@@ -132,7 +135,9 @@ build_windows_wheelhouse_for() {
         echo "[wheelhouse] Skipping PyAutoGUI wheel build on ${PLATFORM} (desktop automation N/A on WoA)."
     fi
 
-    # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the release here.
+    # ELI v3 passes on no package under the GPL: one in the wheelhouse stops the release here. The files
+    # a kept package holds under such a licence (LEFT_OUT_FILES) are taken out of its wheel first.
+    python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --leave-out "$OUT_DIR"
     python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --check-wheels "$OUT_DIR"
     ( cd "$OUT_DIR" && ls -1 > "$MANIFEST" 2>/dev/null || true )
     if [ "$missing" -gt 0 ]; then
@@ -241,6 +246,7 @@ WOA_EOF
         done
         python3 -m pip download -r "$PROJECT_ROOT/requirements-portable-bootstrap.txt" \
             -d "$STAGING/wheelhouse" --prefer-binary -q 2>/dev/null || true
+        python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --leave-out "$STAGING/wheelhouse"
         python3 "$PROJECT_ROOT/packaging/gpl_sources.py" --check-wheels "$STAGING/wheelhouse"
     fi
 }

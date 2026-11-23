@@ -81,6 +81,21 @@ if _gpl:
 _stand_in_problems = gpl_sources.stand_in_problems()
 if _stand_in_problems:
     _fail("; ".join(_stand_in_problems))
+# Nor anything else a closed, paid product may not pass on: a package under another strong copyleft or a
+# non-commercial licence, one carrying a native library under the GPL whatever its own metadata says
+# (PyAV's x264 and x265, OpenCV's on macOS), or one whose licence nothing says until it is found by hand
+# (KNOWN_LICENCES in packaging/gpl_sources.py).
+_breach = gpl_sources.breach_distributions()
+if _breach:
+    _fail("packages a closed, paid product may not pass on are installed in the build environment: "
+          + "; ".join(f"{p['name']} {p['version']} ({p['class']}: {p['licence']})" for p in _breach))
+# Files of a package ELI keeps that no release carries (openWakeWord's non-commercial wake-word models,
+# SpeechRecognition's GPL FLAC programs), which the same --leave-out step deletes.
+_left_out_files = gpl_sources.left_out_files()
+if _left_out_files:
+    _fail("files no release carries are installed: " + "; ".join(
+        f"{d.metadata['Name']}: {', '.join(f)}" for d, f in _left_out_files)
+        + ". Run `python packaging/gpl_sources.py --leave-out`.")
 
 ICON_ICO = ROOT / "packaging" / "desktop" / "Eli_Icon.ico"
 ICON_PNG = ROOT / "packaging" / "desktop" / "eli-256.png"  # 256px master; Eli_Icon.png is only 175px and renders fuzzy
@@ -246,53 +261,12 @@ for pkg in ("pyttsx3", "plyer.platforms", "uvicorn"):
 # graphs and mesh inspection work in the packaged build, not just from source.
 for pkg in ("meshio", "matplotlib", "mpl_toolkits", "pandas", "plotly", "scipy"):
     hiddenimports += _optional_collect(pkg)
-# Coqui XTTS-v2 — the neural voice-clone engine. `eli/perception/tts_xtts.py`
-# imports `TTS` LAZILY, inside xtts_available(), so PyInstaller's static analysis
-# never sees it. The v2.1.65 AppImage proved the consequence: pip installed
-# coqui-tts on the runner (coqui_tts-0.27.5.dist-info is in the bundle) but the
-# TTS/ package itself was never collected, so `import TTS` failed at runtime and
-# every cloned voice fell back to the default voice — with the extra bundled and unusable.
-# `trainer` is imported by coqui-tts at load time and has the same problem.
-# coqui-tts cannot be imported bare: it reaches for
-# `transformers.pytorch_utils.isin_mps_friendly`, which transformers>=5 removed.
-# ELI carries a shim for exactly this (tts_xtts._patch_transformers_compat) and
-# applies it before its own probe. The spec did not, so `__import__("TTS")` raised,
-# _optional_collect reported "optional dependency not installed" and collected
-# nothing — v2.1.66 shipped trainer/ and torch/ but no TTS/, with pip having
-# installed coqui-tts perfectly well. Reuse the project's shim rather than
-# duplicating it; if it is unavailable the collect below simply skips as before.
-try:
-    from eli.perception.tts_xtts import _patch_transformers_compat as _eli_tts_shim
-    _eli_tts_shim()
-    print("[ELI.spec] applied transformers compat shim before collecting TTS")
-except Exception as _e:
-    print(f"[ELI.spec] transformers compat shim unavailable ({_e}); TTS may be skipped")
-# `transformers` uses a LAZY module system: submodules are declared in
-# `_import_structure` and imported on attribute access, which PyInstaller cannot
-# trace. It reached the bundle only as a traced dependency of something else, so it
-# was partial — and XTTS-v2 uses GPT-2 as its text encoder, so importing TTS in the
-# frozen app died with "Could not import module 'GPT2PreTrainedModel'". That error
-# took three releases to surface because xtts_available() discarded it.
-# Reproduced locally in a minimal frozen probe (six CI releases could not settle it;
-# two local builds did). Four separate things break XTTS in a PyInstaller bundle, and
-# the FIRST one masquerades as the others:
-#
-#  1. `transformers.models.gpt2.modeling_gpt2` calls
-#     importlib.metadata.version("torchcodec"). PyInstaller ships the package but not
-#     its .dist-info, so the lookup raises PackageNotFoundError — and transformers'
-#     lazy loader re-reports it as "Could not import module 'GPT2PreTrainedModel'".
-#     That misleading message sent five releases chasing GPT-2 and transformers pins.
-#     Fixed by copy_metadata below.
-#  2. TTS reads TTS/vocoder/configs/*.py at import → needs include_py_files.
-#  3. coqui-tts pulls transitive packages PyInstaller cannot trace statically.
-#  4. `inflect` decorates with typeguard's @typechecked, which calls
-#     inspect.getsource() at import time — impossible in a frozen app unless the .py
-#     source ships as data so linecache can read it.
-_NEURAL_PKGS = (
-    "TTS", "trainer", "transformers",
-    "ko_speech_tools", "coqpit_config", "monotonic_alignment_search",
-    "num2words", "inflect", "anyascii", "librosa", "soundfile", "typeguard",
-)
+# `transformers` uses a LAZY module system: submodules are declared in `_import_structure` and imported
+# on attribute access, which PyInstaller cannot trace (image generation's pipelines reach for it that
+# way). soundfile and num2words are read the same way by ELI's audio and the Kokoro voice's numbers.
+# Coqui XTTS-v2 (coqui-tts), which these lines once collected, is no engine of v3: its model is
+# non-commercial.
+_NEURAL_PKGS = ("transformers", "num2words", "soundfile")
 for pkg in _NEURAL_PKGS:
     hiddenimports += _optional_collect(pkg)
 # The Kokoro voice (eli/perception/tts_kokoro.py) imports these lazily, on the first reply spoken.
@@ -379,8 +353,19 @@ if sys.platform.startswith("linux"):
         binaries.append((str(_path), _qt_lib_dest))
         print(f"[ELI.spec] bundling Qt xcb dependency: {_path} -> {_qt_lib_dest}")
 
-for pkg in ("llama_cpp", "faster_whisper", "openwakeword"):
+# faster-whisper imports PyAV at the top of its audio module, and no build carries PyAV (its FFmpeg holds
+# x264, under the GPL: packaging/gpl_sources.py, LEFT_OUT); imported the way ELI imports it, with a
+# placeholder for PyAV, the probe below finds it and its data (Silero's VAD model) is collected.
+try:
+    from eli.perception.local_whisper_stt import faster_whisper as _faster_whisper  # noqa: E402
+    _faster_whisper()
+except Exception as _e:
+    print(f"[ELI.spec] faster-whisper did not import ({_e}); speech input's data may be skipped")
+for pkg in ("llama_cpp", "faster_whisper"):
     datas += _optional_collect(pkg, data=True)
+# openWakeWord: none of its package's model files (CC BY-NC-SA 4.0, non-commercial, by its own note).
+# ELI runs its own two feature models, which the eli/ tree above carries (eli/perception/wake_features/,
+# built by packaging/wake_features.py).
 # The Kokoro voice's text side: misaki reads its dictionaries (misaki/data/*.json) as package data,
 # spaCy and thinc register their parts through entry points read from the dist-info metadata, and
 # load the tagger's components by name, so all of it is collected whole.
@@ -391,19 +376,11 @@ for _m in ("spacy", "spacy-legacy", "spacy-loggers", "thinc", "misaki", "confect
         datas += copy_metadata(_m)
     except Exception as _e:
         print(f"[ELI.spec] no metadata for {_m}: {_e}")
-# coqui-tts ships model/config JSON inside the package; submodules alone leave the
-# engine importable but unable to build a model.
-# (2) and (4): these packages are read as SOURCE at import time, so .py files must
-# ship as data, not only as compiled modules in the PYZ.
 for pkg in _NEURAL_PKGS:
     datas += _optional_collect(pkg, data=True)
-for pkg in ("TTS", "trainer", "inflect", "typeguard"):
-    try:
-        datas += collect_data_files(pkg, include_py_files=True)
-    except Exception as _e:
-        print(f"[ELI.spec] source-data collection skipped for {pkg}: {_e}")
-# (1): dist-info metadata for anything queried via importlib.metadata at import.
-for _m in ("torchcodec", "torch", "torchaudio", "coqui-tts", "transformers", "numpy"):
+# dist-info metadata for anything queried via importlib.metadata at import (transformers asks for
+# torchcodec's version, and reads a missing one as a failed import of what it was loading).
+for _m in ("torchcodec", "torch", "torchaudio", "transformers", "numpy"):
     try:
         datas += copy_metadata(_m)
     except Exception as _e:
@@ -415,6 +392,10 @@ excludes = [
     # local PyQt install and tainting the bundle.
     "PyQt5", "PyQt6", "PySide2",
     "tkinter", "IPython", "jupyter", "pytest",
+    # Python's readline module links GNU Readline (GPL-3.0) on a Linux build machine, and PyInstaller
+    # took it (and libreadline) along with the standard library modules that import it when they can
+    # (cmd, pdb, code); ELI never edits lines at a terminal prompt, and those modules run without it.
+    "readline",
 ]
 
 if sys.platform == "darwin":
@@ -423,6 +404,9 @@ if sys.platform == "darwin":
     # the app stopped at launch ("Symbol not found: _CRYPTO_calloc"). The macOS app ships without
     # YARA, and its security scan says "yara-python is not installed".
     excludes.append("yara")
+    # OpenCV's macOS wheels link an FFmpeg with x264 and x265 (GPL) into cv2; pyproject.toml leaves it out
+    # on a Mac, and the macOS app never carries it even where a build machine has it.
+    excludes.append("cv2")
 
 # PyAutoGUI's GPL dependencies, which the check above found uninstalled: not collected even so
 excludes += gpl_sources.left_out_modules()
@@ -443,6 +427,40 @@ a = Analysis(
     # normal path-based imports.
     module_collection_mode={"llama_cpp": "py"},
 )
+
+# ── Each model the bundle carries, with its licence beside it ───────────────────
+# Every model or weight file in the bundle (the voice's, the embedder, the wake word's feature models,
+# the VAD inside faster-whisper, CMU's model inside SpeechRecognition) has an entry in
+# eli/runtime/model_licences.py under a licence a closed, paid product may pass on, and its licence
+# text sits in its folder or one above it (tts_kokoro/ has the voice's from voice_assets). A model
+# file with no entry, or one in a licence class no release carries, stops the build.
+from eli.runtime import model_licences as _model_licences  # noqa: E402
+_licence_tmp = Path(_tempfile.mkdtemp(prefix="eli_licences_"))
+_bundled_names = {_d.replace("\\", "/") for _d, _s, _t in a.datas}
+_model_problems = []
+for _dest, _src, _typ in list(a.datas):
+    _dest = _dest.replace("\\", "/")
+    if not _dest.lower().endswith(_model_licences.MODEL_SUFFIXES) or _dest.startswith("torch/"):
+        continue
+    _model = _model_licences.for_file(_dest)
+    if _model is None:
+        _model_problems.append(f"{_dest}: no entry in eli/runtime/model_licences.py")
+        continue
+    if gpl_sources.licence_text_class(_model.licence) in gpl_sources.BREACH:
+        _model_problems.append(f"{_dest}: {_model.licence}, which a closed, paid product may not pass on")
+        continue
+    _folder = Path(_dest).parent.as_posix()
+    _name = _model_licences.licence_file(_model.key)
+    if not _model_licences.licensed_in(_dest, _model.key, _bundled_names):
+        _written = _model_licences.place(_model.key, _licence_tmp / _folder)
+        if _written is None:
+            _model_problems.append(f"{_dest}: its licence could not be written")
+            continue
+        a.datas.append((f"{_folder}/{_name}", str(_written), "DATA"))
+        _bundled_names.add(f"{_folder}/{_name}")
+        print(f"[ELI.spec] {_model.licence} licence beside {_folder}/ ({_model.key})")
+if _model_problems:
+    _fail("models without a licence a closed, paid product may pass on: " + "; ".join(_model_problems))
 
 pyz = PYZ(a.pure)
 

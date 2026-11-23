@@ -28,6 +28,20 @@ G2P: jieba, pypinyin, cn2an, ordered-set, all MIT). On a GPU, Qwen3-TTS (below) 
 reply in another language is spoken by the operating system's own voice for it, which ELI does not ship (on Linux
 through speech-dispatcher's `spd-say`, a separate program).
 
+Each of these carries its own licence beside it: `voice_assets` writes `LICENSE.kokoro-82m.txt`,
+`LICENSE.en-core-web-sm.txt` and `LICENSE.gruut-en-g2p.txt` into `tts_kokoro/` (and `models/tts/kokoro/`),
+with the licence's own text (`eli/runtime/model_licences.py`).
+
+## The wake word's models
+
+ELI's wake word runs two feature models of its own (`eli/perception/wake_features/`), rebuilt by
+`packaging/wake_features.py`: Google's speech_embedding/1 (Apache-2.0), converted from Google's own release,
+and a log-mel frontend built from its definition. ELI trains its own detector head on them. The openwakeword
+package's model files (CC BY-NC-SA 4.0 by its own note, its two feature models among them) are left out of
+every build, wheelhouse and install (`packaging/gpl_sources.py`, LEFT_OUT_FILES). Classification: ELI's two
+**ship**; openWakeWord's **never ship**. `PROVENANCE.md` beside them records the sources and the check against
+openWakeWord's outputs.
+
 ## The GPU voice (optional, not in the release builds)
 
 **Qwen3-TTS** 12Hz 1.7B and 0.6B, CustomVoice (nine built-in speakers) and Base (voice cloning), Apache-2.0
@@ -42,8 +56,9 @@ first use and each weight file is checked against its SHA-256 (`eli/perception/t
 ## Voice cloning
 
 A cloned voice is made from a recording the user supplies (`CREATE_VOICE`); the user must have the right
-to use it. XTTS-v2 (Coqui) stays a legacy, user-installed engine only: its model's licence (CPML) is
-non-commercial, and ELI's builds never carry it.
+to use it. Qwen3-TTS (Base) clones it on a GPU with room. Coqui XTTS-v2 is no engine of v3 (its model's
+licence, the CPML, is non-commercial, and ELI had agreed to it on the user's behalf), nor is Chatterbox
+(chatterbox-tts brings pykakasi, GPL-3.0).
 
 ## Retired: the Piper voices (up to 3.0.172)
 

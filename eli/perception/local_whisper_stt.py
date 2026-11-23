@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import types
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,38 @@ _LOAD_ERROR = ""     # why the last load failed ("" once one works), for whisper
 
 def _env(name, default):
     return (os.environ.get(name, default) or default).strip()
+
+
+class _PyAVLeftOut(types.ModuleType):
+    """What stands in for a module no release carries while a package that imports it unguarded is
+    imported: anything asked of it raises, saying why."""
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise ImportError(f"{self.__name__} is not installed: no release of ELI carries it (its wheels' "
+                          f"FFmpeg holds x264 and x265, under the GPL), and ELI decodes audio itself "
+                          f"(eli/perception/audio_samples.read_mono), so faster-whisper is handed samples")
+
+
+def faster_whisper():
+    """The faster_whisper package, imported without PyAV. PyAV's wheels carry x264 and x265 (GPL-2.0)
+    inside their FFmpeg, so no release carries PyAV and no installer keeps it (packaging/gpl_sources.py,
+    LEFT_OUT); faster-whisper imports it at the top of its audio module only to open a file, and ELI
+    hands it samples. Where PyAV is not installed, a placeholder that raises on use stands in for it
+    while faster-whisper imports, and nothing else sees it."""
+    import importlib
+    import importlib.util
+    import sys
+    if "faster_whisper" in sys.modules or importlib.util.find_spec("av") is not None:
+        return importlib.import_module("faster_whisper")
+    placeholder = _PyAVLeftOut("av")
+    sys.modules["av"] = placeholder
+    try:
+        return importlib.import_module("faster_whisper")
+    finally:
+        if sys.modules.get("av") is placeholder:
+            del sys.modules["av"]
 
 
 # The speech model is chosen in ELI's settings (the Models page, the dashboard); the environment
@@ -50,8 +83,7 @@ def available_models(model_dir: Optional[str] = None) -> list:
     root = Path(_resolve_model_dir(model_dir or _env("ELI_WHISPER_MODEL_DIR", "models/whisper")))
     names: list = []
     try:
-        from faster_whisper.utils import _MODELS as known
-        names += list(known)
+        names += list(faster_whisper().utils._MODELS)
     except Exception as failure:   # noqa: BLE001 - without the library, only what is on disk
         logging.getLogger(__name__).debug("faster-whisper's model list unavailable: %s", failure)
     if root.is_dir():
@@ -277,7 +309,7 @@ def get_model():
         # later transcription waited five minutes on a load that was never running, with whisper
         # reported as "loading" for good.
         try:
-            from faster_whisper import WhisperModel
+            WhisperModel = faster_whisper().WhisperModel
 
             if local_only and not whisper_cache_ready(model_dir, model):
                 raise RuntimeError(_offline_whisper_missing_message())
@@ -372,15 +404,12 @@ def preload_model() -> bool:
 
 def _audio_for_whisper(path):
     """The recording as 16 kHz mono samples, which faster-whisper takes without opening the file
-    itself. It opens files with PyAV, and PyAV 18 refused the argument faster-whisper 1.2.1 passes:
-    every transcription in the packaged app failed ("open() got an unexpected keyword argument
-    'metadata_errors'"). The path itself when the file cannot be read here."""
-    try:
-        from eli.perception.audio_samples import SPEECH_RATE, read_mono
-        return read_mono(path, SPEECH_RATE)[0]
-    except Exception:
-        log.debug("[LOCAL_STT] could not read %s as samples; faster-whisper opens it", path, exc_info=True)
-        return str(path)
+    itself. It opens files with PyAV, which no release carries (its FFmpeg holds x264, under the GPL;
+    and PyAV 18 refused the argument faster-whisper 1.2.1 passes, so every transcription in the 2.5.11
+    packaged app failed): ELI decodes the file (audio_samples.read_mono), and one it cannot read raises,
+    saying what would read it."""
+    from eli.perception.audio_samples import SPEECH_RATE, read_mono
+    return read_mono(path, SPEECH_RATE)[0]
 
 
 _HINTS: list = []          # [the hint words], filled once in the background
@@ -478,7 +507,7 @@ def _reload_model_on_cpu() -> None:
     Sets _CUDA_FAILED so get_model() never attempts CUDA again this session."""
     global _MODEL, _MODEL_KEY, _CUDA_FAILED
     _CUDA_FAILED = True  # set before loading so _model_settings() returns cpu/int8
-    from faster_whisper import WhisperModel
+    WhisperModel = faster_whisper().WhisperModel
     model_name, model_dir, _device, _compute, local_only = _model_settings()
     log.warning("[LOCAL_STT] CUDA OOM — reloading whisper on CPU (int8); CUDA disabled for this session")
     _MODEL = WhisperModel(
@@ -542,8 +571,8 @@ def transcribe_speech_recognition_audio(audio):
 
 
 def transcribe_file(path: str, language: str | None = None) -> str:
-    """Transcribe an arbitrary local audio file (wav/webm/ogg/mp3 — decoded via
-    PyAV by faster-whisper). Powers the browser-voice endpoint; nothing leaves
-    the box. Mirrors the CUDA→CPU VRAM fallback of the live-mic path."""
+    """Transcribe a local audio file (WAV, FLAC, Ogg, MP3; others through the system's ffmpeg, see
+    audio_samples.read_mono). Powers the browser-voice endpoint; nothing leaves the box. Mirrors the
+    CUDA→CPU VRAM fallback of the live-mic path."""
     lang = language or (_env("ELI_WHISPER_LANGUAGE", "en") or None)
     return _transcribe_with_fallback(str(path), lang)

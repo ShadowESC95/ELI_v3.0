@@ -150,6 +150,17 @@ def test_no_install_route_brings_piper_or_espeak():
         reqs = [line.split("#", 1)[0].strip() for line in text.splitlines()]
         for bad in ("piper-tts", "espeakng-loader", "phonemizer", "misaki[en]", "kokoro-onnx", "g2p-en", "g2p_en"):
             assert not any(r.startswith((bad, f'"{bad}')) or f'"{bad}' in r for r in reqs), f"{bad} in {name}"
+    # OpenCV's macOS wheels link an FFmpeg with x264 and x265 (GPL) into cv2: no Mac route installs it,
+    # and the macOS app leaves it out
+    gs = _gpl_sources()
+    mac = {"sys_platform": "darwin", "platform_system": "Darwin", "os_name": "posix", "extra": "",
+           "python_version": "3.12", "python_full_version": "3.12.0", "platform_machine": "arm64"}
+    declared = [gs._requirement(t) for t in gs._project(REPO)["dependencies"]]
+    assert not [r for r in declared if r.name.startswith("opencv") and (r.marker is None or r.marker.evaluate(mac))]
+    assert not [line for line in gs.requirement_lines(REPO / "requirements-macos.txt") if line.startswith("opencv")]
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    darwin = [block.split("\n\n", 1)[0] for block in spec.split('\nif sys.platform == "darwin":\n')[1:]]
+    assert any('excludes.append("cv2")' in block for block in darwin)
 
 
 def test_the_gpl_source_archive_holds_each_sdist_and_what_its_build_fetches(tmp_path, monkeypatch, capsys):
@@ -326,6 +337,57 @@ def test_the_release_says_where_the_source_of_each_lgpl_package_it_carries_is(tm
     assert "LGPL_SOURCES.md" in lgpl and "gpl-sources.tar.gz" in lgpl and "packaging/gpl_sources.py" in lgpl
 
 
+def test_the_release_says_where_the_source_of_each_native_lgpl_library_it_carries_is(tmp_path, monkeypatch):
+    """LGPL_SOURCES.md named the LGPL Python packages only, from their metadata, while the AppImage carried
+    LGPL libraries those packages do not declare (OpenCV's FFmpeg and Qt 5, soundfile's libsndfile) and
+    others its build machine gave it (GLib, alsa-lib, libgcrypt, libsystemd). Each LGPL family
+    NATIVE_LIBRARIES knows is listed at the version the library itself reports, with its source, and each
+    library from the build machine with its distribution's source package. Invented files; the version
+    probe, dpkg and the network replaced."""
+    import subprocess
+    gs = _gpl_sources()
+    bundle = tmp_path / "ELI" / "_internal"
+    for rel in ("example_video.libs/libavutil-0a1b.so.60.8.100", "example_video.libs/libavcodec-0a1b.so.62.11.100",
+                "example_video.libs/libQt5Core-0a1b.so.5.15.18", "_example_data/libsndfile_x86_64.so",
+                "libglib-2.0.so.0", "libz.so.1", "PySide6/Qt/lib/libQt6Core.so.6", "examplemod.cpython-312.so"):
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_bytes(b"\x7fELF")
+    probed = {"av_version_info": "8.0.1", "sf_version_string": "1.2.2"}
+    monkeypatch.setattr(gs, "_probe_version", lambda path, function: probed[function] if "avcodec" not in path.name else "")
+    native = {lib["name"]: lib for lib in gs.native_lgpl([p for p in bundle.rglob("*") if p.is_file()], bundle.parent,
+                                                         skip={"libQt6Core.so.6"})}
+    assert sorted(native) == ["FFmpeg", "Qt", "libsndfile"]
+    assert native["FFmpeg"]["version"] == "8.0.1" and len(native["FFmpeg"]["files"]) == 2
+    assert native["FFmpeg"]["sources"] == ["https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"]
+    assert native["Qt"]["version"] == "5.15.18" and "/5.15/5.15.18/" in native["Qt"]["sources"][0]
+    assert native["libsndfile"]["version"] == "1.2.2"
+
+    copyright_dir = tmp_path / "doc"
+    def dpkg(cmd, capture_output, text):
+        if cmd[:2] == ["dpkg", "-S"]:
+            return subprocess.CompletedProcess(cmd, 1, "libglib2.0-0t64:amd64: /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0\n"
+                                                       "zlib1g:amd64: /usr/lib/x86_64-linux-gnu/libz.so.1\n", "")
+        return subprocess.CompletedProcess(cmd, 0, {"libglib2.0-0t64:amd64": "glib2.0\t2.80.0-6ubuntu3\n",
+                                                    "zlib1g:amd64": "zlib\t1:1.3\n"}[cmd[-1]], "")
+    monkeypatch.setattr(gs.shutil, "which", lambda name: "/usr/bin/dpkg")
+    monkeypatch.setattr(gs, "_os_release", lambda: {"ID": "ubuntu"})
+    texts = {"libglib2.0-0t64": "License: LGPL-2.1+\n", "zlib1g": "License: Zlib\n"}
+    monkeypatch.setattr(gs, "_copyright_text", lambda package: texts.get(package, ""))
+    hosts = gs.host_libraries([p for p in bundle.rglob("*") if p.is_file()],
+                              provided={"examplemod.cpython-312.so"}, run=dpkg)
+    assert [(h["name"], h["version"], h["files"]) for h in hosts] == [("glib2.0", "2.80.0-6ubuntu3", ["libglib-2.0.so.0"])]
+    assert hosts[0]["sources"] == ["https://launchpad.net/ubuntu/+source/glib2.0/2.80.0-6ubuntu3"]
+
+    monkeypatch.setattr(gs, "first_answering", lambda urls: urls[0] if urls else None)
+    lines, failed = gs.lgpl_listing([], list(native.values()) + hosts)
+    assert not failed and any("FFmpeg 8.0.1" in line and "ffmpeg-8.0.1.tar.xz" in line for line in lines)
+    assert any(line.startswith("- glib2.0 2.80.0-6ubuntu3") for line in lines)
+    _, failed = gs.lgpl_listing([], [dict(native["FFmpeg"], version="", sources=[])])
+    assert failed and "no source address" in failed[0]                 # a library it cannot place stops the release
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "python packaging/gpl_sources.py dist/gpl-sources --bundle dist/ELI" in release
+
+
 def _release_extras() -> list:
     import re
     release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -348,6 +410,10 @@ def test_a_release_carries_no_package_under_the_gpl():
     assert not carried, "a release would carry packages under the GPL:\n  " + "\n  ".join(
         f"{key} {bundled[key].version} ({'; '.join(gs.licence_facts(bundled[key]))})" for key in carried)
     assert not set(gs.LEFT_OUT) & set(bundled)
+    classes = {key: gs.classify(dist) for key, dist in bundled.items()}
+    wrong = sorted(f"{key} {bundled[key].version}: {klass} ({said})" for key, (klass, said) in classes.items()
+                   if klass in gs.BREACH or klass == gs.UNKNOWN)
+    assert not wrong, "a release would carry what a closed, paid product may not pass on:\n  " + "\n  ".join(wrong)
 
     tools = gs.build_only(installed)
     named: dict = {}
@@ -413,8 +479,10 @@ def test_what_every_release_leaves_out_eli_runs_without():
 
     installed = gs.installed_distributions()
     for name, entry in sorted(gs.LEFT_OUT.items()):
-        spec = importlib.util.find_spec(entry.of)
-        if spec is not None and spec.submodule_search_locations and entry.modules:
+        spec = importlib.util.find_spec(entry.of.replace("-", "_"))
+        if entry.held_by:
+            _check_held(gs, entry)
+        elif spec is not None and spec.submodule_search_locations and entry.modules:
             # read, not imported: on Linux importing PyAutoGUI opens the X display
             guarded, bound, imports = set(), set(), []
             for path in sorted(Path(next(iter(spec.submodule_search_locations))).glob("*.py")):
@@ -479,6 +547,39 @@ def test_what_every_release_leaves_out_eli_runs_without():
                 _check_taken(backend, tree, taken, provided, kept)
 
 
+def _check_held(gs, entry):
+    """A package that imports a left-out module unguarded (faster-whisper imports PyAV at the top of its
+    audio module) is imported in eli/ and api/ only through ELI's function for it, which puts a
+    placeholder where the module is missing: the package imports, nothing else sees the placeholder, and
+    what needs the module raises, saying why."""
+    import ast
+    import subprocess
+    import sys
+    holder, function = entry.held_by.split(":")
+    package = entry.of.replace("-", "_")
+    direct = []
+    for root in ("eli", "api"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
+                    [node.module or ""] if isinstance(node, ast.ImportFrom) and not node.level else []
+                if any(n.split(".")[0] == package for n in names):
+                    direct.append(f"{H.rel(path)}:{node.lineno}")
+    assert not direct, f"{package} is imported without {entry.held_by}: {direct}"
+    pytest.importorskip(package)
+    code = (f"import sys\nfor m in {list(entry.modules)!r}: sys.modules[m] = None\n"
+            f"from {holder} import {function}\nmod = {function}()\n"
+            f"assert not any(m in sys.modules for m in {list(entry.modules)!r}), 'the placeholder stayed'\n"
+            f"for need in {list(entry.needs)!r}:\n"
+            f"    try:\n        getattr(mod, need)('example.webm')\n    except ImportError as e:\n"
+            f"        assert 'no release' in str(e), e\n    else:\n        raise SystemExit(need + ' ran')\n"
+            f"print('held')\n")
+    ran = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(REPO), timeout=600)
+    assert ran.returncode == 0 and "held" in ran.stdout, ran.stderr[-2000:]
+    frozen = (REPO / "packaging" / "pyinstaller" / "eli_entry.py").read_text(encoding="utf-8")
+    assert f"from {holder} import {function}" in frozen, "the frozen app's selftest does not import it that way"
+
+
 def _check_taken(backend, tree, taken, provided, kept):
     """Every module and name `backend` takes from the stand-in's package, each attribute it reads off
     those modules, and each method it calls on an object made from a class it takes (the X11 backend's
@@ -534,7 +635,8 @@ def test_every_build_leaves_them_out_and_stops_on_a_gpl_package():
     spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
     before = spec[:spec.index("a = Analysis(")]
     for needed in ('ROOT / "packaging" / "gpl_sources.py"', "_gpl = gpl_sources.gpl_distributions()",
-                   "gpl_sources.stand_in_problems()", "excludes += gpl_sources.left_out_modules()"):
+                   "gpl_sources.stand_in_problems()", "gpl_sources.left_out_files()",
+                   "excludes += gpl_sources.left_out_modules()"):
         assert needed in before, needed
     assert re.search(r"if _gpl:\s*\n\s*_fail\(", before)
 
@@ -544,13 +646,14 @@ def test_every_build_leaves_them_out_and_stops_on_a_gpl_package():
     build = joined("build_packages.sh")
     wheelhouse = build.split("build_windows_wheelhouse_for() {", 1)[1].split("\n}\n", 1)[0]
     assert '--check-wheels "$OUT_DIR"' in wheelhouse and "--kept-dependencies" in wheelhouse
+    assert wheelhouse.index('--leave-out "$OUT_DIR"') < wheelhouse.index('--check-wheels "$OUT_DIR"')
     commands = [c for line in build.splitlines() if not line.lstrip().startswith("#") for c in line.split("&&")]
     pyautogui = [c for c in commands if re.search(r"pip (?:wheel|download)\b.*PyAutoGUI", c)]
     assert pyautogui and all("--no-deps" in c for c in pyautogui), pyautogui
     stage = build.split("_stage_windows_common() {", 1)[1].split("\n}\n", 1)[0]
-    assert '--check-wheels "$STAGING/wheelhouse"' in stage
+    assert stage.index('--leave-out "$STAGING/wheelhouse"') < stage.index('--check-wheels "$STAGING/wheelhouse"')
     portable = joined("scripts/package_desktop_app.sh")
-    assert '--check-wheels "$STAGING/wheelhouse"' in portable
+    assert portable.index('--leave-out "$STAGING/wheelhouse"') < portable.index('--check-wheels "$STAGING/wheelhouse"')
     lock = [line for line in portable.splitlines()
             if not line.lstrip().startswith("#") and re.search(r"pip download\b.*requirements\.lock\.txt", line)]
     assert lock and all("--no-deps" in line for line in lock), lock
@@ -677,6 +780,348 @@ def test_a_wheelhouse_holding_a_gpl_package_is_refused_and_pyautogui_goes_in_wit
     assert gs.kept_dependencies(gui, "win_amd64", ["3.11", "3.12"]) == ["example-tween>=1.0"]
     assert gs.kept_dependencies(gui, "macosx_11_0_arm64", ["3.12"]) == ["example-tween>=1.0", "example-objc"]
     assert gs.kept_dependencies(gui, "manylinux2014_x86_64", ["3.12"]) == ["example-tween>=1.0"]
+
+
+def test_the_frozen_builds_carry_none_of_openwakewords_model_files():
+    """ELI.spec collected all of openwakeword's data, so its pre-trained models (CC BY-NC-SA 4.0,
+    non-commercial, by its own note, the two feature models among them) went into every bundle. ELI runs
+    its own two feature models (eli/perception/wake_features/, packaging/wake_features.py), and every
+    build and installer leaves all of the package's model files out."""
+    import inspect
+    import re
+    from eli.perception import wakeword
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    code = [line for line in spec.splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if '"openwakeword"' in line], "ELI.spec collects openwakeword's data again"
+    gs = _gpl_sources()
+    entry = gs.LEFT_OUT_FILES["openwakeword"]
+    assert entry.keep == ()
+    for stem in ("melspectrogram", "embedding_model", "alexa_v0.1", "hey_jarvis_v0.1", "silero_vad"):
+        assert entry.matches(f"openwakeword/resources/models/{stem}.onnx"), stem
+    assert all((wakeword.FEATURE_DIR / f"{stem}.onnx").is_file() for stem in wakeword.FEATURE_MODELS)
+    assert "FEATURE_DIR" in inspect.getsource(wakeword._audio_features)
+    oww = pytest.importorskip("openwakeword")
+    from openwakeword.utils import AudioFeatures
+    loaded = set(re.findall(r'"(\w+)\.(?:onnx|tflite)"', inspect.getsource(AudioFeatures.__init__)))
+    assert loaded and set(wakeword.FEATURE_MODELS) == loaded, "FEATURE_MODELS is not what the extractor runs"
+    assert {Path(p).stem for p in oww.get_pretrained_model_paths()}
+
+
+def test_what_a_kept_package_holds_under_such_a_licence_eli_never_uses():
+    """SpeechRecognition's FLAC programs (GPL-2.0) run only for AudioData.get_flac_data(), which only its
+    online recognisers call; ELI calls none of them and records and transcribes locally."""
+    import ast
+    gs = _gpl_sources()
+    flac = gs.LEFT_OUT_FILES["speechrecognition"]
+    for name in ("flac-linux-x86", "flac-linux-x86_64", "flac-mac", "flac-win32.exe"):
+        assert flac.matches(f"speech_recognition/{name}")
+    assert not flac.matches("speech_recognition/audio.py") and not flac.matches("speech_recognition/__init__.py")
+    used = []
+    for root in ("eli", "api"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Attribute) and (node.attr == "get_flac_data" or node.attr.startswith("recognize_")):
+                    used.append(f"{H.rel(path)}:{node.lineno} .{node.attr}")
+    assert not used, "ELI uses what needs SpeechRecognition's FLAC programs:\n  " + "\n  ".join(used)
+    sr = gs.installed_distributions().get("speechrecognition")
+    if sr is not None:
+        held = [f for f, _ in gs._record(sr) if flac.matches(f)]
+        assert all(Path(f).name.startswith("flac-") for f in held), held
+
+
+def test_the_files_left_out_go_from_the_environment_and_the_wheels(tmp_path, monkeypatch, capsys):
+    """openWakeWord's wheel holds its non-commercial wake-word models beside the two models ELI loads.
+    --leave-out deletes such files from the installed package and their rows from its RECORD (it stays
+    whole as installed), rewrites a wheelhouse's wheels without them, and --check-wheels refuses a wheel
+    or sdist that still holds them. Invented packages."""
+    import io
+    import tarfile
+    import zipfile
+    gs = _gpl_sources()
+    entry = gs.LeftOutFiles(r"^examplewake/models/[^/]+$", ("features",), "CC-BY-NC-SA-4.0", "the head is ELI's own")
+    monkeypatch.setattr(gs, "LEFT_OUT_FILES", {"example-wake": entry})
+    monkeypatch.setattr(gs, "LEFT_OUT", {})
+    site = tmp_path / "site"
+    files = {"examplewake/__init__.py": b"", "examplewake/models/features.onnx": b"kept",
+             "examplewake/models/hey_example.onnx": b"non-commercial", "examplewake/models/other.tflite": b"nc"}
+    _invented_dist(site, "example-wake", "0.4", files, "License: Apache-2.0\n")
+    path = [str(site)]
+    assert [sorted(f) for _d, f in gs.left_out_files(path)] == \
+        [["examplewake/models/hey_example.onnx", "examplewake/models/other.tflite"]]
+    assert gs.leave_out(path) == 0
+    assert gs.left_out_files(path) == [] and (site / "examplewake/models/features.onnx").is_file()
+    assert not (site / "examplewake/models/hey_example.onnx").exists()
+    dist = gs.installed_distributions(path)["example-wake"]
+    assert gs.intact(dist) and not [f for f, _ in gs._record(dist) if "hey_example" in f]
+    assert "leaving out 2 file(s) of example-wake 0.4" in capsys.readouterr().out
+    assert gs.leave_out(path) == 0                                   # nothing left to do
+
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+    wheel = house / "example_wake-0.4-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        for rel, body in files.items():
+            z.writestr(rel, body)
+        z.writestr("example_wake-0.4.dist-info/METADATA", "Metadata-Version: 2.1\nName: example-wake\nVersion: 0.4\n")
+        z.writestr("example_wake-0.4.dist-info/RECORD", "".join(f"{rel},,\n" for rel in files))
+    assert gs.main(["--check-wheels", str(house)]) == 1
+    assert "holds 2 file(s) under CC-BY-NC-SA-4.0" in capsys.readouterr().err
+    assert gs.main(["--leave-out", str(house)]) == 0
+    with zipfile.ZipFile(wheel) as z:
+        assert sorted(n for n in z.namelist() if "/models/" in n) == ["examplewake/models/features.onnx"]
+        assert "hey_example" not in z.read("example_wake-0.4.dist-info/RECORD").decode()
+    assert gs.main(["--check-wheels", str(house)]) == 0
+    body = b"Metadata-Version: 1.1\nName: example-wake\nVersion: 0.4\n"
+    with tarfile.open(house / "example-wake-0.4.tar.gz", "w:gz") as tar:
+        for name, data in (("example-wake-0.4/PKG-INFO", body), ("example-wake-0.4/examplewake/models/x.onnx", b"nc")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    assert gs.main(["--check-wheels", str(house)]) == 1               # an sdist is refused, not rewritten
+
+
+def test_each_package_and_file_is_sorted_by_what_a_closed_paid_product_may_pass_on(tmp_path, monkeypatch, capsys):
+    """Only the GPL was looked for, in each package's own metadata: PyAV (BSD-3-Clause) carried x264 and
+    x265 (GPL-2.0) inside its FFmpeg into every bundle, and a non-commercial licence or none at all went
+    through. Every package is sorted into a licence class (permissive, vendor terms, weak copyleft,
+    unknown, strong copyleft, non-commercial) from its SPDX expression, its License field, its
+    classifiers or its licence file, and the libraries it carries; ELI.spec stops on the last two and on
+    unknown, and each build checks what it built for such libraries and the files left out. Invented
+    packages and file names."""
+    import re
+    gs = _gpl_sources()
+
+    class Meta(dict):
+        def get_all(self, key):
+            value = self.get(key)
+            return value if isinstance(value, list) else ([value] if value else [])
+
+    def of(expression="", licence="", classifiers=()):
+        return gs.licence_class(Meta({"License-Expression": expression, "License": licence,
+                                      "Classifier": [f"License :: {c}" for c in classifiers]}))
+
+    assert of("MIT") == of("Apache-2.0 OR BSD-3-Clause") == of(licence="BSD") == gs.PERMISSIVE
+    assert of("EPL-2.0 OR BSD-3-Clause") == gs.PERMISSIVE                  # the freer of two offered
+    assert of("MPL-2.0 AND MIT") == of(licence="MPL-2.0 AND (Apache-2.0 OR MIT)") == gs.WEAK
+    assert of("LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only") == gs.WEAK  # Qt for Python, used under the LGPL
+    assert of("GPL-2.0-or-later WITH Classpath-exception-2.0") == gs.WEAK
+    assert of(licence="GPLv2-or-later with a special exception which allows to use it in non-free programs") == gs.WEAK
+    assert of("GPL-3.0-or-later") == of(licence="GPLv2") == of("AGPL-3.0-only") == gs.STRONG
+    assert of(licence="Copyright (c) 2014, a maintainer",
+              classifiers=["OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]) == gs.STRONG
+    assert of("CC-BY-NC-SA-4.0") == of(licence="Example Research License Agreement") == gs.NONCOMMERCIAL
+    assert of(licence="Free for non-commercial use") == of("LicenseRef-Example-NC-1.0") == gs.NONCOMMERCIAL
+    assert of("LicenseRef-NVIDIA-Proprietary") == gs.VENDOR
+    assert of(licence="Permission is hereby granted, free of charge, to any person obtaining a copy") == gs.PERMISSIVE
+    assert of(licence="", classifiers=["Other/Proprietary License"]) == of() == gs.UNKNOWN
+    assert of("CC-BY-4.0") == gs.PERMISSIVE and of("CC-BY-SA-4.0") == gs.WEAK
+
+    names = ["av.libs/libx264-0123abcd.so.165", "av/.dylibs/libx265.215.dylib", "av.libs/libx264-165-0123.dll",
+             "_internal/libreadline.so.8", "_internal/libdb-5.3.so", "cv2/.dylibs/libpostproc.58.dylib",
+             "speech_recognition/flac-linux-x86_64", "example/flac-win32.exe"]
+    clean = ["_internal/libdbus-1.so.3", "_internal/libFLAC.so.12", "pyttsx3/drivers/espeak.py",
+             "_internal/libavcodec-0123.so.61", "_internal/libsndfile.so.1"]
+    assert [n for n, _ in gs.native_breaches(names + clean)] == names
+
+    site = tmp_path / "site"
+    _invented_dist(site, "example-video", "1.0", {"examplevideo/__init__.py": b"",
+                   "examplevideo.libs/libx264-0123.so.165": b"\x7fELF"}, "License-Expression: BSD-3-Clause\n")
+    _invented_dist(site, "example-weights", "1.0", {"exampleweights/__init__.py": b""},
+                   "License: Example Research License (non-commercial)\n")
+    _invented_dist(site, "example-silent", "1.0", {"examplesilent/__init__.py": b""})
+    _invented_dist(site, "example-known", "1.0", {"exampleknown/__init__.py": b""})
+    _invented_dist(site, "example-qt", "6.0", {"exampleqt/__init__.py": b""},
+                   "License-Expression: LGPL-3.0-only OR GPL-3.0-only\n")
+    _invented_dist(site, "example-plain", "1.0", {"exampleplain/__init__.py": b""}, "License-Expression: MIT\n")
+    installed = gs.installed_distributions([str(site)])
+    monkeypatch.setattr(gs, "KNOWN_LICENCES", {"example-known": ("MIT", "read by hand from its repository")})
+    assert gs.classify(installed["example-video"])[0] == gs.STRONG
+    assert "libx264-0123.so.165" in gs.classify(installed["example-video"])[1]
+    assert gs.classify(installed["example-known"]) == (gs.PERMISSIVE, "MIT (read by hand from its repository)")
+    found = {p["name"]: p["class"] for p in gs.breach_distributions(installed)}
+    assert found == {"example-video": gs.STRONG, "example-weights": gs.NONCOMMERCIAL, "example-silent": gs.UNKNOWN}
+
+    bundle = tmp_path / "ELI"
+    for rel in ("_internal/av.libs/libx264-0123.so.165", "_internal/libdbus-1.so.3", "_internal/examplegui.py",
+                "_internal/eli/perception/wake_features/melspectrogram.onnx",
+                "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"):
+        (bundle / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / rel).write_bytes(b"")
+    assert [line.split(":", 1)[0] for line in gs.bundle_breaches(bundle)] == \
+        ["_internal/av.libs/libx264-0123.so.165", "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"]
+    assert gs.main(["--check-bundle", str(bundle)]) == 1 and "libx264-0123.so.165" in capsys.readouterr().err
+    for rel in ("_internal/av.libs/libx264-0123.so.165", "_internal/openwakeword/resources/models/hey_example_v0.1.onnx"):
+        (bundle / rel).unlink()
+    assert gs.main(["--check-bundle", str(bundle)]) == 0
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    before = spec[:spec.index("a = Analysis(")]
+    assert re.search(r"_breach = gpl_sources\.breach_distributions\(\)\s*\nif _breach:\s*\n\s*_fail\(", before)
+    assert '"readline",' in spec[spec.index("excludes = ["):spec.index("a = Analysis(")]
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for job, built in (("build-windows", "dist/ELI"), ("build-macos", "dist/ELI.app"), ("build-linux", "dist/ELI")):
+        text = release.split(f"\n  {job}:", 1)[1].split("\n  build-", 1)[0]
+        check = text.index(f"python packaging/gpl_sources.py --check-bundle {built}\n")
+        assert text.index("pyinstaller --noconfirm") < check < text.index("Smoke check"), job
+    # Ubuntu's PortAudio links JACK, and JACK links Berkeley DB (Sleepycat): the Linux build compiles
+    # PyAudio against a PortAudio of its own, built for ALSA alone from a checked source archive
+    linux = release.split("\n  build-linux:", 1)[1].split("\n  build-source-artifacts:", 1)[0]
+    assert "portaudio19-dev" not in linux and "--without-jack" in linux and "sha256sum -c" in linux
+    assert linux.index("--without-jack") < linux.index('pip install ".[$(echo $REQUIRED_EXTRAS')
+
+
+def test_every_model_eli_bundles_or_fetches_carries_its_own_licence_beside_it(tmp_path, monkeypatch):
+    """The models ELI passes on or fetches (the voice, the tagger and G2P model, the embedder, the wake
+    word's feature models, Silero's VAD, Whisper, Qwen3-TTS) each had a licence written only in
+    models/MODEL_LICENSES.md, far from the files. Each has an entry under a licence a closed, paid
+    product may pass on, with its licence's own text, written beside its files wherever they are kept:
+    by the release builds (ELI.spec, which stops on a model file without one), by voice_assets and
+    tts_qwen3 when they fetch, and by the package builder."""
+    from eli.perception import tts_qwen3, wakeword
+    from eli.runtime import model_licences as ml, voice_assets as va
+    from tests._sparse import sparse_file
+    gs = _gpl_sources()
+    for model in ml.MODELS.values():
+        assert model.licence == ml.OWN or gs.licence_text_class(model.licence) == gs.PERMISSIVE, (model.key, model.licence)
+        assert (model.source.startswith("https://") or model.licence == ml.OWN) and model.files, model.key
+        if model.text:
+            text = (ml.TEXTS / model.text).read_text(encoding="utf-8")
+            assert gs.licence_text_class(text[:4000]) == gs.PERMISSIVE, model.text
+            if model.licence == "MIT":
+                assert "Copyright (c)" in text and "Permission is hereby granted" in text, model.text
+    covered = {f"tts_kokoro/{e.rel}" for e in va.kokoro_manifest() if not e.unpack}
+    covered |= {f"tts_kokoro/{e.rel}/meta.json" for e in va.kokoro_manifest() if e.unpack}
+    covered |= {f"eli/perception/wake_features/{stem}.onnx" for stem in wakeword.FEATURE_MODELS}
+    covered |= {f"models--{e['repo'].replace('/', '--')}/snapshots/{e['revision']}/{rel}"
+                for kind in tts_qwen3.MODELS.values() for e in kind for rel in e["weights"]}
+    covered |= {"models/whisper/models--Systran--faster-whisper-small.en/snapshots/x/model.bin",
+                "faster_whisper/assets/silero_vad_v6.onnx", "speech_recognition/pocketsphinx-data/en-US/mdef"}
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    covered |= set(__import__("re").findall(r'dest="(models/embeddings/[^"]+)"', release))
+    assert len(covered) > 40 and not [rel for rel in covered if ml.for_file(rel) is None]
+
+    folder = tmp_path / "kokoro"
+    for entry in va.kokoro_manifest():
+        path = folder / entry.rel
+        if entry.unpack:
+            path.mkdir(parents=True)
+            (path / va._MARKER).write_text(entry.sha256, encoding="utf-8")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            sparse_file(path, entry.size)
+    assert va.ensure_kokoro(dest=folder)["ok"]
+    for key in ("kokoro-82m", "en-core-web-sm", "gruut-en-g2p"):
+        notice = (folder / ml.licence_file(key)).read_text(encoding="utf-8")
+        assert notice.startswith(ml.MODELS[key].name) and f"Licence: {ml.MODELS[key].licence}" in notice
+    before = (folder / ml.licence_file("kokoro-82m")).stat().st_mtime_ns
+    assert va.ensure_kokoro(dest=folder)["ok"] and (folder / ml.licence_file("kokoro-82m")).stat().st_mtime_ns == before
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    after = spec[spec.index("a = Analysis("):spec.index("pyz = PYZ(a.pure)")]
+    for needed in ("_model_licences.for_file(_dest)", "_model_licences.licensed_in(", "a.datas.append(",
+                   "gpl_sources.licence_text_class(_model.licence) in gpl_sources.BREACH", "_fail("):
+        assert needed in after, needed
+    portable = (REPO / "scripts" / "package_desktop_app.sh").read_text(encoding="utf-8")
+    assert '"$ROOT/scripts/asset_release_policy.py" --licences "$STAGING"' in portable
+    assert "model_licences.place(\"qwen3-tts\"" in (REPO / "eli" / "perception" / "tts_qwen3.py").read_text(encoding="utf-8")
+
+
+def test_a_package_or_an_asset_release_passes_on_no_model_a_closed_product_may_not(tmp_path, monkeypatch):
+    """scripts/package_desktop_app.sh bundled Qwen2.5-3B, under the non-commercial Qwen Research
+    License, whenever models/ had it, as the starter of a package that goes to every user, and the asset
+    release published every model the catalog names. Both now take only a catalog model whose licence
+    (the entry's own, else the one ELI records for a model its builds carry: the embedder) lets ELI v3
+    pass it on; the starter is the smallest of those that models/ holds. Invented catalog entries."""
+    import sys
+    sys.path.insert(0, str(REPO / "scripts"))
+    import asset_release_policy as policy
+    from eli.core import model_download as md
+    entries = [
+        {"key": "example-small-nc", "filename": "small-nc.gguf", "url": "https://example.invalid/a", "size_gb": 1.0,
+         policy.CATALOG_LICENCE_FIELD: "Example Research License (non-commercial)"},
+        {"key": "example-medium", "filename": "medium.gguf", "url": "https://example.invalid/b", "size_gb": 4.0,
+         policy.CATALOG_LICENCE_FIELD: "Apache-2.0"},
+        {"key": "example-large", "filename": "large.gguf", "url": "https://example.invalid/c", "size_gb": 9.0,
+         policy.CATALOG_LICENCE_FIELD: "MIT"},
+        {"key": "example-custom", "filename": "custom.gguf", "url": "https://example.invalid/d", "size_gb": 2.0,
+         policy.CATALOG_LICENCE_FIELD: "Example Model License with an acceptable-use policy"},
+        {"key": "example-silent", "filename": "silent.gguf", "url": "https://example.invalid/e", "size_gb": 0.5},
+    ]
+    monkeypatch.setattr(md, "CATALOG", entries)
+    monkeypatch.setattr(md, "list_catalog", lambda: list(entries))
+    monkeypatch.setattr(md, "list_aux", lambda: [{"key": "embedder", "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+                                                 "url": "https://example.invalid/f"}])
+    policy.catalog_model_filenames.cache_clear()
+    try:
+        assert policy.catalog_model_filenames() == {"medium.gguf", "large.gguf", "nomic-embed-text-v1.5.Q4_K_M.gguf"}
+        for entry in entries:
+            (tmp_path / entry["filename"]).write_bytes(b"")
+        assert policy.starter_model(tmp_path)["filename"] == "medium.gguf"
+        (tmp_path / "medium.gguf").unlink()
+        assert policy.starter_model(tmp_path)["filename"] == "large.gguf"
+        (tmp_path / "large.gguf").unlink()
+        assert policy.starter_model(tmp_path) is None
+        package = tmp_path / "package"
+        (package / "models" / "embeddings").mkdir(parents=True)
+        (package / "models" / "large.gguf").write_bytes(b"")
+        (package / "models" / "embeddings" / "nomic-embed-text-v1.5.Q4_K_M.gguf").write_bytes(b"")
+        assert policy.place_licences(package) == []
+        assert "Licence: MIT" in (package / "models" / "LICENSE.example-large.txt").read_text(encoding="utf-8")
+        assert (package / "models" / "embeddings" / "LICENSE.nomic-embed-text-v1.5.txt").is_file()
+        (package / "models" / "mystery.gguf").write_bytes(b"")
+        assert policy.place_licences(package) == ["models/mystery.gguf"]
+    finally:
+        policy.catalog_model_filenames.cache_clear()
+    script = (REPO / "scripts" / "package_desktop_app.sh").read_text(encoding="utf-8")
+    assert '"$ROOT/scripts/asset_release_policy.py" --starter "$ASSET_ROOT/models"' in script
+    assert not [e["filename"] for e in md.CATALOG if e["filename"] in script], "a model is named in the script"
+    assert 'cp -a "$ASSET_ROOT/models/." "$STAGING/models/"' not in script, "models/ is copied whole again"
+
+
+def test_a_wheelhouse_installs_offline_without_what_is_left_out(tmp_path, monkeypatch, capsys):
+    """With PyAV taken out of the Windows full wheelhouse, pip installing faster-whisper from it offline
+    stopped on faster-whisper's `av>=11`, as PyAutoGUI's install did on MouseInfo and PyMsgBox. --leave-out DIR
+    puts a placeholder in the place of each left-out package whose declaring package is there: a wheel of
+    metadata alone, above any version the project publishes, which every install's --leave-out uninstalls
+    again. pip resolves the set offline. Invented packages; pip itself, offline."""
+    import subprocess
+    import sys
+    import zipfile
+    gs = _gpl_sources()
+    monkeypatch.setattr(gs, "LEFT_OUT", {"example-codec": gs.LeftOut("example-speech", ("examplecodec",), ("decode",), "")})
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+
+    def wheel(name, version, requires=""):
+        dist = name.replace("-", "_")
+        path = house / f"{dist}-{version}-py3-none-any.whl"
+        meta = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{requires}"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(f"{dist}/__init__.py", "")
+            z.writestr(f"{dist}-{version}.dist-info/METADATA", meta)
+            z.writestr(f"{dist}-{version}.dist-info/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            z.writestr(f"{dist}-{version}.dist-info/RECORD", "")
+        return path
+
+    wheel("example-speech", "1.2", "Requires-Dist: example-codec>=11\nRequires-Dist: example-tokens\n")
+    wheel("example-tokens", "0.2")
+    wheel("example-codec", "17.0", "License: BSD-3-Clause\n")
+    assert gs.main(["--leave-out", str(house)]) == 0
+    names = sorted(p.name for p in house.iterdir())
+    assert names == [f"example_codec-{gs.PLACEHOLDER_VERSION}-py3-none-any.whl", "example_speech-1.2-py3-none-any.whl",
+                     "example_tokens-0.2-py3-none-any.whl"], names
+    assert gs.main(["--check-wheels", str(house)]) == 0
+    capsys.readouterr()
+    ran = subprocess.run([sys.executable, "-m", "pip", "install", "--dry-run", "--no-index", "--find-links", str(house),
+                          "--target", str(tmp_path / "target"), "--disable-pip-version-check", "example-speech"],
+                         capture_output=True, text=True, timeout=300)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert f"example-codec-{gs.PLACEHOLDER_VERSION}" in ran.stdout and "example-speech-1.2" in ran.stdout
+    assert gs.main(["--leave-out", str(house)]) == 0 and len(list(house.iterdir())) == 3     # kept, not doubled
+    build = (REPO / "build_packages.sh").read_text(encoding="utf-8")
+    loop = build.split("build_windows_wheelhouse_for() {", 1)[1].split("torch \\", 1)[0]
+    assert '--abi "$abi" --abi abi3 --abi none' in loop, "the wheelhouse leaves out abi3 wheels (tokenizers) again"
 
 
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):

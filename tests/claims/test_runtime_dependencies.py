@@ -48,7 +48,6 @@ DISTRIBUTION = {
     "llama_cpp": "llama-cpp-python",
     "pycrfsuite": "python-crfsuite",
     "win32com": "pywin32",
-    "chatterbox": "chatterbox-tts",
     "yara": "yara-python",
 }
 
@@ -56,11 +55,13 @@ DISTRIBUTION = {
 NOT_DECLARED = {
     "PyQt5": "a GPL binding; ELI ships PySide6, and eli/gui/qt_compat.py uses PyQt only where the user has it",
     "PyQt6": "a GPL binding; ELI ships PySide6, and eli/gui/qt_compat.py uses PyQt only where the user has it",
-    "TTS": "Coqui XTTS: its model is under a non-commercial licence, so ELI never ships it (Chatterbox clones)",
     "gi": "PyGObject comes with the Linux desktop (python3-gi); pip cannot build it without the system's "
           "own build files, and a packaged ELI asks the system's Python for it",
     "flash_attn": "an optional speed-up for Qwen3-TTS, built for the user's own CUDA (PyPI has no wheels); "
                   "the worker in Qwen3-TTS's runtime uses it only when it is there, sdpa otherwise",
+    "av": "PyAV, which faster-whisper declares: no release carries it and no installer keeps it (its wheels' "
+          "FFmpeg holds x264, under the GPL: packaging/gpl_sources.py, LEFT_OUT); local_whisper_stt only asks "
+          "whether it is there, to import faster-whisper with a placeholder where it is not",
     "qwen_tts": "imported only by eli/perception/qwen3_worker.py, inside the runtime ELI makes for Qwen3-TTS "
                 "(eli/perception/qwen3_runtime.py, its own requirements in qwen3_runtime.txt), never in ELI's",
 }
@@ -69,7 +70,7 @@ NOT_DECLARED = {
 # engine is built for CUDA, Metal, ROCm, Vulkan or the CPU, and PyTorch comes from the index for the GPU
 # found; the rest run on PyTorch. Only these may wait in an optional extra.
 GPU_BOUND = frozenset({"llama-cpp-python", "torch", "torchaudio", "diffusers", "transformers", "peft",
-                       "datasets", "bitsandbytes", "chatterbox-tts"})
+                       "datasets", "bitsandbytes"})
 
 # What each requirements file is installed on (install.sh, install.ps1 and their fallbacks): the lock on
 # Linux and Windows, the ranges when the lock cannot be met there, requirements-macos.txt on a Mac.

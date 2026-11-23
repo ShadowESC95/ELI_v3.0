@@ -258,10 +258,12 @@ bash eli_diagnose.sh                     # system diagnosis report
 
 ### Reading the licence
 
-ELI is **source-available**, not open-source: PolyForm Internal Use License 1.0.0.
-Run and modify it for your own personal or internal use; you may not redistribute,
-host, sublicense or sell it. The terms are reachable identically from every
-download — installed app, portable folder, AppImage or `.app`:
+ELI v3 is **proprietary commercial software**, licensed under the ELI End User Licence
+Agreement (`COMMERCIAL_EULA.md`, with `LICENSE`): not open source and not source-available.
+A purchased licence, or a trial under that agreement, lets you install and use it on the
+machines your licence covers, and modify it for your own use there (EULA §3.4); you may not
+copy, distribute, host for others, sublicense or sell it, or a modified copy. The terms are
+reachable identically from every download — installed app, portable folder, AppImage or `.app`:
 
 ```bash
 eli --license          # source install / portable tarball
@@ -304,8 +306,8 @@ Never delete another ELI version's folder (such as `ELI_v2`): it holds that prod
 
 ---
 
-*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95). Source-available under the PolyForm Internal
-Use License 1.0.0. Questions: jaybridgeman0095@gmail.com*
+*ELI v3.0 — © 2026 Jason Fitzgibbon Bridgeman (GitHub: ShadowESC95). Proprietary commercial software, licensed
+under the ELI End User Licence Agreement (COMMERCIAL_EULA.md). Questions: jaybridgeman0095@gmail.com*
 
 
 ## CLI-reachable surfaces

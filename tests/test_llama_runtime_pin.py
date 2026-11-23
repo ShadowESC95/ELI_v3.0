@@ -65,7 +65,10 @@ def test_the_lock_constraints_leave_out_only_what_the_build_tools_do_not_allow(t
     build.write_text("# tools\npyinstaller>=6.13,<7\nsetuptools>=70,<81\nPillow>=10.0\n")
     assert lc.constraints(lock, build) == ["av==17.0.1", "Pillow==11.0.0", 'comtypes==1.4.17 ; sys_platform == "win32"']
     real = lc.constraints(ROOT / "requirements.lock.txt", ROOT / "requirements-build.txt")
-    assert any(x.startswith("av==") for x in real) and not any(x.startswith("setuptools==") for x in real)
+    assert any(x.startswith("faster-whisper==") for x in real) and not any(x.startswith("setuptools==") for x in real)
+    # PyAV, whose version 18 broke faster-whisper 1.2.1, is in no build any more (its FFmpeg holds x264,
+    # under the GPL: packaging/gpl_sources.py, LEFT_OUT), so the lock holds no pin of it
+    assert not any(x.startswith("av==") for x in real)
 
 
 @pytest.mark.parametrize("path", [".github/workflows/release.yml"])

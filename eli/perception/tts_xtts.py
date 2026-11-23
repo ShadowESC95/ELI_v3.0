@@ -1,14 +1,15 @@
-"""The cloned-voice registry, and the legacy Coqui XTTS-v2 backend.
+"""The cloned-voice registry.
 
 A "cloned voice" reproduces a target voice from a short reference sample (~6-20s of
 clean speech) with zero training. The registry here (``add_clone``) only stores the
-reference clip, offline, so a voice captured once works on whichever clone engine
-this machine has: Qwen3-TTS on a GPU with room for it (tts_qwen3, the GPU extra),
-then Chatterbox (MIT), then Coqui XTTS-v2 (its model's licence is non-commercial;
-never part of ELI's builds). Synthesis returns None when the engine is absent and
-the caller speaks with the default voice, with a clear one-line reason.
+reference clip, offline, and Qwen3-TTS (Apache-2.0) speaks it on a GPU with room for it
+(tts_qwen3); elsewhere the caller speaks with the default voice, with a clear one-line
+reason. tts_router resolves a voice named ``clone:<name>`` through here.
 
-tts_router resolves a voice named ``clone:<name>`` through here.
+The module keeps its name from the engine it once held: Coqui XTTS-v2, whose model is under
+the Coqui Public Model License (non-commercial). ELI agreed to that licence on the user's
+behalf (COQUI_TOS_AGREED) and fetched the model wherever coqui-tts was installed; a product
+sold under its own licence may not, so v3 carries no XTTS-v2 code any more.
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -25,24 +25,8 @@ log = logging.getLogger(__name__)
 
 CLONE_PREFIX = "clone:"
 NATURAL_PREFIX = "natural:"
-_XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
-_TTS = None  # lazy singleton
-
-# Curated natural voices using XTTS-v2's built-in studio speakers: human-like neural TTS with
-# no clone or reference needed. Friendly id -> the speaker name asked of XTTS. Resolution is
-# tolerant (_resolve_builtin_speaker), so upstream name drift falls back to a real speaker
-# instead of failing. The startup picker can select this path.
-_NATURAL_VOICES = {
-    "sophia": {"speaker": "Claribel Dervla", "gender": "female",
-               "desc": "Sophia — warm, natural female"},
-    "aria":   {"speaker": "Daisy Studious", "gender": "female",
-               "desc": "Aria — clear, articulate female"},
-    "james":  {"speaker": "Andrew Chipper", "gender": "male",
-               "desc": "James — bright, friendly male"},
-    "daniel": {"speaker": "Damien Black", "gender": "male",
-               "desc": "Daniel — deep, measured male"},
-}
-_DEFAULT_NATURAL = "sophia"
+# The natural voice (Qwen3-TTS's CustomVoice speaker) the natural engine starts with.
+_DEFAULT_NATURAL = "serena"
 
 # ── Registry (offline-safe) ──────────────────────────────────────────────────────
 def _registry_path() -> Path:
@@ -132,21 +116,13 @@ def add_clone(name: str, audio_path: str, language: str = "en",
 
 
 def _clone_synth_available() -> bool:
-    # Clones are spoken by Qwen3-TTS where the GPU runs it, Chatterbox when it is installed, XTTS
-    # otherwise (tts_router.synthesize_wav).
+    # Clones are spoken by Qwen3-TTS where the GPU runs it (tts_router.synthesize_wav).
     try:
         from eli.perception import tts_qwen3
-        if tts_qwen3.usable("base"):
-            return True
+        return bool(tts_qwen3.usable("base"))
     except Exception:
         log.debug("tts_xtts: Qwen3-TTS check failed", exc_info=True)
-    try:
-        from eli.perception.tts_chatterbox import chatterbox_available
-        if chatterbox_available():
-            return True
-    except Exception:
-        log.debug("tts_xtts: chatterbox check failed", exc_info=True)
-    return bool(xtts_available())
+        return False
 
 
 def delete_clone(name: str) -> Dict[str, Any]:
@@ -171,234 +147,3 @@ def list_clones() -> "list[Dict[str, Any]]":
     return [{"name": k, "id": CLONE_PREFIX + k, "language": v.get("language", "en"),
              "desc": v.get("desc", ""), "ref_present": Path(v.get("ref_wav", "")).is_file()}
             for k, v in _load_registry().items()]
-
-
-# ── Synthesis (needs the optional TTS package) ──────────────────────────────────
-_COMPAT_PATCHED = False
-_XTTS_IMPORT_ERROR = ""
-# Python does not cache a FAILED import, so every call re-walked sys.path and
-# re-logged. The shipped bundle deliberately omits coqui-tts (Kokoro is the
-# bundled engine), so several callers each paid a full failed-import walk at
-# startup. The answer cannot change within a process.
-_XTTS_AVAILABLE: "bool | None" = None
-
-
-def _patch_transformers_compat() -> None:
-    """coqui-tts's XTTS layer imports `isin_mps_friendly`, a torch.isin() shim
-    transformers carried for old Apple-MPS backends and dropped in transformers>=5.
-    Off MPS, plain torch.isin() is exactly the same behaviour, so restore the name
-    rather than pin transformers back (the rest of ELI is on transformers==5.x).
-
-    Runs at most once. A missing `transformers`/`torch` is the EXPECTED state when the
-    heavy clone extra isn't installed — that path stays quiet; only genuine failures
-    (the module is present but the patch didn't take) are worth logging."""
-    global _COMPAT_PATCHED
-    if _COMPAT_PATCHED:
-        return
-    _COMPAT_PATCHED = True
-    try:
-        import transformers.pytorch_utils as _ptu
-    except ModuleNotFoundError:
-        return  # clone extra not installed — nothing to patch, nothing to report
-    except Exception:
-        log.debug("tts_xtts: transformers import failed", exc_info=True)
-        return
-    try:
-        if not hasattr(_ptu, "isin_mps_friendly"):
-            import torch as _torch
-            _ptu.isin_mps_friendly = lambda elements, test_elements: _torch.isin(elements, test_elements)
-    except ModuleNotFoundError:
-        return  # torch absent — same expected optional-dependency case
-    except Exception:
-        log.debug("tts_xtts: transformers compat shim failed", exc_info=True)
-
-
-def _reset_availability_cache() -> None:
-    """Test seam: forget the cached probe result."""
-    global _XTTS_AVAILABLE
-    _XTTS_AVAILABLE = None
-
-
-def xtts_import_error() -> str:
-    """Why the neural backend is unavailable, or "" when it is fine."""
-    return _XTTS_IMPORT_ERROR
-
-
-def xtts_available() -> bool:
-    """Probe the neural backend, applying the compat shim FIRST.
-
-    The shim has to run before the probe, not after: `import TTS` is the thing
-    that needs it. Written the other way round, the import raises, the function
-    returns False, and the patch that would have fixed it never runs — neural
-    voice is silently off on a machine with torch, coqui-tts and the 1.8GB
-    weights all present and working.
-
-    The bare `except: return False` this replaces also threw the diagnosis away,
-    so a build where the engine could not import was indistinguishable from one
-    where it was never installed, and nothing anywhere said which.
-    """
-    global _XTTS_AVAILABLE, _XTTS_IMPORT_ERROR
-    if _XTTS_AVAILABLE is not None:
-        return _XTTS_AVAILABLE
-    _patch_transformers_compat()
-    try:
-        import TTS  # noqa: F401
-    except Exception as exc:
-        _XTTS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
-        # Debug level: on a build without the optional extra this is expected.
-        log.debug("tts_xtts: neural backend unavailable — %s", _XTTS_IMPORT_ERROR)
-        _XTTS_AVAILABLE = False
-        return False
-    _XTTS_IMPORT_ERROR = ""
-    _XTTS_AVAILABLE = True
-    return True
-
-
-def _select_device() -> str:
-    """cuda if available, else cpu. ``ELI_XTTS_DEVICE`` forces it.
-
-    The override matters because XTTS shares the GPU with the main model: on a
-    small card, loading XTTS while the LLM is resident is what produces an OOM
-    stall or a segfault mid-sentence. This is also how the startup picker pins
-    the choice made BEFORE the main model claims VRAM — without it, the decision
-    could only be changed in code.
-    """
-    import os
-    forced = os.environ.get("ELI_XTTS_DEVICE", "").strip().lower()
-    if forced == "cpu":
-        return "cpu"
-    if forced == "cuda":
-        # Verify torch can do CUDA before honouring the force. The startup picker sets it from "the
-        # machine has a GPU", not "this torch build has CUDA"; a CPU-only wheel raises "Torch not
-        # compiled with CUDA enabled" inside .to(device) after the 1.8GB model has loaded.
-        try:
-            import torch
-            if torch.cuda.is_available():
-                return "cuda"
-            log.warning("tts_xtts: ELI_XTTS_DEVICE=cuda but this torch build has no "
-                        "CUDA support — using CPU instead")
-        except Exception:
-            log.debug("tts_xtts: cuda force probe failed", exc_info=True)
-        return "cpu"
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return "cuda"
-    except Exception:
-        log.debug("tts_xtts: torch/cuda probe failed — using CPU", exc_info=True)
-    return "cpu"
-
-
-def _get_model():
-    global _TTS
-    if _TTS is not None:
-        return _TTS
-    # Same reason as in xtts_available(): this import is the one that needs the
-    # shim, so it has to be applied before, not after. A caller reaching here
-    # without having probed first would otherwise fail on transformers>=5.
-    _patch_transformers_compat()
-    os.environ.setdefault("COQUI_TOS_AGREED", "1")
-    from TTS.api import TTS as _TTSApi
-    device = _select_device()
-    log.info("tts_xtts: loading XTTS-v2 on %s (first run downloads ~1.8GB)…", device)
-    _TTS = _TTSApi(_XTTS_MODEL).to(device)
-    return _TTS
-
-
-def natural_available() -> bool:
-    """True when the neural natural-voice backend can run (TTS installed)."""
-    return xtts_available()
-
-
-def list_natural_voices() -> "list[str]":
-    """Built-in neural voice ids (``natural:<id>``), or [] when XTTS isn't installed."""
-    if not natural_available():
-        return []
-    return [NATURAL_PREFIX + k for k in _NATURAL_VOICES]
-
-
-def natural_voice_meta(voice_id: str) -> Optional[Dict[str, Any]]:
-    key = str(voice_id or "").lower().replace(NATURAL_PREFIX, "", 1).strip()
-    return _NATURAL_VOICES.get(key)
-
-
-def _resolve_builtin_speaker(model, wanted: str) -> Optional[str]:
-    try:
-        speakers = list(getattr(model, "speakers", None)
-                        or getattr(getattr(model, "synthesizer", None), "speakers", None) or [])
-    except Exception:
-        speakers = []
-    if not speakers:
-        return None
-    for s in speakers:
-        if str(s).strip().lower() == wanted.strip().lower():
-            return s
-    for s in speakers:
-        if wanted.split()[0].lower() in str(s).lower():
-            return s
-    return speakers[0]
-
-
-def synthesize_natural_wav(text: str, voice_id: str) -> Optional[bytes]:
-    """Synthesize with an XTTS-v2 built-in speaker — no clone needed."""
-    meta = natural_voice_meta(voice_id) or _NATURAL_VOICES.get(_DEFAULT_NATURAL)
-    if not natural_available():
-        return None
-    outpath = ""
-    try:
-        model = _get_model()
-        speaker = _resolve_builtin_speaker(model, str(meta.get("speaker") or ""))
-        fd, outpath = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        Path(outpath).unlink(missing_ok=True)
-        kwargs = {"text": str(text), "language": "en", "file_path": outpath}
-        if speaker:
-            kwargs["speaker"] = speaker
-        model.tts_to_file(**kwargs)
-        if Path(outpath).is_file() and Path(outpath).stat().st_size > 0:
-            return Path(outpath).read_bytes()
-    except Exception:
-        log.debug("tts_xtts: natural synthesis failed", exc_info=True)
-    finally:
-        if outpath:
-            try:
-                Path(outpath).unlink(missing_ok=True)
-            except OSError:
-                log.debug("tts_xtts: temp wav cleanup failed", exc_info=True)
-    return None
-
-
-def synthesize_wav(text: str, clone_name: str) -> Optional[bytes]:
-    """Clone-synthesize `text` in the named voice; None if unavailable (caller falls back)."""
-    spec = get_clone(clone_name)
-    if not spec:
-        log.debug("tts_xtts: no clone '%s'", clone_name)
-        return None
-    ref = spec.get("ref_wav")
-    if not ref or not Path(ref).is_file():
-        log.debug("tts_xtts: missing reference for '%s'", clone_name)
-        return None
-    if not xtts_available():
-        log.info("tts_xtts: %s needs coqui-tts, which ELI does not install (its model is non-commercial)",
-                 str(clone_name))
-        return None
-    outpath = ""
-    try:
-        model = _get_model()
-        fd, outpath = tempfile.mkstemp(suffix=".wav")
-        Path(outpath).unlink(missing_ok=True)
-        import os as _os
-        _os.close(fd)
-        model.tts_to_file(text=str(text), speaker_wav=ref,
-                          language=spec.get("language", "en"), file_path=outpath)
-        if Path(outpath).is_file() and Path(outpath).stat().st_size > 0:
-            return Path(outpath).read_bytes()
-    except Exception:
-        log.debug("tts_xtts: synthesis failed", exc_info=True)
-    finally:
-        if outpath:
-            try:
-                Path(outpath).unlink(missing_ok=True)
-            except OSError:
-                log.debug("suppressed exception", exc_info=True)
-    return None

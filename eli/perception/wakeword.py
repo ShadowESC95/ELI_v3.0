@@ -177,6 +177,28 @@ def _mix_snr(sig: np.ndarray, noise: np.ndarray, snr_db: float) -> np.ndarray:
 
 
 # ── openWakeWord feature extractor (lazy singleton) ──────────────────────────
+# The two models AudioFeatures runs are ELI's own (wake_features/, built by packaging/wake_features.py):
+# the log-mel frontend, built from its definition, and Google's speech_embedding/1 (Apache-2.0),
+# converted from Google's own release. The copies inside the openwakeword package fall under its note
+# that "all of the included pre-trained models" are CC BY-NC-SA 4.0 (non-commercial), so no release
+# carries or installs any of its model files (packaging/gpl_sources.py, LEFT_OUT_FILES); ELI trains its
+# own head, and openWakeWord's code (Apache-2.0) runs ELI's models.
+FEATURE_DIR = Path(__file__).with_name("wake_features")
+FEATURE_MODELS = ("melspectrogram", "embedding_model")
+
+
+def _audio_features(**kwargs):
+    """openWakeWord's AudioFeatures over ELI's own two models (its argument names, which changed after
+    0.4, read from its signature)."""
+    import inspect
+    from openwakeword.utils import AudioFeatures
+    names = inspect.signature(AudioFeatures.__init__).parameters
+    mel, emb = (("melspec_onnx_model_path", "embedding_onnx_model_path") if "melspec_onnx_model_path" in names
+                else ("melspec_model_path", "embedding_model_path"))
+    return AudioFeatures(**{mel: str(FEATURE_DIR / "melspectrogram.onnx"),
+                            emb: str(FEATURE_DIR / "embedding_model.onnx")}, **kwargs)
+
+
 _af_lock = threading.Lock()
 _af = None
 
@@ -185,8 +207,7 @@ def _features():
     global _af
     with _af_lock:
         if _af is None:
-            from openwakeword.utils import AudioFeatures
-            _af = AudioFeatures(ncpu=max(1, (os.cpu_count() or 2) // 2))
+            _af = _audio_features(ncpu=max(1, (os.cpu_count() or 2) // 2))
         return _af
 
 

@@ -2,8 +2,8 @@
 
 - Kokoro speaks with the tone's pace and the pause after each sentence (tts_router._prosody).
 - The operating system's own `sys:` voices are hidden by default (kept as a last resort).
-- `natural:` voices are Qwen3-TTS's speakers on a GPU with room for it (XTTS-v2's where that is
-  installed); without either, the default Kokoro voice speaks and says so.
+- `natural:` voices are Qwen3-TTS's speakers on a GPU with room for it; without it, the default
+  Kokoro voice speaks and says so. Coqui XTTS-v2 (a non-commercial model) is no longer an engine.
 """
 from __future__ import annotations
 
@@ -47,41 +47,18 @@ def test_robotic_voices_restorable(monkeypatch):
     assert tr._allow_robotic_voices() is True
 
 
-# ── Natural neural voice (XTTS-v2) ────────────────────────────────────────────
-def test_natural_voice_metadata_is_static_and_cheap():
-    # meta lookup must not require the TTS package or load the model
-    assert X.natural_voice_meta("natural:james")["gender"] == "male"
-    assert X.natural_voice_meta("natural:sophia")["gender"] == "female"
-
-
-def test_list_natural_voices_empty_without_extra(monkeypatch):
-    monkeypatch.setattr(X, "natural_available", lambda: False)
-    assert X.list_natural_voices() == []
-
-
-def test_list_natural_voices_when_available(monkeypatch):
-    monkeypatch.setattr(X, "natural_available", lambda: True)
-    ids = X.list_natural_voices()
-    assert "natural:sophia" in ids and "natural:james" in ids
-
-
-def test_natural_synth_falls_back_gracefully_without_extra(monkeypatch):
-    monkeypatch.setattr(X, "natural_available", lambda: False)
-    assert X.synthesize_natural_wav("hello", "natural:sophia") is None
-
-
-def test_device_selection_is_forceable(monkeypatch):
-    monkeypatch.setenv("ELI_XTTS_DEVICE", "cpu")
-    assert X._select_device() == "cpu"
-
-
-def test_a_forced_cuda_is_honoured_only_when_this_torch_has_it(monkeypatch):
-    torch = pytest.importorskip("torch")
-    monkeypatch.setenv("ELI_XTTS_DEVICE", "cuda")
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    assert X._select_device() == "cuda"
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)   # a CPU-only wheel
-    assert X._select_device() == "cpu"
+# ── Natural neural voice ──────────────────────────────────────────────────────
+def test_no_engine_speaks_a_non_commercial_model():
+    """Coqui XTTS-v2's model is under the Coqui Public Model License (non-commercial), and ELI agreed to
+    it on the user's behalf (COQUI_TOS_AGREED) and fetched it wherever coqui-tts was installed; Chatterbox
+    brought pykakasi (GPL-3.0). Neither is an engine any more: natural and cloned voices are Qwen3-TTS's."""
+    import inspect
+    from eli.perception import tts_router
+    assert not hasattr(X, "synthesize_wav") and not hasattr(X, "xtts_available")
+    for module in (X, tts_router):
+        src = inspect.getsource(module)
+        assert '"COQUI_TOS' not in src and "tts_chatterbox" not in src and "import TTS" not in src
+    assert not tts_router._clone_backend_available("xtts") and not tts_router._clone_backend_available("chatterbox")
 
 
 # ── Routing / resolver for the natural voice ──────────────────────────────────
@@ -106,11 +83,10 @@ def test_set_voice_accepts_natural_without_it_being_installed():
 
 
 def test_natural_voice_without_a_neural_engine_speaks_with_the_default_voice_and_says_so(monkeypatch):
-    """With neither Qwen3-TTS nor XTTS able to speak, a natural: voice still produces audio, the
+    """With Qwen3-TTS unable to speak, a natural: voice still produces audio, the
     default Kokoro voice's, and the fallback state says the chosen voice is not what is heard."""
     from eli.perception import tts_kokoro, tts_qwen3
     monkeypatch.setattr(tts_qwen3, "synthesize_natural_wav", lambda *a, **k: None)
-    monkeypatch.setattr(X, "natural_available", lambda: False)
     said = []
     monkeypatch.setattr(tts_kokoro, "synthesize_wav",
                         lambda text, voice="af_heart", speed=1.0: said.append(voice) or tts_kokoro.to_wav([0.1] * 2400))

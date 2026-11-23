@@ -21,7 +21,7 @@ agent's system python. Deeper detail lives in the companion blueprints
   the tamper-evident audit trail, and an admin console. Launchable one-click from
   the desktop GUI (Settings) or standalone.
 - **205** test files.
-- **License:** source-available — PolyForm Internal Use 1.0.0 (`LICENSE`/`NOTICE`); use+modify for internal/personal use, no redistribution; all commercial rights reserved. Governance: `SECURITY.md`, `CONTRIBUTING.md` (inbound grant).
+- **License:** proprietary commercial software under the ELI End User Licence Agreement (`LICENSE`, `COMMERCIAL_EULA.md`, `NOTICE`): not open source, not source-available; a purchased licence or a trial to install and use it on the machines it covers, modification for one's own use only, no redistribution; all rights reserved. Governance: `SECURITY.md`, `CONTRIBUTING.md` (inbound grant).
 
 ## Tests & eval (measured on `.venv`, 2026-07-01)
 - Full run: **7,347 passed, 0 failed, 45 skipped, 2 xfailed** — all 5 previously-

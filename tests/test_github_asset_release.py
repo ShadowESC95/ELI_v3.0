@@ -44,9 +44,14 @@ def test_the_persons_own_files_beside_the_models_are_never_published(rel):
     assert row["category"] == "private_user_asset" and row["upload_recommended"] is False
 
 
-@pytest.mark.parametrize("rel", [f"models/{_CATALOG_MODEL}", f"models/embeddings/{_EMBEDDER}"])
-def test_a_model_the_catalog_names_is_published(rel):
-    assert manifest._classify(rel)["upload_recommended"] is True
+def test_a_model_the_catalog_names_is_published_only_under_a_licence_eli_may_pass_on():
+    """The embedder's licence (Apache-2.0) lets ELI v3 pass it on; a catalog model whose licence the
+    catalog does not say, or says is non-commercial, is never published (asset_release_policy)."""
+    assert manifest._classify(f"models/embeddings/{_EMBEDDER}")["upload_recommended"] is True
+    import asset_release_policy as policy
+    for entry in model_download.CATALOG:
+        published = manifest._classify(f"models/{entry['filename']}")["upload_recommended"]
+        assert published == policy.redistributable(entry), entry["key"]
 
 
 @pytest.mark.parametrize("rel", ["models/some-other-download.bin", "models/notes.json",
@@ -62,8 +67,10 @@ def test_the_archives_hold_only_what_the_manifest_publishes(tmp_path):
     for name in ("create_github_asset_archives.sh", "github_asset_manifest.py", "asset_release_policy.py"):
         shutil.copy(ROOT / "scripts" / name, tree / "scripts" / name)
     (tree / ".gitignore").write_text("models/\ntts_kokoro/\ndist/\n", encoding="utf-8")
+    import asset_release_policy as policy
     files = {
-        f"models/{_CATALOG_MODEL}": True,
+        f"models/embeddings/{_EMBEDDER}": True,
+        f"models/{_CATALOG_MODEL}": policy.redistributable(model_download.CATALOG[0]),
         "models/voice_profiles/my_voice.wav": False,
         "models/wakeword/hey_there.pt": False,
         "tts_kokoro/model.onnx": False,

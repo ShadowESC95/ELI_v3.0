@@ -127,32 +127,6 @@ def test_embedder_wraps_only_the_embedding_call():
     assert "create_embedding" in guarded[:200], "the guard drifted off the embed call"
 
 
-def test_xtts_probe_is_cached_not_repeated():
-    """Six callers each paid a failed-import walk and logged the same line."""
-    import builtins
-
-    from eli.perception import tts_xtts
-
-    tts_xtts._reset_availability_cache()
-    attempts = 0
-    real = builtins.__import__
-
-    def counting(name, *a, **k):
-        nonlocal attempts
-        if name == "TTS":
-            attempts += 1
-        return real(name, *a, **k)
-
-    builtins.__import__ = counting
-    try:
-        for _ in range(6):
-            tts_xtts.xtts_available()
-    finally:
-        builtins.__import__ = real
-
-    assert attempts <= 1, f"{attempts} import attempts for 6 availability checks"
-
-
 def test_mic_probe_runs_under_the_alsa_guard():
     """_run_probe was the one PyAudio construction in mic_resolver not wrapped,
     and it is the probe that actually runs at startup."""

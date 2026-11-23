@@ -23,7 +23,7 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `reply_language.py` | ~95 | the language a reply is written in (its script; else langdetect where fewer than half its words are English) |
 | `gpu_room.py` | ~90 | room on a GPU for a support model beside the language model (Whisper, Qwen3-TTS) |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
-| `tts_xtts.py` | ~410 | the **cloned-voice registry** (`add_clone()` keeps a reference clip) and the legacy Coqui XTTS-v2 backend (non-commercial model, never bundled); when no clone engine can speak, the default voice speaks — **loudly**, not silently, which was a live fault |
+| `tts_xtts.py` | ~150 | the **cloned-voice registry** (`add_clone()` keeps a reference clip); Qwen3-TTS speaks a clone, and where it cannot the default voice speaks — **loudly**, not silently, which was a live fault. The Coqui XTTS-v2 engine it once held is gone: its model is non-commercial, and ELI had agreed to that licence on the user's behalf |
 | `vision.py` | 726 |
 | `os_controller.py` | 1110 |
 | `screen_locator.py` | 497 | locate UI elements on screen (AT-SPI → local VL-ground → OCR) |
@@ -377,9 +377,9 @@ The active voice decides the engine, and no fallback is silent:
   where the GPU has room, Kokoro elsewhere), `kokoro` or `natural`, chosen at the start-up picker or the
   first-run wizard; the earlier `piper` setting and the `en_US-amy-medium` every install had saved read as
   `auto` and no voice chosen, so existing users get Qwen3-TTS where their GPU allows, and a voice a user
-  picked stays theirs. Where it cannot speak, Chatterbox (MIT) and XTTS-v2 (legacy, non-commercial model,
-  never bundled) are tried for clones, then the Kokoro default voice speaks and
-  `neural_fallback_state()` says the chosen voice is not what is heard.
+  picked stays theirs. Where it cannot speak, the Kokoro default voice speaks and
+  `neural_fallback_state()` says the chosen voice is not what is heard. Chatterbox (it brings pykakasi,
+  GPL-3.0) and Coqui XTTS-v2 (a non-commercial model) are no engines of v3.
 - **pyttsx3** speaks a `sys:` voice (the operating system's own), only when one is chosen; these are
   hidden from the list unless `ELI_TTS_ALLOW_ROBOTIC=1` or nothing else can speak.
 - **A reply in another language** (`voice_for_reply`, `reply_language.py`): its script names it, or, in the

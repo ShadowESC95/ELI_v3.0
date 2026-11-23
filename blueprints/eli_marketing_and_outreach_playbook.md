@@ -141,7 +141,7 @@ One strong post per channel, days apart, with you present to engage, is what act
 |---|---|---|
 | r/Python | Yes (week 2) | Lead with the engineering: 140k LOC, pipeline, agents. Honest "Show & Tell". |
 | r/artificial | Maybe | Broader, less technical; lower-quality engagement. |
-| r/opensource | **Be careful** | It's source-available, *not* OSI open-source — some there will object. Be upfront or skip. |
+| r/opensource | **Skip** | ELI v3 is proprietary, paid software, not open source and not source-available. |
 | r/MachineLearning | Probably skip | Strict, research-focused; a product post may not fit. |
 | r/LocalLLM, r/Oobabooga, r/ollama | Optional | Smaller, on-topic; fine later, spaced out. |
 
@@ -161,7 +161,7 @@ One strong post per channel, days apart, with you present to engage, is what act
 - **YouTube:** a 2–3 minute screen-recorded demo with a voiceover. The local-AI crowd loves video;
   you can link it from every post and the README. High effort, high payoff.
 - **X/Twitter + Mastodon:** a short post with the demo GIF + link, using tags like `#LocalLLaMA`,
-  `#LLM`, `#opensource`. (Appendix A5.) Mastodon's fediverse has an active self-hosting/AI crowd.
+  `#LLM`. (Appendix A5.) Mastodon's fediverse has an active self-hosting/AI crowd.
 - **dev.to / Hashnode:** a "How I built a fully-local AI assistant" article — good for long-tail
   search traffic. (Outline in Appendix A7.)
 - **Discord communities:** many local-AI Discords have a `#projects`/`#show-and-tell` channel.
@@ -179,9 +179,10 @@ hours and answer everyone. Below are the questions you *will* get, with honest a
 - **"Why not just use [ChatGPT / Claude / Ollama / Open WebUI]?"**
   → "Different goal — ELI is fully local and *acts on your machine* (desktop control, vision, voice,
   persistent memory), not just a chat UI. The trade is a smaller local model vs a frontier cloud one."
-- **"Why source-available and not open-source?"**
-  → "I wanted the source open to read, run, and learn from, while keeping stewardship of the project.
-  You can use and modify it freely; you just can't redistribute it. Happy to hear arguments."
+- **"Is it open source?"**
+  → "No. ELI v3 is a paid product under its own licence (the ELI End User Licence Agreement): a
+  purchased licence, or a trial, to install and use it on your own machines. It may not be copied or
+  redistributed."
 - **"Isn't this just a wrapper around llama.cpp?"**
   → "llama.cpp is the inference engine. ELI is the ~140k lines around it — routing, a 12-stage
   pipeline, 15 agents, memory, desktop/voice/vision integration, self-maintenance. The model is the
@@ -263,7 +264,7 @@ A good 60-second clip is worth more than everything else in this document combin
 
 **Title (pick one):**
 1. I built a fully-local AI assistant that runs 100% on your own machine — voice, vision, desktop control, persistent memory (offline-enforced)
-2. ELI: a solo, 140k-line local assistant on llama.cpp/GGUF that actually operates your computer — source available
+2. ELI: a solo, 140k-line local assistant on llama.cpp/GGUF that actually operates your computer
 
 **Body:**
 
@@ -299,8 +300,8 @@ A good 60-second clip is worth more than everything else in this document combin
 > no amount of scaffolding fully hides that. The trade is deliberate — privacy, ownership, and offline
 > operation in exchange for raw power — and you can swap in better open models as they land.
 >
-> It's source-available, not OSI open-source: you can read, run, and modify it freely; you just can't
-> redistribute it. I wanted the code open to learn from while keeping stewardship of the project.
+> It is proprietary, paid software, licensed under the ELI End User Licence Agreement, with a trial:
+> not open source and not source-available.
 >
 > Repo: https://github.com/ShadowESC95/ELI_v3.0
 >
@@ -337,9 +338,8 @@ A good 60-second clip is worth more than everything else in this document combin
 > doesn't hide that. The bet is that privacy, ownership, and offline operation are worth it, and that
 > you can swap in stronger open models as they arrive.
 >
-> License: source-available (PolyForm Internal Use), not OSI open-source — read, run, and modify, but
-> not redistribute. Happy to discuss the choice; I wanted the source open to learn from while keeping
-> stewardship.
+> Licence: proprietary, under the ELI End User Licence Agreement (a purchased licence or a trial) — not
+> open source, not source-available, no redistribution.
 >
 > Feedback and criticism welcome.
 
@@ -362,7 +362,7 @@ A good 60-second clip is worth more than everything else in this document combin
 >
 > ~140k lines of Python, cross-platform (Linux/CUDA, macOS/Metal, Windows). Honest caveat: a local
 > model on consumer hardware is less capable than a cloud model — the trade is privacy and ownership.
-> Source-available (you can run and modify it, not redistribute).
+> Proprietary and paid, with a trial (the ELI End User Licence Agreement; no redistribution).
 >
 > Repo: https://github.com/ShadowESC95/ELI_v3.0 — feedback welcome.
 
@@ -370,7 +370,7 @@ A good 60-second clip is worth more than everything else in this document combin
 
 > Built ELI: a fully-local AI assistant that runs 100% on your own machine — voice, vision, desktop
 > control, and persistent memory, on llama.cpp/GGUF. No cloud, no telemetry, offline by default.
-> Solo project, source available. [link] #LocalLLaMA #LLM #opensource
+> Solo project, a paid licence with a trial. [link] #LocalLLaMA #LLM
 >
 > (Attach the demo GIF — it massively increases engagement.)
 
@@ -379,7 +379,7 @@ A good 60-second clip is worth more than everything else in this document combin
 > ELI is a fully-local AI assistant that runs entirely on your own machine — model, data, and all
 > processing on your hardware, offline by default. Beyond chat it operates your desktop, sees your
 > screen, talks and listens, and builds a private memory of you over time. Built on llama.cpp/GGUF and
-> model-agnostic. Source-available; ~140k lines of Python.
+> model-agnostic. Proprietary, under the ELI End User Licence Agreement; ~140k lines of Python.
 
 ### A7. dev.to / blog article outline ("How I built a fully-local AI assistant")
 

@@ -176,6 +176,8 @@ def _local_snapshot(entry: Dict[str, Any]) -> Path:
             if got != want:
                 raise ValueError(f"{entry['repo']} {rel} does not match its pinned checksum")
         marker.write_text(entry["revision"], encoding="utf-8")
+    from eli.runtime import model_licences
+    model_licences.place("qwen3-tts", folder)           # its licence (Apache-2.0) beside the weights
     return folder
 
 

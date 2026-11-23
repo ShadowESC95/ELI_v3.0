@@ -32,6 +32,8 @@ env/
 
 # ── TTS voice model files (large binaries) ───────────────────────────────────
 *.onnx
+# but the wake word's two feature models, ELI's own and small (packaging/wake_features.py)
+!eli/perception/wake_features/*.onnx
 # the Kokoro voice's files a release build carries (python -m eli.runtime.voice_assets --kokoro-to tts_kokoro)
 tts_kokoro/
 

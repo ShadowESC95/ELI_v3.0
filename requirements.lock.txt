@@ -16,7 +16,6 @@ arrow==1.4.0
 async-timeout==5.0.1
 attrs==26.1.0
 audioop-lts==0.2.2 ; python_version >= "3.13"
-av==17.0.1
 bleak==3.0.2
 blis==1.3.4
 build==1.5.0
@@ -50,6 +49,8 @@ diskcache==5.6.3
 docopt==0.6.2
 faiss-cpu==1.13.2
 fastapi==0.136.3
+# faster-whisper declares PyAV (av), which no release carries and no installer keeps: its wheels' FFmpeg
+# holds x264 and x265 (GPL-2.0). ELI decodes audio itself (packaging/gpl_sources.py, LEFT_OUT).
 faster-whisper==1.2.1
 filelock==3.29.0
 filetype==1.2.0

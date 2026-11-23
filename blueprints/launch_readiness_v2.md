@@ -96,8 +96,8 @@ two god-files (`executor_enhanced` 14.5k, `engine` 13.5k) whose action handlers 
 - **Builds:** `eli_mkxi-2.0.0-py3-none-any.whl` builds cleanly from the clone.
 - **First run:** `init_data` creates all 4 DBs as a blank slate ("no personal data written");
   config seeded offline-by-default (`network_enabled: false`).
-- **Licence:** PolyForm Internal Use 1.0.0 — source-available, internal/personal use, no
-  redistribution.
+- **Licence:** proprietary commercial software under the ELI End User Licence Agreement
+  (`COMMERCIAL_EULA.md`): not open source, not source-available; no redistribution.
 
 ## 7. Cross-platform status
 

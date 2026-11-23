@@ -1,10 +1,10 @@
 """Locks on ELI telling the truth about which voice is actually speaking. Ported from v2.
 
 v3's natural and cloned voices are Qwen3-TTS's (Apache-2.0) on a GPU with room for it
-beside the language model (eli/perception/tts_qwen3.py), then Chatterbox (MIT), with
-XTTS-v2 (non-commercial model) as the legacy fallback; the AppImage bundles neither
-Qwen3-TTS nor `natural`. Where none can speak, the Kokoro default voice speaks and the
-fallback state says so.
+beside the language model (eli/perception/tts_qwen3.py); Chatterbox (pykakasi, GPL) and
+XTTS-v2 (non-commercial model) are engines no more, and the AppImage bundles no neural
+engine. Where Qwen3-TTS cannot speak, the Kokoro default voice speaks and the fallback
+state says so.
 
 From a live session (v2.1.64): the user dropped in a voice clip and asked whether it
 would be used. Settings reported ``Active voice: natural:sophia``, the diagnostics
@@ -83,9 +83,9 @@ def test_the_synth_path_reports_the_fallback():
 # ── 2. the diagnostics agree with reality ───────────────────────────────────
 def test_backends_expose_what_is_really_used():
     b = tts_router.available_backends()
-    for key in ("engine", "active_voice", "speaking_voice", "default_voice", "active_model",
-                "qwen3", "chatterbox", "xtts"):
+    for key in ("engine", "active_voice", "speaking_voice", "default_voice", "active_model", "qwen3"):
         assert key in b, key
+    assert "chatterbox" not in b and "xtts" not in b
 
 
 def test_a_neural_voice_is_reported_with_the_engine_that_speaks_it(monkeypatch):
@@ -267,6 +267,7 @@ def test_linux_bundles_the_neural_extra():
         extras = (d["jobs"][job].get("env") or {}).get(
             "OPTIONAL_EXTRAS", d["env"]["OPTIONAL_EXTRAS"])
         assert "natural" not in extras.split(), f"{job} bundles the neural engine again"
+        assert "chatterbox" not in extras.split(), f"{job} bundles Chatterbox, which brings pykakasi (GPL)"
 
 
 @pytest.mark.parametrize("job", ["build-windows", "build-macos"])
