@@ -15,9 +15,18 @@ sys.path.insert(0, str(ROOT))
 # index, the world's sessions, the databases) is gone before anything below writes or reads it. An
 # index copied in once was searched by every later run, and a VR session one run recorded turned up
 # in the next run's period log.
-# A run still going in this checkout holds the sandbox (a shared lock beside it, kept for the session):
-# then the sandbox is left as it is, rather than pulled from under that run's open databases.
+# A run still going in this checkout holds the sandbox (a shared lock, kept for the session): then the
+# sandbox is left as it is, rather than pulled from under that run's open databases. The lock is in the
+# system's temporary folder, one per checkout: beside the sandbox it was a file the run left in the
+# checkout outside its sandbox.
 _SANDBOX_ROOT = ROOT / "artifacts" / "_pytest"
+
+
+def _sandbox_lock() -> Path:
+    import hashlib
+    import tempfile
+    key = hashlib.sha1(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"eli-pytest-sandbox-{key}.lock"
 
 
 def _fresh_sandbox() -> None:
@@ -31,7 +40,7 @@ def _fresh_sandbox() -> None:
         shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
         return
     global _SANDBOX_HOLD
-    _SANDBOX_HOLD = open(_SANDBOX_ROOT.parent / "_pytest.lock", "a+")
+    _SANDBOX_HOLD = open(_sandbox_lock(), "a+")
     try:
         fcntl.flock(_SANDBOX_HOLD, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -298,70 +307,107 @@ def reset_gguf_inference_globals():
         pass
 
 
-# Whatever escapes the sandbox anyway (a path built by hand, a new store) is caught: this
-# checkout's own state is listed before the session and compared after it, and every file
-# created or changed there, and every folder made there, is named, with the test that made the
-# folder. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1; otherwise it is only
+# Whatever escapes the sandbox anyway (a path built by hand, a new store, a test that rewrites a
+# document) is caught: the whole checkout is listed before the session and compared after it, and
+# every file created, changed or deleted there, and every folder made there, is named, with the test
+# that did it. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1; otherwise it is only
 # reported, since a copy of ELI running from this checkout (ELI's own RUN_TESTS) writes its state
-# while the tests run. A folder left empty was missed when only files were listed: a full run left
-# artifacts/runtime and artifacts/vectors in the checkout. The eval's own throwaway folder
+# while the tests run. Only ELI's state folders (artifacts/, config/, models/ and the like) were
+# watched, so a test that wrote the capability manifest at the checkout's root, or rewrote a
+# blueprint, passed unseen. Not watched: the run's own sandbox, git's folder, the interpreter's
+# bytecode, a Python environment kept in the checkout (a developer's .venv), and what the run was
+# asked to write (--junitxml, --basetemp). The eval's own throwaway folder
 # (tools/eval/eli_driver.new_sandbox) is a sandbox like this run's: what it holds is still watched.
-_OWN_STATE = [ROOT / name for name in ("artifacts", "config", "training", "runtime", "voices", "plugins", "models")]
 _THROWAWAY_FOLDERS = (ROOT / "artifacts" / "_eval_sandbox",)
 FOLDER = "folder"
 
 
 def _own_state() -> dict:
+    """Every file (its modification time and size) and folder in this checkout, but what is not watched."""
     seen = {}
-    for top in _OWN_STATE:
-        for path in top.rglob("*") if top.is_dir() else ():
-            if path == SANDBOX or SANDBOX in path.parents or "__pycache__" in path.parts:
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        here = Path(dirpath)
+        kept = []
+        for name in dirnames:
+            path = here / name
+            if name in (".git", "__pycache__") or path == SANDBOX or (path / "pyvenv.cfg").is_file():
+                continue
+            kept.append(name)
+            if path not in _THROWAWAY_FOLDERS:
+                seen[path] = FOLDER
+        dirnames[:] = kept
+        for name in filenames:
+            if name == ".git":                          # a worktree's pointer to its repository
                 continue
             try:
-                if path.is_file():
-                    info = path.stat()
-                    seen[path] = (info.st_mtime_ns, info.st_size)
-                elif path.is_dir() and path not in _THROWAWAY_FOLDERS:
-                    seen[path] = FOLDER
+                info = (here / name).lstat()
             except OSError:
                 continue
+            seen[here / name] = (info.st_mtime_ns, info.st_size)
     return seen
 
 
-def _written_since(before: dict, asked: Path = ROOT / "-") -> list:
-    """What in this checkout's own state was written or made since `before` (_own_state), each a
-    path relative to the checkout, a folder with the test that made it."""
+def _written_since(before: dict, asked=()) -> list:
+    """What in this checkout was written, made or deleted since `before` (_own_state), each a path
+    relative to the checkout, with the test that did it where the audit hook saw it. `asked`: paths
+    the run was asked to write, with what is under them."""
+    asked = tuple(Path(a).resolve() for a in ((asked,) if isinstance(asked, (str, Path)) else asked))
+    now = _own_state()
     out = []
-    for path, was in _own_state().items():
-        if before.get(path) == was or path.resolve() == asked:
+    for path in sorted(set(before) | set(now)):
+        was, is_ = before.get(path), now.get(path)
+        if was == is_:
             continue
-        rel = str(path.relative_to(ROOT))
-        made_by = _FOLDERS_MADE.get(str(path.resolve())) if was == FOLDER else None
-        out.append(f"{rel}/ (made by {made_by})" if made_by else (rel + "/" if was == FOLDER else rel))
-    return sorted(out)
+        resolved = path.resolve()
+        if any(resolved == a or a in resolved.parents for a in asked):
+            continue
+        rel = str(path.relative_to(ROOT)) + ("/" if FOLDER in (was, is_) else "")
+        by = _WRITTEN_BY.get(os.path.realpath(path)) or _WRITTEN_BY.get(os.path.abspath(path))
+        what = "deleted" if is_ is None else ("made" if FOLDER in (was, is_) else "written")
+        out.append(f"{rel} ({what} by {by})" if by else (f"{rel} (deleted)" if is_ is None else rel))
+    return out
 
 
-# Which test made each folder under this checkout's own state, outside the sandbox (an audit hook:
-# os.mkdir), so the report names it.
-_FOLDERS_MADE: dict = {}
-_WATCHED_ROOTS = tuple(str(top.resolve()) for top in _OWN_STATE)
+# Which test first wrote, made, moved or deleted each path in this checkout outside the sandbox (an
+# audit hook), so the report names it.
+_WRITTEN_BY: dict = {}
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_WATCHED = str(ROOT.resolve())
 
 
-def _note_folder_made(event, args) -> None:
-    if event != "os.mkdir" or not args:
+def _note_written(event, args) -> None:
+    if event == "open":
+        if len(args) < 3 or args[0] is None or isinstance(args[0], int):
+            return
+        mode, flags = args[1], args[2]
+        if isinstance(mode, str):
+            if not any(c in mode for c in "wax+"):
+                return
+        elif not (isinstance(flags, int) and flags & _WRITE_FLAGS):
+            return
+        targets = args[:1]
+    elif event in ("os.mkdir", "os.remove", "os.rmdir", "shutil.rmtree"):
+        targets = args[:1]
+    elif event == "os.rename":                         # os.replace too
+        targets = args[:2]
+    else:
         return
-    try:
-        path = os.path.realpath(os.fsdecode(args[0]))
-    except (TypeError, ValueError):
-        return
-    sandbox = str(SANDBOX.resolve())
-    if path == sandbox or path.startswith(sandbox + os.sep):
-        return
-    if any(path == top or path.startswith(top + os.sep) for top in _WATCHED_ROOTS):
-        _FOLDERS_MADE.setdefault(path, os.environ.get("PYTEST_CURRENT_TEST", "collection").split(" ")[0])
+    for target in targets:
+        if target is None or isinstance(target, int):
+            continue
+        try:
+            path = os.path.realpath(os.fsdecode(target))
+        except (TypeError, ValueError):
+            continue
+        if not (path == _WATCHED or path.startswith(_WATCHED + os.sep)):
+            continue
+        sandbox = str(SANDBOX.resolve())
+        if path == sandbox or path.startswith(sandbox + os.sep) or (os.sep + "__pycache__") in path:
+            continue
+        _WRITTEN_BY.setdefault(path, os.environ.get("PYTEST_CURRENT_TEST", "collection").split(" ")[0])
 
 
-sys.addaudithook(_note_folder_made)
+sys.addaudithook(_note_written)
 _STATE_BEFORE = _own_state()
 
 
@@ -384,10 +430,11 @@ def measurements_stay_on_this_machine(monkeypatch, tmp_path):
 # (The results document RUN_TESTS, the scheduled audit and the test review read is written by
 # tools/run_test_report.py, not here.)
 def pytest_sessionfinish(session, exitstatus):
-    asked = Path(session.config.getoption("xmlpath", None) or ROOT / "-").resolve()   # --junitxml
+    asked = [p for p in (session.config.getoption("xmlpath", None),             # --junitxml
+                         session.config.getoption("basetemp", None)) if p]
     escaped = _written_since(_STATE_BEFORE, asked)
     if escaped:
-        print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files or folders in this checkout's own "
-              "state were written or made during the run:", *escaped, sep="\n  ")
+        print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files or folders in this checkout were "
+              "written, made or deleted during the run:", *escaped, sep="\n  ")
         if os.environ.get("CI") or os.environ.get("ELI_TEST_STRICT_ISOLATION"):
             session.exitstatus = pytest.ExitCode.TESTS_FAILED

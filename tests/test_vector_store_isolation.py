@@ -183,7 +183,7 @@ def test_the_test_sandbox_starts_without_the_last_runs_state():
 
 def test_a_run_going_on_in_the_checkout_keeps_its_sandbox(tmp_path, monkeypatch):
     """Starting a second run while one is going must not pull the sandbox from under the first: the
-    run going on holds a shared lock beside it, and the new run then leaves it as it is."""
+    run going on holds a shared lock (outside the checkout), and the new run then leaves it as it is."""
     import sys
     fcntl = pytest.importorskip("fcntl")
     conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
@@ -195,7 +195,8 @@ def test_a_run_going_on_in_the_checkout_keeps_its_sandbox(tmp_path, monkeypatch)
     monkeypatch.setattr(conftest, "ROOT", tmp_path)
     monkeypatch.setattr(conftest, "_SANDBOX_ROOT", sandbox)
     monkeypatch.setattr(conftest, "_SANDBOX_HOLD", conftest._SANDBOX_HOLD)    # this session's own, put back
-    other_run = open(tmp_path / "artifacts" / "_pytest.lock", "a+")
+    other_run = open(conftest._sandbox_lock(), "a+")
+    assert tmp_path not in conftest._sandbox_lock().parents, "the lock is a file left in the checkout"
     try:
         fcntl.flock(other_run, fcntl.LOCK_SH)
         conftest._fresh_sandbox()
@@ -208,24 +209,44 @@ def test_a_run_going_on_in_the_checkout_keeps_its_sandbox(tmp_path, monkeypatch)
     conftest._SANDBOX_HOLD.close()
 
 
-def test_a_folder_made_in_the_checkouts_own_state_is_named_with_the_test_that_made_it(tmp_path, monkeypatch):
+def test_whatever_a_test_writes_anywhere_in_the_checkout_is_named_with_the_test(tmp_path, monkeypatch):
     """A full run left artifacts/runtime and artifacts/vectors in the checkout, both empty, and the
-    run's guard, which listed only files, said nothing. A folder made there is named now, with the
-    test that made it; the eval's own throwaway folder is a sandbox, not ELI's state."""
+    run's guard, which listed only files, said nothing; it watched only ELI's state folders, so the
+    capability manifest written at the checkout's root and a rewritten document passed unseen too.
+    Every folder made, file written and file deleted anywhere in the checkout is named now, with the
+    test that did it. Not the run's own sandbox, the eval's throwaway folder, bytecode or a Python
+    environment kept in the checkout, nor what the run was asked to write."""
     import sys
     conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
-    own = tmp_path / "artifacts"
-    (own / "db").mkdir(parents=True)
+    (tmp_path / "artifacts" / "db").mkdir(parents=True)
+    (tmp_path / "blueprints").mkdir()
+    (tmp_path / "blueprints" / "a.md").write_text("as shipped")
+    (tmp_path / "docs.md").write_text("as shipped")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text("home = /usr\n")
     monkeypatch.setattr(conftest, "ROOT", tmp_path)
-    monkeypatch.setattr(conftest, "_OWN_STATE", [own])
-    monkeypatch.setattr(conftest, "_THROWAWAY_FOLDERS", (own / "_eval_sandbox",))
-    monkeypatch.setattr(conftest, "_WATCHED_ROOTS", (str(own.resolve()),))
-    monkeypatch.setattr(conftest, "_FOLDERS_MADE", {})
+    monkeypatch.setattr(conftest, "SANDBOX", tmp_path / "artifacts" / "_pytest")
+    monkeypatch.setattr(conftest, "_THROWAWAY_FOLDERS", (tmp_path / "artifacts" / "_eval_sandbox",))
+    monkeypatch.setattr(conftest, "_WATCHED", str(tmp_path.resolve()))
+    monkeypatch.setattr(conftest, "_WRITTEN_BY", {})
     before = conftest._own_state()
-    (own / "runtime").mkdir()
-    (own / "_eval_sandbox").mkdir()
+    (tmp_path / "artifacts" / "runtime").mkdir()
+    (tmp_path / "artifacts" / "_eval_sandbox").mkdir()
+    (tmp_path / "artifacts" / "_pytest").mkdir()
+    (tmp_path / "artifacts" / "_pytest" / "user.sqlite3").write_text("the run's own")
+    (tmp_path / "capability_manifest.json").write_text("{}")
+    (tmp_path / "blueprints" / "a.md").write_text("rewritten")
+    (tmp_path / "docs.md").unlink()
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / ".venv" / "lib").mkdir()
+    (tmp_path / "report.xml").write_text("asked for")
     this_test = os.environ["PYTEST_CURRENT_TEST"].split(" ")[0]
-    assert conftest._written_since(before) == [f"artifacts/runtime/ (made by {this_test})"]
+    assert conftest._written_since(before, [tmp_path / "report.xml"]) == [
+        f"artifacts/runtime/ (made by {this_test})",
+        f"blueprints/a.md (written by {this_test})",
+        f"capability_manifest.json (written by {this_test})",
+        f"docs.md (deleted by {this_test})",
+    ]
 
 
 def test_a_module_run_without_the_conftest_notes_a_folder_made_in_the_machines_own_state(tmp_path):
