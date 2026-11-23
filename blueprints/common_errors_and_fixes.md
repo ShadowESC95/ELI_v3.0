@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.171 (November 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.172 (November 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -507,10 +507,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.12**, so Arc
 Python is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.171
-wget "$U/ELI_v3-3.0.171-x86_64.AppImage"
-chmod +x ELI_v3-3.0.171-x86_64.AppImage
-./ELI_v3-3.0.171-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.172
+wget "$U/ELI_v3-3.0.172-x86_64.AppImage"
+chmod +x ELI_v3-3.0.172-x86_64.AppImage
+./ELI_v3-3.0.172-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small

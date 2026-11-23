@@ -1,4 +1,4 @@
-> **Updated for 3.0.171 (November 2026).** Gradient orchestrator for all CHAT modes; shared
+> **Updated for 3.0.172 (November 2026).** Gradient orchestrator for all CHAT modes; shared
 > `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`. RESUME_TASK
 > and MULTI_COMMAND's dependency/crash-survival layer ported from v2; agent-bus
 > confidence and habit learning gained relevance/source integrity checks.
