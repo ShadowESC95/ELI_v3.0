@@ -357,3 +357,23 @@ def test_the_file_last_named_belongs_to_its_own_conversation():
     assert in_conversation("engine:ann:s1", CE.get_last_file) == "/tmp/garden/plan.py"
     assert in_conversation("engine:bo:s2", CE.get_last_file) is None
     assert CE.get_last_file() is None
+
+
+def test_the_sweep_reads_git_only_for_a_source_tree_that_is_its_own_repository(tmp_path, monkeypatch):
+    """A source tree inside another repository (a test's throwaway tree in a checkout, a copy kept in
+    someone's project) took that repository's recent files for its own: on a shallow CI clone the
+    sweep picked eli/__init__.py, which nobody had changed, instead of ELI's core files."""
+    import subprocess
+    outer = tmp_path / "outer"
+    inner = outer / "nested"
+    (inner / "eli").mkdir(parents=True)
+    (inner / "eli" / "__init__.py").write_text("", encoding="utf-8")
+    (outer / "eli").mkdir()
+    (outer / "eli" / "__init__.py").write_text("", encoding="utf-8")
+    git = lambda *a, cwd: subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True)
+    git("init", "-q", cwd=outer)
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "add", "-A", cwd=outer)
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c", cwd=outer)
+    monkeypatch.setattr(CE, "_patch_root", lambda: inner)
+    assert CE._git_recent_py() == []
+
