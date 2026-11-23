@@ -8,10 +8,8 @@
    no memory grounding by nature, so the downgrade fired every time and handed the
    question to the model, which invented an answer instead of reporting the truth.
 """
-import json
 import re
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -20,23 +18,11 @@ from eli.execution import executor_enhanced as ex
 from eli.execution.effectors import media as media_impl
 from eli.kernel.engine import _is_soft_informational_action
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 
 # ── 1. Live-state actions must never be downgraded to CHAT ──────────────────
 def _manifest_actions() -> set[str]:
-    data = json.loads((REPO_ROOT / "capability_manifest.json").read_text(encoding="utf-8"))
-    entries = data if isinstance(data, list) else (
-        data.get("capabilities") or data.get("actions") or data
-    )
-    if isinstance(entries, dict):
-        return {str(k).upper() for k in entries}
-    names = set()
-    for e in entries:
-        n = (e.get("action") or e.get("name") or e.get("id")) if isinstance(e, dict) else e
-        if n:
-            names.add(str(n).upper())
-    return names
+    from tests.claims import _helpers as H
+    return {str(c["action"]).upper() for c in H.capabilities()}        # the manifest this run generated
 
 
 def test_now_playing_is_never_downgraded():

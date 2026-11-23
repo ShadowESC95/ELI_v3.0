@@ -26,11 +26,12 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def manifest_file() -> Path:
-    """The manifest the run generates and the claims read: in ELI's runtime state, where an engine
-    start regenerates it (the run's sandbox). Generated at the checkout's root, what a build bundles,
-    a test run left it and the inventory in the checkout."""
-    from eli.tools.registry.capability_updater import manifest_path
-    return manifest_path()
+    """The manifest the run generates once and the claims read: in a folder of its own in ELI's data
+    folder (the run's sandbox). Generated at the checkout's root, what a build bundles, a test run
+    left it and the inventory in the checkout. Not where an engine start regenerates its own
+    (capability_updater.manifest_path): a test's engine rewrites that one with what the test changed."""
+    from eli.core.paths import data_dir
+    return Path(data_dir()) / "claims" / "capability_manifest.json"
 
 
 def _run_bootstrap() -> subprocess.CompletedProcess | None:

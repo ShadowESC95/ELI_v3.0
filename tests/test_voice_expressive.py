@@ -198,8 +198,6 @@ def test_create_voice_reads_the_file_and_the_name(text, file, name):
 
 
 def test_create_voice_registered_capability():
-    import json
-    from pathlib import Path
-    m = json.loads((Path(__file__).resolve().parents[1] / "capability_manifest.json").read_text())
-    by = {c["action"]: c for c in m["capabilities"]}
+    from tests.claims import _helpers as H
+    by = {c["action"]: c for c in H.capabilities()}            # the manifest this run generated
     assert "CREATE_VOICE" in by and by["CREATE_VOICE"]["routable"]
