@@ -719,6 +719,16 @@ def _expression_class(text: str) -> Optional[str]:
     return klass if pos == len(tokens) else None
 
 
+def licence_text_class(text: str) -> str:
+    """The class of a licence named in words or as an SPDX expression: a model card's, a catalog
+    entry's, KNOWN_LICENCES'."""
+    text = str(text or "").strip()
+    if not text:
+        return UNKNOWN
+    klass = _expression_class(text) if "\n" not in text else None
+    return klass if klass not in (None, UNKNOWN) else _class_of_name(text)
+
+
 def licence_class(dist) -> str:
     """The class of what a distribution's metadata says (or the metadata read out of a wheel or sdist):
     its SPDX expression when it has one; else its License field and licence classifiers, where a

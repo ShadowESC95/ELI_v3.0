@@ -922,6 +922,114 @@ def test_each_package_and_file_is_sorted_by_what_a_closed_paid_product_may_pass_
     assert linux.index("--without-jack") < linux.index('pip install ".[$(echo $REQUIRED_EXTRAS')
 
 
+def test_every_model_eli_bundles_or_fetches_carries_its_own_licence_beside_it(tmp_path, monkeypatch):
+    """The models ELI passes on or fetches (the voice, the tagger and G2P model, the embedder, the wake
+    word's feature models, Silero's VAD, Whisper, Qwen3-TTS) each had a licence written only in
+    models/MODEL_LICENSES.md, far from the files. Each has an entry under a licence a closed, paid
+    product may pass on, with its licence's own text, written beside its files wherever they are kept:
+    by the release builds (ELI.spec, which stops on a model file without one), by voice_assets and
+    tts_qwen3 when they fetch, and by the package builder."""
+    from eli.perception import tts_qwen3, wakeword
+    from eli.runtime import model_licences as ml, voice_assets as va
+    from tests._sparse import sparse_file
+    gs = _gpl_sources()
+    for model in ml.MODELS.values():
+        assert gs.licence_text_class(model.licence) == gs.PERMISSIVE, (model.key, model.licence)
+        assert model.source.startswith("https://") and model.files, model.key
+        if model.text:
+            text = (ml.TEXTS / model.text).read_text(encoding="utf-8")
+            assert gs.licence_text_class(text[:4000]) == gs.PERMISSIVE, model.text
+            if model.licence == "MIT":
+                assert "Copyright (c)" in text and "Permission is hereby granted" in text, model.text
+    covered = {f"tts_kokoro/{e.rel}" for e in va.kokoro_manifest() if not e.unpack}
+    covered |= {f"tts_kokoro/{e.rel}/meta.json" for e in va.kokoro_manifest() if e.unpack}
+    covered |= {f"openwakeword/resources/models/{stem}.onnx" for stem in wakeword.FEATURE_MODELS}
+    covered |= {f"models--{e['repo'].replace('/', '--')}/snapshots/{e['revision']}/{rel}"
+                for kind in tts_qwen3.MODELS.values() for e in kind for rel in e["weights"]}
+    covered |= {"models/whisper/models--Systran--faster-whisper-small.en/snapshots/x/model.bin",
+                "faster_whisper/assets/silero_vad_v6.onnx", "speech_recognition/pocketsphinx-data/en-US/mdef"}
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    covered |= set(__import__("re").findall(r'dest="(models/embeddings/[^"]+)"', release))
+    assert len(covered) > 40 and not [rel for rel in covered if ml.for_file(rel) is None]
+
+    folder = tmp_path / "kokoro"
+    for entry in va.kokoro_manifest():
+        path = folder / entry.rel
+        if entry.unpack:
+            path.mkdir(parents=True)
+            (path / va._MARKER).write_text(entry.sha256, encoding="utf-8")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            sparse_file(path, entry.size)
+    assert va.ensure_kokoro(dest=folder)["ok"]
+    for key in ("kokoro-82m", "en-core-web-sm", "gruut-en-g2p"):
+        notice = (folder / ml.licence_file(key)).read_text(encoding="utf-8")
+        assert notice.startswith(ml.MODELS[key].name) and f"Licence: {ml.MODELS[key].licence}" in notice
+    before = (folder / ml.licence_file("kokoro-82m")).stat().st_mtime_ns
+    assert va.ensure_kokoro(dest=folder)["ok"] and (folder / ml.licence_file("kokoro-82m")).stat().st_mtime_ns == before
+
+    spec = (REPO / "ELI.spec").read_text(encoding="utf-8")
+    after = spec[spec.index("a = Analysis("):spec.index("pyz = PYZ(a.pure)")]
+    for needed in ("_model_licences.for_file(_dest)", "_model_licences.licensed_in(", "a.datas.append(",
+                   "gpl_sources.licence_text_class(_model.licence) in gpl_sources.BREACH", "_fail("):
+        assert needed in after, needed
+    portable = (REPO / "scripts" / "package_desktop_app.sh").read_text(encoding="utf-8")
+    assert '"$ROOT/scripts/asset_release_policy.py" --licences "$STAGING"' in portable
+    assert "model_licences.place(\"qwen3-tts\"" in (REPO / "eli" / "perception" / "tts_qwen3.py").read_text(encoding="utf-8")
+
+
+def test_a_package_or_an_asset_release_passes_on_no_model_a_closed_product_may_not(tmp_path, monkeypatch):
+    """scripts/package_desktop_app.sh bundled Qwen2.5-3B, under the non-commercial Qwen Research
+    License, whenever models/ had it, as the starter of a package that goes to every user, and the asset
+    release published every model the catalog names. Both now take only a catalog model whose licence
+    (the entry's own, else the one ELI records for a model its builds carry: the embedder) lets ELI v3
+    pass it on; the starter is the smallest of those that models/ holds. Invented catalog entries."""
+    import sys
+    sys.path.insert(0, str(REPO / "scripts"))
+    import asset_release_policy as policy
+    from eli.core import model_download as md
+    entries = [
+        {"key": "example-small-nc", "filename": "small-nc.gguf", "url": "https://example.invalid/a", "size_gb": 1.0,
+         policy.CATALOG_LICENCE_FIELD: "Example Research License (non-commercial)"},
+        {"key": "example-medium", "filename": "medium.gguf", "url": "https://example.invalid/b", "size_gb": 4.0,
+         policy.CATALOG_LICENCE_FIELD: "Apache-2.0"},
+        {"key": "example-large", "filename": "large.gguf", "url": "https://example.invalid/c", "size_gb": 9.0,
+         policy.CATALOG_LICENCE_FIELD: "MIT"},
+        {"key": "example-custom", "filename": "custom.gguf", "url": "https://example.invalid/d", "size_gb": 2.0,
+         policy.CATALOG_LICENCE_FIELD: "Example Model License with an acceptable-use policy"},
+        {"key": "example-silent", "filename": "silent.gguf", "url": "https://example.invalid/e", "size_gb": 0.5},
+    ]
+    monkeypatch.setattr(md, "CATALOG", entries)
+    monkeypatch.setattr(md, "list_catalog", lambda: list(entries))
+    monkeypatch.setattr(md, "list_aux", lambda: [{"key": "embedder", "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+                                                 "url": "https://example.invalid/f"}])
+    policy.catalog_model_filenames.cache_clear()
+    try:
+        assert policy.catalog_model_filenames() == {"medium.gguf", "large.gguf", "nomic-embed-text-v1.5.Q4_K_M.gguf"}
+        for entry in entries:
+            (tmp_path / entry["filename"]).write_bytes(b"")
+        assert policy.starter_model(tmp_path)["filename"] == "medium.gguf"
+        (tmp_path / "medium.gguf").unlink()
+        assert policy.starter_model(tmp_path)["filename"] == "large.gguf"
+        (tmp_path / "large.gguf").unlink()
+        assert policy.starter_model(tmp_path) is None
+        package = tmp_path / "package"
+        (package / "models" / "embeddings").mkdir(parents=True)
+        (package / "models" / "large.gguf").write_bytes(b"")
+        (package / "models" / "embeddings" / "nomic-embed-text-v1.5.Q4_K_M.gguf").write_bytes(b"")
+        assert policy.place_licences(package) == []
+        assert "Licence: MIT" in (package / "models" / "LICENSE.example-large.txt").read_text(encoding="utf-8")
+        assert (package / "models" / "embeddings" / "LICENSE.nomic-embed-text-v1.5.txt").is_file()
+        (package / "models" / "mystery.gguf").write_bytes(b"")
+        assert policy.place_licences(package) == ["models/mystery.gguf"]
+    finally:
+        policy.catalog_model_filenames.cache_clear()
+    script = (REPO / "scripts" / "package_desktop_app.sh").read_text(encoding="utf-8")
+    assert '"$ROOT/scripts/asset_release_policy.py" --starter "$ASSET_ROOT/models"' in script
+    assert not [e["filename"] for e in md.CATALOG if e["filename"] in script], "a model is named in the script"
+    assert 'cp -a "$ASSET_ROOT/models/." "$STAGING/models/"' not in script, "models/ is copied whole again"
+
+
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):
     """With PyAutoGUI's three left out, SOURCES.md listed nothing and said nothing. The build's own tools
     (PyInstaller, under the GPL with its bootloader exception) were fetched as if a build carried them."""

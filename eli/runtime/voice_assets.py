@@ -261,6 +261,7 @@ def ensure_kokoro(voices: Optional[List[str]] = None, dest: Optional[Path] = Non
     have = (lambda e: _present_in(root, e)) if dest else _locate
     missing = [e for e in wanted if have(e) is None]
     if not missing:
+        _place_licences(root, wanted)
         return {"ok": True, "asset": "kokoro", "already_present": True, "fetched": []}
     fetched = []
     try:
@@ -270,7 +271,23 @@ def ensure_kokoro(voices: Optional[List[str]] = None, dest: Optional[Path] = Non
     except Exception as exc:
         log.warning("voice_assets: Kokoro file not fetched: %s", exc, exc_info=True)
         return {"ok": False, "asset": "kokoro", "fetched": fetched, "error": str(exc)}
+    _place_licences(root, wanted)
     return {"ok": True, "asset": "kokoro", "already_present": False, "fetched": fetched}
+
+
+# The licences of the voice's files (eli/runtime/model_licences.py), each written beside them.
+_KOKORO_LICENCES = ("kokoro-82m", "en-core-web-sm", "gruut-en-g2p")
+
+
+def _place_licences(root: Path, wanted: List[KokoroFile]) -> None:
+    """Each licence of the voice's files beside them in `root`, when they are all there: ELI's own
+    models folder, or the folder the release workflow fills for the bundle. A bundle's copy is read in
+    place and never written to; it was given its licences when it was built."""
+    if not all(_present_in(root, e) is not None for e in wanted):
+        return
+    from eli.runtime import model_licences
+    for key in _KOKORO_LICENCES:
+        model_licences.place(key, root)
 
 
 # ── the voices a user can pick ─────────────────────────────────────────────────
@@ -435,6 +452,8 @@ def ensure_whisper() -> Dict[str, Any]:
             os.environ.setdefault("ELI_WHISPER_LOCAL_ONLY", "1")
             W.preload_model()
             present = getattr(W, "_MODEL", None) is not None
+            if present:
+                _place_whisper_licence(W)
             return {"ok": present, "asset": "whisper", "already_present": True,
                     **({} if present else {"error": "model cache present but load failed"})}
         from eli.core import netguard
@@ -450,6 +469,8 @@ def ensure_whisper() -> Dict[str, Any]:
                     os.environ["ELI_WHISPER_LOCAL_ONLY"] = prev_local
         present = getattr(W, "_MODEL", None) is not None
         err = None if present else "model not loaded (is faster-whisper installed?)"
+        if present:
+            _place_whisper_licence(W)
         return {"ok": present, "asset": "whisper",
                 "already_present": False, **({} if present else {"error": err})}
     except ImportError:
@@ -458,6 +479,18 @@ def ensure_whisper() -> Dict[str, Any]:
     except Exception as e:
         log.debug("voice_assets: whisper preload failed", exc_info=True)
         return {"ok": False, "asset": "whisper", "error": str(e)}
+
+
+def _place_whisper_licence(stt) -> None:
+    """The Whisper models' licence (MIT, OpenAI's; converted by Systran) beside them, in the folder
+    faster-whisper downloads them to."""
+    try:
+        from eli.runtime import model_licences
+        model_dir = stt._model_settings()[1]
+        if model_dir and Path(model_dir).is_dir():
+            model_licences.place("faster-whisper", Path(model_dir))
+    except Exception:
+        log.debug("voice_assets: whisper licence not placed", exc_info=True)
 
 
 def ensure_voice_assets() -> Dict[str, Any]:

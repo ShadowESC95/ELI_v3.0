@@ -430,6 +430,40 @@ a = Analysis(
     module_collection_mode={"llama_cpp": "py"},
 )
 
+# ── Each model the bundle carries, with its licence beside it ───────────────────
+# Every model or weight file in the bundle (the voice's, the embedder, the wake word's feature models,
+# the VAD inside faster-whisper, CMU's model inside SpeechRecognition) has an entry in
+# eli/runtime/model_licences.py under a licence a closed, paid product may pass on, and its licence
+# text sits in its folder or one above it (tts_kokoro/ has the voice's from voice_assets). A model
+# file with no entry, or one in a licence class no release carries, stops the build.
+from eli.runtime import model_licences as _model_licences  # noqa: E402
+_licence_tmp = Path(_tempfile.mkdtemp(prefix="eli_licences_"))
+_bundled_names = {_d.replace("\\", "/") for _d, _s, _t in a.datas}
+_model_problems = []
+for _dest, _src, _typ in list(a.datas):
+    _dest = _dest.replace("\\", "/")
+    if not _dest.lower().endswith(_model_licences.MODEL_SUFFIXES) or _dest.startswith("torch/"):
+        continue
+    _model = _model_licences.for_file(_dest)
+    if _model is None:
+        _model_problems.append(f"{_dest}: no entry in eli/runtime/model_licences.py")
+        continue
+    if gpl_sources.licence_text_class(_model.licence) in gpl_sources.BREACH:
+        _model_problems.append(f"{_dest}: {_model.licence}, which a closed, paid product may not pass on")
+        continue
+    _folder = Path(_dest).parent.as_posix()
+    _name = _model_licences.licence_file(_model.key)
+    if not _model_licences.licensed_in(_dest, _model.key, _bundled_names):
+        _written = _model_licences.place(_model.key, _licence_tmp / _folder)
+        if _written is None:
+            _model_problems.append(f"{_dest}: its licence could not be written")
+            continue
+        a.datas.append((f"{_folder}/{_name}", str(_written), "DATA"))
+        _bundled_names.add(f"{_folder}/{_name}")
+        print(f"[ELI.spec] {_model.licence} licence beside {_folder}/ ({_model.key})")
+if _model_problems:
+    _fail("models without a licence a closed, paid product may pass on: " + "; ".join(_model_problems))
+
 pyz = PYZ(a.pure)
 
 # Windows version resource — generated from pyproject.toml at build time.
