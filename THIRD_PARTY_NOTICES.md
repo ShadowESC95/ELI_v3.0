@@ -14,31 +14,38 @@ checkouts.
 > **GPL note:** the release builds (exe, dmg, AppImage, the portable packages) carry
 > **piper-tts 1.4** (GPL-3.0-or-later) with **espeak-ng** (GPL-3.0-or-later) compiled
 > into it: ELI's text-to-speech engine, imported in-process (`ELI.spec` collects the
-> `piper` package). Through PyAutoGUI (BSD-3-Clause) they also carry **MouseInfo**
-> (GPLv3+ per its package metadata), **PyMsgBox** (BSD licence text, GPLv3+ classifier
-> in its metadata) and, on Linux, **python3-xlib** (GPLv2). Those components are under
-> the GPL in every copy; each release attaches their source (*Source code of the GPL
-> components* below).
+> `piper` package). Those components are under the GPL in every copy; each release
+> attaches their source (*Source code of the GPL components* below).
+>
+> **PyAutoGUI's GPL dependencies are left out.** PyAutoGUI (BSD-3-Clause), which drives
+> the keyboard and mouse where no native tool does, declares **MouseInfo** (GPLv3+),
+> **PyMsgBox** (GPLv3+ classifier) and, on Linux, **python3-xlib** (GPLv2). No release
+> carries them: PyAutoGUI imports the first two only to offer `mouseInfo()` and its
+> message boxes, which ELI never calls, and its X11 backend drives **python-xlib**
+> (LGPLv2+) instead of python3-xlib. Each build takes them out after installing
+> (`packaging/gpl_sources.py --leave-out`), `ELI.spec` stops a frozen build whose
+> environment holds any package under the GPL, the wheelhouses are checked the same way,
+> and `requirements.lock.txt` pins none of them. ELI's installers take them out of the
+> environment they make as well; a `pip install` you run yourself from PyPI still fetches
+> them onto your machine, as PyAutoGUI's metadata asks.
 
 ---
 
 ## Source code of the GPL components
 
 The release builds carry these packages under the GPL, at the versions in
-`requirements.lock.txt`: **piper-tts** with **espeak-ng** compiled into it, and PyAutoGUI's
-helpers **MouseInfo**, **PyMsgBox** and, on Linux, **python3-xlib**. Their exact source, at
+`requirements.lock.txt`: **piper-tts** with **espeak-ng** compiled into it. Their exact source, at
 the versions a release carries, is attached to that release on GitHub as
 **`ELI_v3-<version>-gpl-sources.tar.gz`**, next to the binaries: each package's source
 distribution from PyPI (checked against PyPI's digest), the project's repository at the
 version's tag where the sdist leaves out the build files of a compiled part (piper-tts's
 does), and the espeak-ng commit piper-tts's build compiles in, listed with where each came
-from in the `SOURCES.md` inside. `packaging/gpl_sources.py` makes it in the release
-workflow, from the packages the build installed; it may also hold the source of build tools
-under the GPL (PyInstaller), whose licences carry no such obligation for the programs they
-build. Upstream: piper-tts <https://github.com/OHF-Voice/piper1-gpl>, espeak-ng
-<https://github.com/espeak-ng/espeak-ng>, MouseInfo <https://github.com/asweigart/mouseinfo>,
-PyMsgBox <https://github.com/asweigart/pymsgbox>, python3-xlib
-<https://pypi.org/project/python3-xlib/>.
+from in the `SOURCES.md` inside, which says so plainly when the builds carry no package under
+the GPL. `packaging/gpl_sources.py` makes it in the release workflow, from the packages the
+build installed. The build's own tools are not among them: PyInstaller, whose bootloader every
+frozen app starts through, is under the GPL with an exception that lets the bootloader go with
+any program, and nothing of it is owed. Upstream: piper-tts
+<https://github.com/OHF-Voice/piper1-gpl>, espeak-ng <https://github.com/espeak-ng/espeak-ng>.
 
 ---
 
@@ -78,6 +85,8 @@ package whose source it cannot find is not released.
 | **openwakeword** | Apache-2.0 | Wake word |
 | **pychromecast**, **androidtv**, **pyatv** | MIT | Device drivers (Chromecast, Fire TV / Android TV, Apple TV / AirPlay) |
 | **adb-shell** | Apache-2.0 | Fire TV / Android TV pairing |
+| **PyAutoGUI** | BSD-3-Clause | Keyboard and mouse where no native tool does; its GPL dependencies are left out (see the GPL note above) |
+| **python-xlib** | LGPLv2+ | The Xlib PyAutoGUI drives on Linux |
 | **yara-python** | Apache-2.0 | The plugin scanner's YARA engine (the user's own rules) |
 | **numpy**, **Pillow**, **requests**, **pydantic**, etc. | BSD/MIT/Apache-2.0 | See installed package metadata |
 
@@ -109,6 +118,7 @@ Installed by `install.sh` or the OS package manager as needed:
 |---|---|---|
 | **PyQt6 / PyQt5** | GPL-3.0 | Would copyleft shipped binaries |
 | **QScintilla** (with PyQt) | GPL | Optional dev UI only |
+| **MouseInfo**, **PyMsgBox**, **python3-xlib** | GPL | PyAutoGUI declares them; ELI never uses what needs them, and python-xlib (LGPL) is the Xlib it drives (see the GPL note above) |
 
 Experimental trees under `experimental/` may reference PyQt6 — they are **not**
 part of the supported release.
