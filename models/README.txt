@@ -1,30 +1,31 @@
-ELI v2.0 release artifacts (organised copy)
+ELI v3 release artifacts (organised copy)
 
-Use these folders by target platform:
+Use these folders by target platform (<version> is the release, such as 3.0.171):
 
 Windows/
-  eli-mkxi-2.0.0-windows-portable.zip
+  ELI_v3-<version>-windows-portable.zip
   Extract, then run install.bat or install.ps1 inside the folder.
 
 Linux/
-  ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz
+  ELI_v3.0-<version>-linux-portable.tar.gz
   Extract, then ./INSTALL_ELI.sh and ./RUN_ELI.sh
   (Best tested on Linux x86_64 + NVIDIA.)
 
-  eli-mkxi_2.0.0_amd64.deb
-  sudo apt install ./eli-mkxi_2.0.0_amd64.deb
+  eli-v3_<version>_amd64.deb
+  sudo apt install ./eli-v3_<version>_amd64.deb
+  (Up to 3.0.171 the package was named eli-mkxi; installing eli-v3 replaces it.)
 
 macOS/
-  ELI_MKXI-2.0.0-macos-app.tar.gz
-  Extract on macOS; .dmg requires building on a Mac host.
+  ELI_v3-<version>-macos-arm64.dmg
+  Open it and drag ELI to Applications.
 
 Python/
-  eli_mkxi-2.0.0-py3-none-any.whl
-  python -m pip install eli_mkxi-2.0.0-py3-none-any.whl
+  eli_v3-<version>-py3-none-any.whl
+  python -m pip install eli_v3-<version>-py3-none-any.whl
 
 Model / voice packs/
   Distributed separately via GitHub Release assets (too large for git),
-  tag: local-assets-v2.1. Restore after install:
+  tag: local-assets-v3.0. Restore after install:
   ./RUN_ELI.sh --with-github-assets
 
 Checksums/

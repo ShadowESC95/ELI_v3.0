@@ -287,7 +287,8 @@ offers to delete your data.
 **By hand:**
 
 1. **The program** — the AppImage file, the folder you extracted or cloned, or the package
-   (`sudo apt remove eli-mkxi`).
+   (`sudo apt remove eli-v3`; up to 3.0.171 the package was named `eli-mkxi`). Removing or
+   purging the package leaves your data where it is.
 2. **Your data and settings** — conversations, memories, voice profile, models and licence
    activation live in ELI v3's per-user folder: `~/.local/share/ELI_v3` (Linux),
    `%LOCALAPPDATA%\ELI_v3` (Windows), `~/Library/Application Support/ELI_v3` (macOS). A source

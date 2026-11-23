@@ -45,11 +45,15 @@ Every release ships the platform assets below plus `SHA256SUMS.txt`.
 | `ELI_v3-<v>-macos-arm64.dmg` | ~1.4 GB | macOS (Apple Silicon) | App bundle | chat model | Mac users |
 | `ELI_v3-<v>-x86_64.AppImage` | ~1.2 GB | Linux, glibc 2.39 or newer | Double-click app | chat model | Most Linux users |
 | `ELI_v3-<v>-linux-portable.tar.gz` | ~1.2 GB | Linux, any glibc | Source + `ELI_Setup.sh` (venv) | Python deps + chat model | Older systems / editable / CPU laptops |
+| `eli-v3_<v>_amd64.deb` | as the portable | Debian / Ubuntu | The portable package in `/opt/eli-v3`, the `eli-v3` command and menu entry | Python deps + chat model | Installing with `apt` |
 | `SHA256SUMS.txt` | tiny | — | Checksums | — | verifying your download |
 
 **In plain terms:**
 - Just want it to work → **ELI-Setup-*.exe** (Windows), **.dmg** (macOS), **AppImage** (Linux).
 - Want the source tree → **linux-portable.tar.gz** → `./ELI_Setup.sh` only (never `scripts/install_eli.sh`).
+- Debian / Ubuntu package → `sudo apt install ./eli-v3_<v>_amd64.deb`. Up to 3.0.171 it was named
+  `eli-mkxi`; apt removes that one and installs `eli-v3` in its place (`dpkg -i` alone stops at it).
+  Your data in `~/.local/share/ELI_v3` stays as it is.
 - **Linux: the AppImage needs glibc 2.39 or newer** (`ldd --version`). That is Ubuntu 24.04+, Debian 13+, Fedora 40+, Linux Mint 22+, Pop!_OS 24.04+, RHEL / AlmaLinux / Rocky 10+, openSUSE Leap 16+ and Tumbleweed, Arch. On Ubuntu 22.04, Debian 12, Mint 21 or RHEL 9 it does not start and says so; use **linux-portable.tar.gz** there, which installs from source against the system's own libraries.
 - Frozen builds bundle **nomic** + **Piper voice weights**; Windows TTS still needs a Piper **CLI** on PATH or under `tts_piper/` (weights alone are not enough).
 - **No download bundles a chat model.** First launch / wizard fetches one.
