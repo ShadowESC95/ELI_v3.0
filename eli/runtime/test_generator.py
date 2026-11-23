@@ -56,11 +56,13 @@ def _manifest() -> Path:
     return drafts_dir() / "_manifest.json"
 
 
-# Candidates are verified UNDER tests/ so the repo conftest + testpaths apply
-# (fixed location, independent of the drafts folder, which a test may redirect). Each check has a
-# folder of its own there, removed with the candidate: one shared tests/_testgen_tmp was left in the
-# checkout after every check, and two checks at once shared it.
-_VERIFY_PARENT = REPO / "tests"
+# Candidates are verified UNDER the source tree's tests/ (paths.source_root(), read at each use) so its
+# conftest and testpaths apply, independent of the drafts folder. Each check has a folder of its own
+# there, removed with the candidate: one shared tests/_testgen_tmp was left in the checkout after every
+# check, and two checks at once shared it.
+def _verify_parent() -> Path:
+    from eli.core.paths import source_root
+    return Path(source_root()) / "tests"
 
 # Curated safe, pure-ish modules whose public functions are deterministic and
 # cheap to import (no GUI, no daemons, no model, no network). Start small +
@@ -196,7 +198,8 @@ def verify_test(code: str) -> Dict[str, Any]:
     except SyntaxError as e:
         return {"accepted": False, "reason": f"syntax error: {e}"}
     try:
-        folder = tempfile.mkdtemp(prefix="_testgen_", dir=str(_VERIFY_PARENT))
+        parent = _verify_parent()
+        folder = tempfile.mkdtemp(prefix="_testgen_", dir=str(parent))
     except OSError as e:
         return {"accepted": False, "reason": f"verify error: cannot write under tests/: {e}"}
     path = os.path.join(folder, "test_cand.py")
@@ -204,7 +207,7 @@ def verify_test(code: str) -> Dict[str, Any]:
         Path(path).write_text(code, encoding="utf-8")
         r = subprocess.run(
             [sys.executable, "-m", "pytest", path, "-q", "-p", "no:cacheprovider", "--no-header"],
-            cwd=str(REPO), capture_output=True, text=True, timeout=180)
+            cwd=str(parent.parent), capture_output=True, text=True, timeout=180)
         out = (r.stdout or "") + (r.stderr or "")
         m = re.search(r"(\d+) passed", out)
         n_pass = int(m.group(1)) if m else 0

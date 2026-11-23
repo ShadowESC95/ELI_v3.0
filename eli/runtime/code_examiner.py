@@ -32,11 +32,13 @@ from typing import Any, Dict, List, Optional
 
 from eli.utils.log import get_logger
 
-# Reuse the self-improvement engine's import/path helpers rather than re-rolling.
+# Reuse the self-improvement engine's import/path helpers rather than re-rolling. The tree examined
+# is the one self-improvement patches, read at each use (_patch_root: paths.source_root()); it was a
+# project root fixed when this module was imported.
 from eli.runtime.self_improvement import (
     _smoke_import_module,
     _dotted_module_for_path,
-    PROJECT_ROOT,
+    _patch_root,
 )
 from eli.core.paths import artifacts_dir
 
@@ -113,14 +115,14 @@ class Finding:
 # --------------------------------------------------------------------------- #
 def _rel(p: Path) -> str:
     try:
-        return str(p.resolve().relative_to(PROJECT_ROOT))
+        return str(p.resolve().relative_to(_patch_root()))
     except Exception:
         return str(p)
 
 
 def _inside_project(p: Path) -> bool:
     try:
-        p.resolve().relative_to(PROJECT_ROOT)
+        p.resolve().relative_to(_patch_root())
         return True
     except Exception:
         return False
@@ -132,6 +134,7 @@ def _extract_named_paths(request: str) -> List[Path]:
     low = raw.lower()
     out: List[Path] = []
     seen: set[str] = set()
+    root = _patch_root()
 
     def _add(p: Path) -> None:
         rp = p.resolve()
@@ -146,23 +149,23 @@ def _extract_named_paths(request: str) -> List[Path]:
     for tok in re.findall(r"[~./\w-]*\.py\b", raw):
         cand = Path(os.path.expanduser(tok))
         if not cand.is_absolute():
-            cand = PROJECT_ROOT / cand
+            cand = root / cand
         _add(cand)
 
     # 2) dotted modules: eli.cognition.orchestrator
     for tok in re.findall(r"\beli(?:\.\w+)+\b", raw):
-        _add(PROJECT_ROOT / (tok.replace(".", "/") + ".py"))
+        _add(root / (tok.replace(".", "/") + ".py"))
 
     # 3) aliases ("the orchestrator", "the router", "your gui file")
     for alias, rel in _MODULE_ALIASES.items():
         if re.search(rf"\b{re.escape(alias)}\b", low):
-            _add(PROJECT_ROOT / rel)
+            _add(root / rel)
 
     # 4) bare "gui" when the user is auditing wiring (not "gui runtime audit proof")
     if re.search(r"\b(gui|gui file|your gui)\b", low) and re.search(
         r"\b(audit|examine|review|inspect|scan|check|wired|wiring)\b", low
     ):
-        _add(PROJECT_ROOT / "eli/gui/main_window/window.py")
+        _add(root / "eli/gui/main_window/window.py")
 
     return out
 
@@ -171,11 +174,12 @@ def _git_recent_py(days: int = 7, max_files: int = MAX_SWEEP_FILES) -> List[Path
     """Recently-modified project .py files via git (working tree + recent commits)."""
     found: List[Path] = []
     seen: set[str] = set()
+    root = _patch_root()
 
     def _collect(args: List[str]) -> None:
         try:
             proc = subprocess.run(
-                ["git", *args], cwd=str(PROJECT_ROOT),
+                ["git", *args], cwd=str(root),
                 capture_output=True, text=True, timeout=15,
             )
         except Exception:
@@ -186,12 +190,12 @@ def _git_recent_py(days: int = 7, max_files: int = MAX_SWEEP_FILES) -> List[Path
             line = line.strip()
             if not line.endswith(".py"):
                 continue
-            p = (PROJECT_ROOT / line).resolve()
+            p = (root / line).resolve()
             key = str(p)
             if key in seen or not p.exists() or not _inside_project(p):
                 continue
             # Keep the examiner focused on the package itself.
-            if not str(p.relative_to(PROJECT_ROOT)).startswith("eli/"):
+            if not str(p.relative_to(root)).startswith("eli/"):
                 continue
             seen.add(key)
             found.append(p)
@@ -221,7 +225,7 @@ def resolve_targets(request: str) -> List[Path]:
         recent = _git_recent_py()
         if recent:
             return recent
-        fallback = [(PROJECT_ROOT / r).resolve() for r in _CORE_FALLBACK]
+        fallback = [(_patch_root() / r).resolve() for r in _CORE_FALLBACK]
         return [p for p in fallback if p.exists()]
     last = get_last_file() if _POINTS_BACK.search(str(request or "")) else None
     if last and Path(last).is_file():
@@ -519,7 +523,7 @@ def format_report(paths: List[Path], findings: List[Finding], *, allow_fix: bool
             note = ""
             if tier == 3 and f.line:
                 try:
-                    p = (PROJECT_ROOT / f.file).resolve()
+                    p = (_patch_root() / f.file).resolve()
                     if _tier3_syntax_false_positive(p, f.message):
                         note = "  [AST: file parses OK — likely false positive]"
                 except Exception:
@@ -663,7 +667,7 @@ def generate_fix_patch(finding: Dict[str, Any]) -> Dict[str, Any]:
     rel = str(finding.get("file") or "").strip()
     if not rel:
         return {"ok": False, "error": "finding has no file"}
-    p = (PROJECT_ROOT / rel).resolve()
+    p = (_patch_root() / rel).resolve()
     if not _inside_project(p) or not p.exists() or p.suffix != ".py":
         return {"ok": False, "error": f"unfixable target: {rel}"}
     try:

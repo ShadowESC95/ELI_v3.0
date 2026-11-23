@@ -45,12 +45,12 @@ def test_strip_ansi_leaves_ordinary_text_alone():
 
 
 @pytest.fixture
-def probe(tmp_path):
-    """A test file that genuinely fails, inside the repo pytest will run."""
-    path = dbg._repo_root() / "tests" / "test_autopilot_colour_probe_tmp.py"
-    path.write_text("def test_probe():\n    assert False\n", encoding="utf-8")
-    yield "tests/test_autopilot_colour_probe_tmp.py::test_probe"
-    path.unlink(missing_ok=True)
+def probe(source_tree):
+    """A test file that genuinely fails, in the source tree pytest will run (a throwaway one: the probe
+    was written into the checkout's tests/)."""
+    (source_tree / "tests" / "test_autopilot_colour_probe_tmp.py").write_text(
+        "def test_probe():\n    assert False\n", encoding="utf-8")
+    return "tests/test_autopilot_colour_probe_tmp.py::test_probe"
 
 
 def test_a_failing_test_reproduces_even_with_colour_forced(probe, monkeypatch):
@@ -68,16 +68,13 @@ def test_captured_output_is_plain_text(probe, monkeypatch):
     assert "\x1b[" not in out, "escape sequences leaked into the quoted report output"
 
 
-def test_a_passing_test_is_not_called_a_reproduction(monkeypatch):
-    path = dbg._repo_root() / "tests" / "test_autopilot_pass_probe_tmp.py"
-    path.write_text("def test_probe():\n    assert True\n", encoding="utf-8")
+def test_a_passing_test_is_not_called_a_reproduction(monkeypatch, source_tree):
+    (source_tree / "tests" / "test_autopilot_pass_probe_tmp.py").write_text("def test_probe():\n    assert True\n",
+                                                                            encoding="utf-8")
     monkeypatch.setenv("FORCE_COLOR", "3")
-    try:
-        result = dbg._run_validation(dbg._repo_root(), ["tests/test_autopilot_pass_probe_tmp.py"])
-        assert result["failed"] is False
-        assert result["exit_status"] == 0
-    finally:
-        path.unlink(missing_ok=True)
+    result = dbg._run_validation(dbg._repo_root(), ["tests/test_autopilot_pass_probe_tmp.py"])
+    assert result["failed"] is False
+    assert result["exit_status"] == 0
 
 
 def test_no_targets_is_not_a_run():

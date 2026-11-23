@@ -31,11 +31,10 @@ _ASSERT = re.compile(r'^E\s+(assert .+|.*Error.*)$', re.M)
 
 
 def _repo_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-        return Path(get_paths().project_root)
-    except Exception:
-        return Path(__file__).resolve().parents[2]
+    """The tree whose failures are diagnosed, reproduced and fixed: the source tree self-improvement
+    patches (paths.source_root(), read at each use: ELI_SOURCE_ROOT, else the install's tree)."""
+    from eli.core.paths import source_root
+    return Path(source_root())
 
 
 def _git(root: Path, *args: str, timeout: int = 15) -> str:

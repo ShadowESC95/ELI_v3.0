@@ -36,19 +36,17 @@ def test_pytest_failure_and_empty_and_stdlib_exclusion():
     assert not any("site-packages" in f or f.startswith("/usr") for f in d3["affected_files"])
 
 
-def test_v2_verify_reproduces_readonly(tmp_path):
+def test_v2_verify_reproduces_readonly(source_tree):
     """v2 slight frontier improvement: verify() runs the failing test (reproduce) but stays
-    read-only — no governed apply loop (that's v3-only)."""
+    read-only — no governed apply loop (that's v3-only). In a throwaway source tree: the probe was
+    written into the checkout's tests/."""
     from eli.runtime import autopilot_debugger as dbg
-    root = dbg._repo_root()
-    probe = root / "tests" / "test_ap_probe_tmp.py"
-    probe.write_text("def test_probe_fail():\n    assert False\n", encoding="utf-8")
-    try:
-        t = dbg.resolve("FAILED tests/test_ap_probe_tmp.py::test_probe_fail - assert False", apply=False)
-        assert t["ok"] and t["reproduced"] is True and t["applied"] is False
-        assert "reproduc" in dbg.format_resolution(t).lower()
-    finally:
-        probe.unlink(missing_ok=True)
+    assert dbg._repo_root() == source_tree
+    (source_tree / "tests" / "test_ap_probe_tmp.py").write_text("def test_probe_fail():\n    assert False\n",
+                                                                encoding="utf-8")
+    t = dbg.resolve("FAILED tests/test_ap_probe_tmp.py::test_probe_fail - assert False", apply=False)
+    assert t["ok"] and t["reproduced"] is True and t["applied"] is False
+    assert "reproduc" in dbg.format_resolution(t).lower()
 
 
 def test_resolve_no_repro_when_nothing_fails():

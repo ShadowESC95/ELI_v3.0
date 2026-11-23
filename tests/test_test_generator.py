@@ -10,25 +10,26 @@ import json
 import eli.runtime.test_generator as TG
 
 
-def test_verify_accepts_a_passing_test():
+def test_verify_accepts_a_passing_test(source_tree):
     code = "def test_ok():\n    assert 1 + 1 == 2\n"
     r = TG.verify_test(code)
     assert r["accepted"] is True and r.get("passed", 0) >= 1
 
 
-def test_verify_rejects_a_failing_test():
+def test_verify_rejects_a_failing_test(source_tree):
     code = "def test_bad():\n    assert 1 == 2\n"
     r = TG.verify_test(code)
     assert r["accepted"] is False and r["reason"] in ("failed/errored", "no tests collected")
 
 
-def test_a_check_leaves_nothing_under_tests():
-    """The candidate is run under tests/ (the suite's conftest applies to it), in a folder of its own:
-    one shared tests/_testgen_tmp was left in the checkout after every check."""
-    before = sorted(p.name for p in TG._VERIFY_PARENT.iterdir())
+def test_a_check_runs_in_the_source_trees_tests_and_leaves_nothing_there(source_tree):
+    """The candidate is run under the source tree's tests/ (its conftest applies to it), in a folder of
+    its own: one shared tests/_testgen_tmp was left in the checkout after every check, and the tree
+    was the checkout's whatever the source root was."""
+    assert TG._verify_parent() == source_tree / "tests"
     assert TG.verify_test("def test_ok():\n    assert 2 * 3 == 6\n")["accepted"] is True
     assert TG.verify_test("def test_bad():\n    assert 2 * 3 == 7\n")["accepted"] is False
-    assert sorted(p.name for p in TG._VERIFY_PARENT.iterdir()) == before
+    assert list((source_tree / "tests").iterdir()) == []
 
 
 def test_verify_rejects_syntax_error():
@@ -37,7 +38,7 @@ def test_verify_rejects_syntax_error():
     assert r["accepted"] is False and "syntax" in r["reason"]
 
 
-def test_verify_rejects_when_no_tests_collected():
+def test_verify_rejects_when_no_tests_collected(source_tree):
     r = TG.verify_test("x = 1  # no test functions here at all, just a statement\n")
     assert r["accepted"] is False
 
@@ -55,7 +56,7 @@ def test_generate_test_strips_fences():
     assert code.startswith("def test_z") and "```" not in code
 
 
-def test_run_testgen_pipeline_accepts_and_writes(tmp_path, monkeypatch):
+def test_run_testgen_pipeline_accepts_and_writes(tmp_path, monkeypatch, source_tree):
     # redirect the generated area to a temp dir so the real suite isn't touched
     monkeypatch.setattr(TG, "drafts_dir", lambda: tmp_path)
     # stub the model to return a valid, passing test
@@ -69,7 +70,7 @@ def test_run_testgen_pipeline_accepts_and_writes(tmp_path, monkeypatch):
     assert list(tmp_path.glob("test_gen_*.py"))
 
 
-def test_run_testgen_rejects_bad_candidate(tmp_path, monkeypatch):
+def test_run_testgen_rejects_bad_candidate(tmp_path, monkeypatch, source_tree):
     monkeypatch.setattr(TG, "drafts_dir", lambda: tmp_path)
     ask = lambda *a, **k: "def test_bad():\n    assert False\n"
     res = TG.run_testgen(limit=1, ask=ask, modules=["eli.core.dag"])

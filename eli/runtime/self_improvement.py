@@ -26,19 +26,6 @@ from eli.runtime.self_maintenance_config import (
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-def _eli_canonical_root_PROJECT_ROOT() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds (identical to this path in source installs).
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
-PROJECT_ROOT = _eli_canonical_root_PROJECT_ROOT()
-
-
 _PROTECTED_PATCH_PATHS = {
     "eli/runtime/security.py",
     "eli/core/netguard.py",
@@ -83,7 +70,10 @@ def is_protected_patch_path(p: Path) -> bool:
 
 
 def _patch_root() -> Path:
-    """Tree where self-improvement may read/write Python source."""
+    """Tree where self-improvement may read/write Python source, and where it imports and tests what it
+    changed: paths.source_root(), read at each use (ELI_SOURCE_ROOT, else the install's tree). The
+    import check and the targeted tests ran in a project root fixed when this module was imported, so
+    a tree named afterwards had its patches checked against another tree."""
     from eli.core.paths import source_root
     return source_root()
 
@@ -175,7 +165,7 @@ def _smoke_import_module(dotted: str, timeout: float = 30.0) -> Tuple[bool, str]
     env["ELI_PATCH_SMOKE"] = "1"
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", code], cwd=str(PROJECT_ROOT),
+            [sys.executable, "-c", code], cwd=str(_patch_root()),
             capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:
@@ -204,11 +194,12 @@ def _run_targeted_tests(module_path: Path, timeout: float = 120.0) -> Tuple[bool
             return (False, True, "no test target")
         base = [sys.executable, "-m", "pytest", "tests/", "-k", stem,
                 "-p", "no:cacheprovider", "-q"]
-        co = subprocess.run(base + ["--collect-only"], cwd=str(PROJECT_ROOT),
+        root = str(_patch_root())
+        co = subprocess.run(base + ["--collect-only"], cwd=root,
                             capture_output=True, text=True, timeout=60)
         if co.returncode == 5:
             return (False, True, "no matching tests")
-        proc = subprocess.run(base + ["-x"], cwd=str(PROJECT_ROOT),
+        proc = subprocess.run(base + ["-x"], cwd=root,
                               capture_output=True, text=True, timeout=timeout)
         if proc.returncode == 0:
             return (True, True, "targeted tests passed")
@@ -2004,14 +1995,11 @@ class SelfImprovementEngine:
 # most pressing one at the start of a conversational turn and mentions it, so ELI raises
 # recurring problems itself and reports what it tried instead of failing silently.
 def _self_heal_notices_path() -> Path:
-    # A write path. PROJECT_ROOT is the install tree, read-only in a packaged build, so the notice
-    # queue could never persist there and ELI silently failed to raise recurring problems, the point
-    # of this file. The artifacts dir is user-writable.
-    try:
-        from eli.core.paths import data_dir as _dd
-        return Path(_dd()) / "runtime" / "self_heal_notices.json"
-    except Exception:
-        return PROJECT_ROOT / "artifacts" / "runtime" / "self_heal_notices.json"
+    # A write path in the data folder: the install tree is read-only in a packaged build, so the
+    # notice queue could never persist there and ELI silently failed to raise recurring problems,
+    # the point of this file.
+    from eli.core.paths import data_dir as _dd
+    return Path(_dd()) / "runtime" / "self_heal_notices.json"
 
 
 def _read_notices() -> List[Dict[str, Any]]:

@@ -192,6 +192,28 @@ def workspace():
 
 
 @pytest.fixture
+def source_tree(workspace, monkeypatch):
+    """A throwaway ELI source tree, made ELI's source root for the test (ELI_SOURCE_ROOT, which
+    paths.source_root() reads): what examines, patches, imports or runs the tests of ELI's own source
+    (the code examiner, self-improvement, the autopilot debugger, the test generator) works on it. Its
+    tests wrote their probe modules into the checkout's eli/ and tests/ and removed them after. It has
+    what a source tree is known by (eli/ with its cognition and gui folders), a tests/ folder, and a
+    pytest.ini of its own, so a test run in it is rooted there and reads none of the checkout's conftests."""
+    from eli.core import paths
+    for folder in ("eli/cognition", "eli/gui", "tests"):
+        (workspace / folder).mkdir(parents=True)
+    (workspace / "eli" / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    monkeypatch.setenv("ELI_SOURCE_ROOT", str(workspace))
+    paths.source_root.cache_clear()
+    root = paths.source_root()
+    assert root == workspace.resolve(), root
+    yield root
+    monkeypatch.delenv("ELI_SOURCE_ROOT", raising=False)
+    paths.source_root.cache_clear()
+
+
+@pytest.fixture
 def temp_db(tmp_path):
     db_path = tmp_path / "test_user.sqlite3"
     yield db_path

@@ -14,32 +14,16 @@ import pytest
 from eli.runtime import code_examiner as CE
 
 
-PROJECT_ROOT = CE.PROJECT_ROOT
-
-
 @pytest.fixture
-def tmp_module(request):
-    """Create a temp .py file *inside the project* (examiner refuses outside-root
-    targets) and clean it + any backups afterwards."""
-    created = []
-
+def tmp_module(source_tree):
+    """A module in ELI's source tree (the examiner refuses anything outside it): a throwaway tree made
+    the source root for the test, so nothing is written into the checkout's eli/, even for a moment."""
     def _make(name: str, body: str) -> Path:
-        p = (PROJECT_ROOT / "eli" / name).resolve()
+        p = source_tree / "eli" / name
         p.write_text(body, encoding="utf-8")
-        created.append(p)
         return p
 
     yield _make
-
-    for p in created:
-        p.unlink(missing_ok=True)
-        for bak in p.parent.glob(p.name + ".eli_bak*"):
-            bak.unlink(missing_ok=True)
-        # Remove the compiled bytecode too — otherwise the .pyc lingers as a "ghost"
-        # (no matching .py) in __pycache__ and trips the source-only-pycache guard
-        # (test_12_filesystem) on the next full-suite run.
-        for pyc in (p.parent / "__pycache__").glob(p.stem + ".*.pyc"):
-            pyc.unlink(missing_ok=True)
     CE.clear_pending_fix()
 
 
@@ -338,7 +322,7 @@ def test_the_examiners_lint_is_the_one_pyflakes_wrapper(monkeypatch, tmp_path):
     assert CE._tier2_pyflakes(tmp_path / "m.py", "x = 1\n") is None
 
 
-def test_a_request_that_names_no_target_is_asked_not_answered_with_a_sweep(tmp_module, monkeypatch):
+def test_a_request_that_names_no_target_is_asked_not_answered_with_a_sweep(tmp_module, monkeypatch, source_tree):
     """"is there any issues with the files?" swept ELI's own core files, which nobody had named. A
     request is examined for what it names, ELI's own code or the codebase when it says so, or the file
     just referred to; otherwise ELI asks which, and the answer completes the request."""
@@ -347,7 +331,10 @@ def test_a_request_that_names_no_target_is_asked_not_answered_with_a_sweep(tmp_m
     assert CE.resolve_targets("is there any issues with the files?") == []
     out = _h_examine_code("EXAMINE_CODE", {"request": "is there any issues with the files?"})
     assert out["asked"] is True and out["awaiting"]["command"] == "examine {answer}"
-    assert CE.resolve_targets("examine your code for errors"), "ELI's own code, named"
+    core = source_tree / CE._CORE_FALLBACK[0]                    # the sweep reads ELI's source tree
+    core.parent.mkdir(parents=True, exist_ok=True)
+    core.write_text("x = 1\n", encoding="utf-8")
+    assert CE.resolve_targets("examine your code for errors") == [core.resolve()], "ELI's own code, named"
     p = tmp_module("_ce_last.py", "x = 1\n")
     monkeypatch.setattr(CE, "get_last_file", lambda: str(p))
     assert CE.resolve_targets("check it again for errors") == [p.resolve()]
