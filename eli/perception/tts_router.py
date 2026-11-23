@@ -898,8 +898,9 @@ def _speak_pyttsx3(text: str, voice_name: str) -> bool:
     if str(voice_name or "").startswith(_SPD_PREFIX):
         import subprocess
         try:
+            # -w: back when the speech ends, as pyttsx3's runAndWait is; no time limit, which would cut a long reply
             done = subprocess.run(["spd-say", "-w", "-l", voice_name[len(_SPD_PREFIX):], "--", str(text or "")],
-                                  capture_output=True, timeout=300)
+                                  capture_output=True)
             return done.returncode == 0
         except Exception:
             log.debug("[TTS] spd-say failed", exc_info=True)
