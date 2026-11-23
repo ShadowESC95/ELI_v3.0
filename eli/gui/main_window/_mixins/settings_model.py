@@ -2324,7 +2324,7 @@ class SettingsModelMixin:
 
         # Persist the voice-engine choice BEFORE hardware tuning / GPU allocation
         # below, so a neural voice's VRAM is accounted for up front (and pinned to
-        # GPU), or Piper keeps the VRAM for the model on a lean box.
+        # GPU), or Kokoro on the CPU leaves the VRAM to the model on a lean box.
         try:
             _tts_engine = dlg.selected_tts_engine()
             _tts_updates = {"tts_engine": _tts_engine}

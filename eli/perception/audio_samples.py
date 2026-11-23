@@ -33,7 +33,7 @@ def resample(x: np.ndarray, sr_in: int, sr_out: int = SPEECH_RATE) -> np.ndarray
 
 def _read_pcm_wav(path):
     """(samples, rate, channels) of an integer PCM WAV, read with the standard library: what ELI
-    records and what Piper writes. Raises for anything else."""
+    records and what the voice engines write. Raises for anything else."""
     import wave
     with wave.open(str(path), "rb") as w:
         width, rate, channels = w.getsampwidth(), w.getframerate(), w.getnchannels()
