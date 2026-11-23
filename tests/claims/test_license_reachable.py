@@ -915,6 +915,11 @@ def test_each_package_and_file_is_sorted_by_what_a_closed_paid_product_may_pass_
         text = release.split(f"\n  {job}:", 1)[1].split("\n  build-", 1)[0]
         check = text.index(f"python packaging/gpl_sources.py --check-bundle {built}\n")
         assert text.index("pyinstaller --noconfirm") < check < text.index("Smoke check"), job
+    # Ubuntu's PortAudio links JACK, and JACK links Berkeley DB (Sleepycat): the Linux build compiles
+    # PyAudio against a PortAudio of its own, built for ALSA alone from a checked source archive
+    linux = release.split("\n  build-linux:", 1)[1].split("\n  build-source-artifacts:", 1)[0]
+    assert "portaudio19-dev" not in linux and "--without-jack" in linux and "sha256sum -c" in linux
+    assert linux.index("--without-jack") < linux.index('pip install ".[$(echo $REQUIRED_EXTRAS')
 
 
 def test_the_source_archive_says_plainly_when_the_builds_carry_no_gpl_package(tmp_path, monkeypatch):

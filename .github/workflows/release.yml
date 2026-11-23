@@ -452,10 +452,28 @@ jobs:
           #   misleadingly as "libxcb-cursor0 is needed" whichever member is missing.
           # xvfb: virtual X server for the real-xcb GUI selftest in the smoke check.
           sudo apt-get install -y --no-install-recommends \
-            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
+            libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-util1 libxcb-shape0 libxcb-randr0 libxcb-render0 \
             libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 libxkbcommon0 xvfb
+
+      - name: PortAudio without JACK (Ubuntu's links JACK, and JACK links Berkeley DB, under the Sleepycat licence)
+        run: |
+          set -euo pipefail
+          # PyAudio is compiled against PortAudio here, and PyInstaller bundles the PortAudio it links.
+          # Ubuntu's libportaudio2 is built with JACK, whose libjack links Berkeley DB 5.3: under the
+          # Sleepycat licence the source of every program using it has to be offered, so the AppImage could
+          # not carry it. ALSA alone reaches the sound server (PulseAudio, PipeWire) through ALSA's plug-ins.
+          src=pa_stable_v190700_20210406.tgz
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/$src" "https://files.portaudio.com/archives/$src"
+          echo "47efbf42c77c19a05d22e627d42873e991ec0c1357219c0d74ce6a2948cb2def  $RUNNER_TEMP/$src" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$src" -C "$RUNNER_TEMP"
+          ( cd "$RUNNER_TEMP/portaudio" && ./configure --prefix=/usr/local --with-alsa --without-jack --without-oss \
+              --disable-static && make -j"$(nproc)" && sudo make install )
+          sudo ldconfig
+          if ldd /usr/local/lib/libportaudio.so.2 | grep -i -E 'jack|libdb'; then
+            echo "::error::the PortAudio built here still links JACK or Berkeley DB"; exit 1
+          fi
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
