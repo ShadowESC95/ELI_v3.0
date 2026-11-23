@@ -90,8 +90,10 @@ def has_voice_assets() -> bool:
 
 
 def has_desktop_launcher() -> bool:
-    apps = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "applications"
-    return (apps / "eli-v2.desktop").exists() or (apps / "eli.desktop").exists()
+    """This version's own menu entry, by the name eli.runtime.desktop_launchers writes it under. ELI
+    v2's (eli-v2.desktop) and the old generic one counted, and v3's own did not."""
+    from eli.runtime.desktop_launchers import _apps_dir, _desktop_stem
+    return (_apps_dir() / f"{_desktop_stem()}.desktop").exists()
 
 
 def stage_checks() -> List[Tuple[str, str, bool]]:

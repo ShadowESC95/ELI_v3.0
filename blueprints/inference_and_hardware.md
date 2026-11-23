@@ -236,10 +236,13 @@ Nothing of v3's goes in a generic place. `~/.local/share/eli`, `~/.config/eli`, 
 (`eli-ai`), ELI Legal and ELI VR keep their own folders. Until 3.0.138 an installed v3 used the
 generic `eli` folders, and some files had a generic or relative fallback. A file v3 once kept in a
 generic place (the labs notebook and workspaces in `~/.eli/`, `~/.eli_user_id`) is copied into its
-own folders once by `adopt_legacy_file`. Files in the temp folder carry v3's name too
-(`temp_path`: `ELI_v3-tts_speaking.lock`, `ELI_v3-youtube_mpv.sock`); with shared names, v2 speaking
-muted v3's microphone. `tests/test_frozen_install_redistributability.py` scans the code for generic,
-relative and shared temp paths.
+own folders once by `adopt_legacy_file`. Files in the temp folder carry v3's name and the user's
+(`temp_path`: `ELI_v3-<uid>-tts_speaking.lock`, `ELI_v3-<uid>-youtube_mpv.sock`; a Windows pipe the
+account name); with shared names, v2 speaking muted v3's microphone, and a second account's ELI took
+the first one's speaking lock for its own. The per-user root is `%LOCALAPPDATA%`, `~/Library/Application
+Support` or `$XDG_DATA_HOME` (`~/.local/share` when that is unset, empty or relative)
+(`paths.platform_data_home`). `tests/test_frozen_install_redistributability.py` scans the code for
+generic, relative and shared temp paths.
 
 Launchers are v3's too: the AppImage installs `eli-v3.desktop`, `eli-v3-server.desktop`,
 `eli-v3-uninstall.desktop`, the `eli-v3` icon and the `~/.local/bin/eli-v3` command; a source

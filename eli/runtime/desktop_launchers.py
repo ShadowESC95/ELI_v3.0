@@ -45,27 +45,15 @@ __all__ = [
 
 
 def product_line() -> str:
-    """``v2`` or ``v3`` — drives share dir + .desktop filenames."""
+    """``v2`` or ``v3`` — drives share dir + .desktop filenames: the version this code is, the one
+    eli.core.paths names its folders after. It was read from the pyproject.toml of the root in use and
+    was "v2" wherever there was none, so an installed ELI v3 (a wheel carries no pyproject.toml) kept
+    its install pointer in ELI v2's folder and wrote ELI v2's launchers and menu entries."""
     env = (os.environ.get("ELI_PRODUCT_LINE") or "").strip().lower()
     if env in ("v2", "v3", "2", "3"):
         return "v3" if env in ("v3", "3") else "v2"
-    try:
-        root = _discover_root()
-        if root is not None:
-            text = (root / "pyproject.toml").read_text(encoding="utf-8", errors="ignore")
-            m = re.search(r'(?m)^name\s*=\s*["\']([^"\']+)["\']', text)
-            if m and "v3" in m.group(1).lower():
-                return "v3"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    # Imported package path fallback
-    try:
-        here = Path(__file__).resolve()
-        if any(p.name.lower().startswith("eli_v3") for p in here.parents):
-            return "v3"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return "v2"
+    from eli.core.paths import user_root
+    return "v3" if user_root().name.lower().endswith("v3") else "v2"
 
 
 def _share_dirname() -> str:
@@ -82,13 +70,8 @@ def _desktop_stem() -> str:
 
 def stable_user_root() -> Path:
     """Per-user data root outside any extract folder (redistribution-safe)."""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return (base / _share_dirname()).expanduser().resolve()
+    from eli.core.paths import platform_data_home
+    return (platform_data_home(sys.platform) / _share_dirname()).expanduser().resolve()
 
 
 def install_root_pointer_path() -> Path:
@@ -277,7 +260,8 @@ def _icon_for(root: Path) -> str:
 
 
 def _apps_dir() -> Path:
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "applications"
+    from eli.core.paths import platform_data_home
+    return platform_data_home("linux") / "applications"
 
 
 def _desktop_search_dirs() -> list[Path]:
