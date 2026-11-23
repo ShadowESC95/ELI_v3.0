@@ -2,9 +2,16 @@
 """Bootstrap artifacts the claims suite expects on a fresh clone.
 
 Safe to run before pytest tests/claims/ or in CI — idempotent, never raises.
+
+    python tools/bootstrap_claims_artifacts.py             # at the checkout's root, what a build bundles
+    python tools/bootstrap_claims_artifacts.py --out DIR   # the manifest and the inventory in DIR instead
+
+The claims suite asks for its own folder (the run's runtime state, in its sandbox): written at the
+root, a test run left both files in the checkout.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import sys
@@ -59,8 +66,13 @@ def refresh_manifest(path: Path) -> dict:
     return update_capability_manifest(path=path)
 
 
-def main() -> int:
-    manifest = ROOT / "capability_manifest.json"
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Generate the capability manifest and inventory.")
+    parser.add_argument("--out", type=Path, default=ROOT,
+                        help="folder for the manifest and the inventory (default: the checkout's root)")
+    out = parser.parse_args(argv).out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = out / "capability_manifest.json"
     ok = True
 
     if not _ensure_db_stores():
@@ -96,14 +108,14 @@ def main() -> int:
     # claims it), so without generating it here a fresh CI clone would ship the
     # AppImage WITHOUT it (ELI.spec only WARNS on its absence, it doesn't fail).
     # Produce it now so the same CI PyInstaller step bundles a complete set.
-    inventory = ROOT / "capability_inventory.generated.json"
+    inventory = out / "capability_inventory.generated.json"
     if not inventory.is_file():
         try:
             from eli.runtime.capability_sync import CapabilitySync
             sync = CapabilitySync(repo_root=ROOT)
             sync.run()
             # CapabilitySync writes into the runtime state dir, never the repo. This file is
-            # not tracked here, so on a fresh clone the copy at the root has to be made.
+            # not tracked here, so on a fresh clone the copy in `out` has to be made.
             if not inventory.is_file() and Path(sync.inventory_path).is_file():
                 inventory.write_bytes(Path(sync.inventory_path).read_bytes())
         except Exception as e:

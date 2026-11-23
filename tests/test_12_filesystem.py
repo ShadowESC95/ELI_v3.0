@@ -51,11 +51,8 @@ def test_pyproject_toml_valid():
 
 
 def test_capability_manifest_valid_json():
-    path = os.path.join(PROJECT_ROOT, "capability_manifest.json")
-    assert os.path.isfile(path), "capability_manifest.json must ship in the repo root"
-    with open(path) as f:
-        data = json.load(f)
-    assert data.get("total", 0) > 0
+    from tests.claims import _helpers as H
+    assert H.manifest().get("total", 0) > 0                     # the manifest this run generated
 
 
 def test_capability_inventory_valid_json():

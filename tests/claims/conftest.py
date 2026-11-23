@@ -23,15 +23,22 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_MANIFEST = _REPO / "capability_manifest.json"
+
+
+def manifest_file() -> Path:
+    """The manifest the run generates and the claims read: in ELI's runtime state, where an engine
+    start regenerates it (the run's sandbox). Generated at the checkout's root, what a build bundles,
+    a test run left it and the inventory in the checkout."""
+    from eli.tools.registry.capability_updater import manifest_path
+    return manifest_path()
 
 
 def _run_bootstrap() -> subprocess.CompletedProcess | None:
     script = _REPO / "tools" / "bootstrap_claims_artifacts.py"
     if not script.is_file():
         return None
-    return subprocess.run([sys.executable, str(script)], cwd=str(_REPO),
-                          capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(script), "--out", str(manifest_file().parent)],
+                          cwd=str(_REPO), capture_output=True, text=True)
 
 
 _BOOTSTRAPPED: list = []
@@ -50,7 +57,7 @@ def ensure_claims_artifacts() -> None:
         return
     proc = _run_bootstrap()
     _BOOTSTRAPPED.append(proc)
-    if _MANIFEST.is_file():
+    if manifest_file().is_file():
         return                  # anything else the bootstrap reported fails the session (fixture below)
     if proc is None:
         raise RuntimeError(

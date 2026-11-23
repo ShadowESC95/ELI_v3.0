@@ -9,8 +9,6 @@ therefore unreachable.
 """
 from __future__ import annotations
 
-import json
-import pathlib
 
 from eli.cognition.llm_intent import _catalogue, _EXPLICIT_ONLY_ACTIONS, _INTERNAL_ACTIONS
 from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
@@ -46,10 +44,8 @@ def test_a_model_guess_can_never_rename_the_user_or_change_elis_setup():
 
 
 def test_no_supported_action_is_missing_from_the_manifest():
-    manifest = pathlib.Path("capability_manifest.json")
-    if not manifest.is_file():
-        return
-    known = {c["action"] for c in json.loads(manifest.read_text())["capabilities"]}
+    from tests.claims import _helpers as H
+    known = {c["action"] for c in H.capabilities()}            # the manifest this run generated
     missing = sorted(set(SUPPORTED_ACTIONS) - known)
     assert not missing, f"supported but undeclared: {missing}"
 

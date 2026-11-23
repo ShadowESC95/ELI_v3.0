@@ -122,10 +122,8 @@ def test_disabled_via_env(monkeypatch):
 
 # ── registered as real actions ────────────────────────────────────────────────
 def test_tone_actions_registered():
-    import json
-    from pathlib import Path
-    m = json.loads((Path(__file__).resolve().parents[1] / "capability_manifest.json").read_text())
-    by = {c["action"]: c for c in m["capabilities"]}
+    from tests.claims import _helpers as H
+    by = {c["action"]: c for c in H.capabilities()}            # the manifest this run generated
     for act in ("SET_TONE", "CLEAR_TONE"):
         assert act in by and by[act]["routable"], act
 

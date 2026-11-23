@@ -200,14 +200,8 @@ def test_every_routable_action_is_covered_or_documented_excluded():
     shown-in-every-mode set the engine reads) or in AUDITED_2026_09_18_EXCLUDED
     with a reason. Catches a newly-added routable action silently landing in
     neither -- the exact gap this whole audit exists to close."""
-    import json
-
-    manifest_path = ENGINE_PY.parents[2] / "capability_manifest.json"
-    if not manifest_path.exists():
-        import pytest
-        pytest.skip("capability_manifest.json not present in this environment")
-
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from tests.claims import _helpers as H
+    data = H.manifest()                     # the one this run generated
     caps = data.get("capabilities", data)
     items = caps.items() if isinstance(caps, dict) else (
         (c.get("action") or c.get("name"), c) for c in caps

@@ -21,9 +21,7 @@ imperative, which is why only genuine imperatives were added and not the nouns
 lifted from action names (AMBIENT_VISION, GPU_STATUS, CODEBASE_GRAPH). Both
 directions are locked below.
 """
-import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -118,10 +116,8 @@ def test_splitter_knows_every_capability_imperative(verb):
 def test_capability_imperatives_are_actually_in_the_manifest():
     """Keeps the list above honest: every verb in it must come from a real
     action, so this test fails if a capability is renamed or removed."""
-    manifest = Path("capability_manifest.json")
-    if not manifest.exists():
-        pytest.skip("capability_manifest.json not present")
-    actions = {c["action"] for c in json.loads(manifest.read_text())["capabilities"]}
+    from tests.claims import _helpers as H
+    actions = {c["action"] for c in H.capabilities()}          # the manifest this run generated
     verbs = {a.split("_")[0].lower() for a in actions}
     # English imperatives ELI accepts that are not action-name prefixes: they
     # reach their capability through the router rather than by name ("enable

@@ -102,11 +102,8 @@ def test_download_voice_unresolvable_is_honest():
 
 
 def test_new_actions_are_registered_capabilities():
-    import json
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    m = json.loads((root / "capability_manifest.json").read_text(encoding="utf-8"))
-    by = {c["action"]: c for c in m["capabilities"]}
+    from tests.claims import _helpers as H
+    by = {c["action"]: c for c in H.capabilities()}            # the manifest this run generated
     for a in ("LIST_VOICES", "DOWNLOAD_VOICE", "SET_VOICE"):
         assert a in by, f"{a} missing from manifest"
         assert by[a].get("routable") and by[a].get("in_dispatch")
