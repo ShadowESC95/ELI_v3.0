@@ -28,10 +28,13 @@ def test_the_noise_beds_are_white_pink_and_brown(tmp_path, monkeypatch):
 
 def test_reading_the_wake_phrases_writes_nothing(tmp_path, monkeypatch):
     """The defaults were written out on the first read: building the window wrote a wake_config.json
-    into the models folder, a test's into the checkout. Set, they are kept and read back."""
+    into the models folder, a test's into the checkout. Finding the folder made it too, so a fresh
+    checkout's test run left models/wakeword/ in it. Set, they are kept and read back."""
+    import eli.core.paths as paths
     from eli.perception import wakeword as ww
-    monkeypatch.setattr(ww, "_model_dir", lambda: tmp_path)
+    monkeypatch.setattr(paths, "models_dir", lambda: tmp_path / "models")
     assert ww.get_wake_phrases() == ww._DEFAULT_PHRASES
-    assert list(tmp_path.iterdir()) == []
+    assert not ww.is_trained() and ww.enrollment_count() == 0
+    assert not (tmp_path / "models").exists()
     assert ww.set_wake_phrases(["Hey Juniper"]) == ["hey juniper"]
     assert ww.get_wake_phrases() == ["hey juniper"]

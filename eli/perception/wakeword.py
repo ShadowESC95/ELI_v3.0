@@ -42,8 +42,7 @@ def _model_dir() -> Path:
         d = models_dir() / "wakeword"
     except Exception:
         d = Path(__file__).resolve().parents[2] / "models" / "wakeword"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return d                            # made by what writes into it, never by a read
 
 
 def _config_path() -> Path:
@@ -74,14 +73,14 @@ def set_wake_phrases(phrases: List[str]) -> List[str]:
     cleaned = [str(p).strip().lower() for p in (phrases or []) if str(p).strip()]
     if not cleaned:
         cleaned = list(_DEFAULT_PHRASES)
-    _config_path().write_text(json.dumps({"phrases": cleaned}, indent=2))
+    path = _config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"phrases": cleaned}, indent=2))
     return cleaned
 
 
 def _enroll_dir() -> Path:
-    d = _model_dir() / "enroll"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _model_dir() / "enroll"
 
 
 def save_enrollment_clip(audio_int16: np.ndarray, sr: int = SR) -> Optional[Path]:
@@ -94,6 +93,7 @@ def save_enrollment_clip(audio_int16: np.ndarray, sr: int = SR) -> Optional[Path
             x = _resample(x, sr, SR)
         x = _fix_len(x)
         d = _enroll_dir()
+        d.mkdir(parents=True, exist_ok=True)
         idx = len(list(d.glob("enroll_*.wav")))
         p = d / f"enroll_{idx:03d}.wav"
         sf.write(str(p), x, SR)
@@ -399,6 +399,7 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 
     n_hi = float(np.percentile(scores[y == 0], 95))
     thr = float(min(0.9, max(0.5, (p_lo + n_hi) / 2)))
 
+    _head_path().parent.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": head.state_dict(), "in_dim": flat.shape[1],
                 "emb_shape": list(emb.shape[1:])}, _head_path())
     _meta_path().write_text(json.dumps({
