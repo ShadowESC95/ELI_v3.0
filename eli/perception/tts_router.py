@@ -638,6 +638,13 @@ def _system_voices_by_language() -> Dict[str, List[str]]:
     return found
 
 
+def voice_language(voice: str) -> str:
+    """The language (ISO 639-1) a voice reads: a Kokoro voice's own (its accent); English for any other
+    voice built on Kokoro (a character voice, the default), which is what they read."""
+    accent = _kokoro.VOICES.get(kokoro_voice(voice), {}).get("accent") or "a"
+    return _kokoro.ACCENT_LANGUAGE.get(accent, "en")
+
+
 def voice_for_reply(text: str, active: str) -> str:
     """The voice that speaks `text`: `active`, unless the reply is in a language `active` does not speak.
     Then, in this order: Qwen3-TTS where this machine runs it (ten languages), a Kokoro voice of that
@@ -651,8 +658,7 @@ def voice_for_reply(text: str, active: str) -> str:
     except Exception:
         log.debug("[TTS] reply language unknown", exc_info=True)
         return active
-    own = _kokoro.VOICES.get(kokoro_voice(active), {}).get("accent")
-    if lang == _kokoro.ACCENT_LANGUAGE.get(own or "a", "en"):
+    if lang == voice_language(active):
         return active
     try:
         from eli.perception import tts_qwen3

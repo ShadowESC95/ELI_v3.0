@@ -580,10 +580,16 @@ class SettingsModelMixin:
         except (ImportError, OSError, ValueError, RuntimeError) as ex:
             log.debug(f"[TTS] voice choice failed: {ex}", exc_info=True)
 
+    # The test phrase in each language a Kokoro voice reads (tts_kokoro.ACCENT_LANGUAGE): a voice is tested in
+    # its own language, else the router hands an English phrase on to an English voice (voice_for_reply).
+    _VOICE_TEST_PHRASES = {"en": "ELI voice test. Systems operational.", "zh": "ELI 语音测试，系统运行正常。"}
+
     def test_voice(self, voice_id: str):
         try:
-            from eli.perception.tts_router import speak
-            speak("ELI voice test. Systems operational.", voice_name=str(voice_id or ""))
+            from eli.perception.tts_router import speak, voice_language
+            vid = str(voice_id or "")
+            phrase = self._VOICE_TEST_PHRASES.get(voice_language(vid), self._VOICE_TEST_PHRASES["en"])
+            speak(phrase, voice_name=vid)
         except (ImportError, OSError, RuntimeError, ValueError) as e:
             log.debug(f"[TTS] Test error: {e}")
 

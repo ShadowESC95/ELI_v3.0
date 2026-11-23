@@ -688,3 +688,18 @@ def test_kokoro_speaks_mandarin_through_misakis_own_chinese_g2p():
     ps = eng.phonemes("好的，我已经设置了十分钟的计时器。", "z")
     assert ps and "↓" in ps or "→" in ps or "↗" in ps, ps                 # tone marks: Mandarin phonemes
     assert tts_kokoro.describe("zm_yunjian") == "Yunjian (Mandarin male)"
+
+
+def test_a_voice_is_tested_in_its_own_language_so_the_voice_chosen_is_the_one_heard(monkeypatch):
+    """An English test phrase in a Mandarin voice would be handed on to an English voice (voice_for_reply)."""
+    from eli.gui.main_window._mixins.settings_model import SettingsModelMixin
+    from eli.perception import tts_router as tr
+    assert set(tts_kokoro.ACCENT_LANGUAGE.values()) <= set(SettingsModelMixin._VOICE_TEST_PHRASES)
+    assert tr.voice_language("zf_xiaobei") == "zh" and tr.voice_language("bm_george") == "en"
+    assert tr.voice_language("char:calm") == "en"
+    heard = []
+    monkeypatch.setattr(tr, "speak", lambda text, voice_name=None: heard.append(tr.voice_for_reply(text, voice_name)))
+    _no_qwen(monkeypatch)
+    for vid in ("zf_xiaobei", "am_michael"):
+        SettingsModelMixin.test_voice(SettingsModelMixin.__new__(SettingsModelMixin), vid)
+    assert heard == ["zf_xiaobei", "am_michael"]
