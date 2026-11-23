@@ -1,0 +1,14 @@
+# The packages Qwen3-TTS's inference needs, for the isolated runtime ELI makes for it
+# (eli/perception/qwen3_runtime.py). qwen-tts itself goes in with --no-deps: its declared gradio (the demo)
+# is not needed. PyTorch is added by uv for the machine's own CUDA (--torch-backend auto).
+transformers==4.57.3
+accelerate==1.12.0
+huggingface-hub==0.36.2
+tokenizers==0.22.2
+safetensors
+numpy<2.5
+soundfile
+librosa==1.0.1
+einops
+sox
+onnxruntime

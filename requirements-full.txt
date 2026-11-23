@@ -11,6 +11,7 @@ requests>=2.33
 Pillow>=12.0
 mss>=9.0
 PyAutoGUI>=0.9.54
+python-xlib>=0.33; sys_platform == "linux"   # the Xlib PyAutoGUI drives (LGPL), not python3-xlib (GPL)
 python-dotenv>=1.0
 PyYAML>=6.0
 tqdm>=4.67
@@ -42,6 +43,11 @@ misaki>=0.9.4,<0.10    # Kokoro's phonemes; WITHOUT its [en] extra, which brings
 spacy>=3.8,<3.9        # misaki's tagger; the en_core_web_sm 3.8.0 fetched with the voice needs 3.8
 num2words>=0.5         # misaki's numbers as words (LGPL-2.1)
 python-crfsuite>=0.9   # the guess for words misaki's dictionaries lack (tts_kokoro)
+langdetect>=1.0.9      # the reply's language (eli/perception/reply_language.py)
+jieba>=0.42            # misaki's Chinese G2P for Kokoro's Mandarin voices
+pypinyin>=0.50
+cn2an>=0.5
+ordered-set>=4.1
 onnxruntime>=1.25; python_version >= "3.11"
 onnxruntime>=1.15; python_version < "3.11"   # the newest with a Python 3.10 build is older
 openwakeword>=0.4.0  # local self-trained wake-word detector (no account)

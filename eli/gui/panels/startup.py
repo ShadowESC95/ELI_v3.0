@@ -31,9 +31,10 @@ _TTS_ENGINE_CHOICES = (
 )
 _TTS_ENGINE_TIP = (
     "Kokoro is ELI's voice on every machine: it runs on the CPU and leaves the GPU to the model. "
-    "Qwen3-TTS sounds more human and clones voices, but needs the voice-gpu extra, a GPU with "
-    "room for it beside the model, and fetches 2.5 to 4.5 GB on first use. Automatic uses it only "
-    "where the GPU has that room; ELI speaks with Kokoro, and says so, when it cannot.")
+    "Qwen3-TTS sounds more human, speaks ten languages and clones voices, but needs an NVIDIA GPU with "
+    "room for it beside the model; ELI sets it up there by itself (a runtime and 2.5 to 4.5 GB of "
+    "weights, fetched once). Automatic uses it only where the GPU has that room; ELI speaks with "
+    "Kokoro, and says so, when it cannot.")
 
 from eli.core.mem_units import file_size_gib, bytes_to_gib
 
@@ -1471,6 +1472,14 @@ class _SupportAssetsThread(QThread):
                 out["embedder"] = aux[0] if aux else {"ok": False, "error": "no embedder entry"}
                 from eli.runtime.voice_assets import ensure_voice_assets
                 out["voice"] = ensure_voice_assets()
+            # The GPU voice: its runtime is made on a thread of its own where the GPU has room for it
+            # (a download of a few GB); the wizard does not wait for it, and Kokoro speaks meanwhile.
+            try:
+                from eli.perception import qwen3_runtime
+                out["voice_gpu"] = qwen3_runtime.make_if_room(background=True)
+            except Exception as exc:
+                log.warning("[STARTUP] the GPU voice's runtime was not started: %s", exc, exc_info=True)
+                out["voice_gpu"] = {"ok": False, "error": str(exc)}
         except Exception as exc:
             if not out.get("embedder"):
                 out["embedder"] = {"ok": False, "error": str(exc)}

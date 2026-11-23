@@ -432,7 +432,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | `near_speech.py` | 310 | Speech at the mic that the machine's own output does not explain: the default sink's monitor as reference, the music's share learnt per band, onsets of the owner's speech over ELI's music. |
 | `vision.py` | 726 | Local GGUF VL (Moondream fast / primary), hot-swap with text model, CPU-pinned CLIP, OCR. |
 | `tts_router.py` | 1234 | Voice router (Kokoro / Qwen3-TTS / system voice), voice selection, sentence-ahead rendering, unspeakable-fragment guard; plays through the sound server (never a card it holds), at the device's own rate when it refuses the voice's. |
-| `tts_kokoro.py` | 444 | Kokoro-82M on the CPU: misaki phonemes without espeak-ng, the unknown-word guess, the 28 English voices. |
+| `tts_kokoro.py` | 444 | Kokoro-82M on the CPU: misaki phonemes without espeak-ng, the unknown-word guess, 36 voices (English and Mandarin). |
 | `tts_qwen3.py` | 294 | Qwen3-TTS natural voices and cloning, on a GPU with room for it. |
 | `gpu_room.py` | 86 | Room on a GPU for a support model beside the language model. |
 | `audio_samples.py` | 74 | A sound file as one channel of float32 samples at the rate a consumer needs (speech input, playback, the wake word, the voice profile): PCM WAV read with the standard library, other formats with soundfile. |

@@ -108,7 +108,39 @@ def test_on_a_machine_whose_gpu_runs_qwen3_the_automatic_engine_speaks_with_its_
     no_settings.write_text(json.dumps({"tts_engine": "kokoro"}), encoding="utf-8")
     assert get_active_voice() == "af_heart", "Kokoro chosen: the GPU voice is not used"
     no_settings.write_text(json.dumps({"tts_engine": "piper"}), encoding="utf-8")
-    assert get_active_voice() == "af_heart", "the earlier engine's setting reads as Kokoro"
+    assert get_active_voice() == "natural:serena", "the earlier engine, every install's default, reads as automatic"
+
+
+def test_a_user_who_kept_the_old_default_voice_gets_the_automatic_one_and_a_chosen_voice_is_kept(no_settings, monkeypatch):
+    """Every settings file held tts_voice en_US-amy-medium, the earlier engine's default: it is nobody's
+    choice, so it reads as none and the automatic engine speaks; a voice the user picked stays theirs."""
+    import json
+    from eli.perception import tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    no_settings.write_text(json.dumps({"tts_voice": "en_US-amy-medium", "tts_engine": "piper"}), encoding="utf-8")
+    assert get_active_voice() == "natural:serena"
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": False)
+    assert get_active_voice() == "af_heart", "a CPU-only machine keeps Kokoro"
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    no_settings.write_text(json.dumps({"tts_voice": "en_GB-alan-medium"}), encoding="utf-8")
+    assert get_active_voice() == "bm_george", "a voice the user chose is kept"
+
+
+def test_where_the_gpu_has_room_the_runtime_is_made_in_the_background_once_and_only_when_online(no_settings, monkeypatch):
+    from eli.core import netguard
+    from eli.perception import qwen3_runtime, tts_qwen3
+    from eli.perception import tts_router as tr
+    asked = []
+    monkeypatch.setattr(tts_qwen3, "installed", lambda: False)
+    monkeypatch.setattr(qwen3_runtime, "make_if_room", lambda background=False: asked.append(background) or {})
+    monkeypatch.setattr(netguard, "should_block_network", lambda: True)
+    monkeypatch.setattr(tr, "_RUNTIME_ASKED", False)
+    assert get_active_voice() == "af_heart" and asked == [], "fetched with the network switched off"
+    monkeypatch.setattr(netguard, "should_block_network", lambda: False)
+    monkeypatch.setattr(tr, "_RUNTIME_ASKED", False)
+    get_active_voice()
+    get_active_voice()
+    assert asked == [True], "not made in the background, or asked more than once a run"
 
 
 def test_the_backends_say_which_engine_speaks_and_whether_its_files_are_here(no_settings, monkeypatch, tmp_path):
@@ -574,3 +606,100 @@ def test_the_sound_server_is_the_socket_a_client_would_reach(tmp_path, monkeypat
         assert [p.rsplit("/", 1)[-1] for p in pc.wav_player_candidates()] == ["pw-play", "paplay", "aplay"]
     finally:
         s.close()
+
+
+# ── A voice for the reply's language ─────────────────────────────────────────
+
+@pytest.mark.parametrize("text,lang", [
+    ("Sure, I've set a timer for ten minutes.", "en"), ("Done.", "en"), ("Volume set to 40%.", "en"),
+    ("好的，我已经设置了十分钟的计时器。", "zh"), ("こんにちは、元気ですか？", "ja"), ("안녕하세요, 잘 지내세요?", "ko"),
+    ("Привет, как дела сегодня?", "ru"), ("Guten Morgen, wie geht es dir heute?", "de"),
+    ("Bonjour, le rendez-vous est à trois heures.", "fr"), ("", "en"), ("12:30", "en"),
+])
+def test_the_reply_language_is_its_script_or_unless_mostly_english_what_the_detector_says(text, lang):
+    pytest.importorskip("langdetect")
+    from eli.perception.reply_language import language_of
+    assert language_of(text) == lang
+
+
+def _no_qwen(monkeypatch):
+    from eli.perception import tts_qwen3
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": False)
+
+
+def test_a_reply_in_another_language_gets_qwen3_then_a_kokoro_voice_then_the_systems(monkeypatch, caplog):
+    import logging
+    from eli.perception import tts_qwen3, tts_router as tr, reply_language
+    monkeypatch.setattr(reply_language, "language_of", lambda text: {"A": "de", "B": "zh", "C": "sw"}.get(text, "en"))
+    monkeypatch.setattr(tr, "_SYSTEM_BY_LANGUAGE", {})                 # this machine's own voices left out
+    monkeypatch.setattr(tts_kokoro, "speaks", lambda lang: [])
+    monkeypatch.setattr(tts_qwen3, "usable", lambda kind="custom": True)
+    assert tr.voice_for_reply("A", "af_heart") == "natural:serena", "Qwen3-TTS speaks German where it runs"
+    assert tr.voice_for_reply("C", "af_heart") == "af_heart", "Qwen3-TTS does not speak Swahili"
+    _no_qwen(monkeypatch)
+    monkeypatch.setattr(tts_kokoro, "speaks", lambda lang: ["zf_xiaobei"] if lang == "zh" else [])
+    monkeypatch.setattr(tr, "_voice_file", lambda vid: Path("x"))
+    assert tr.voice_for_reply("B", "bm_george") == "zf_xiaobei", "Kokoro speaks Mandarin on the CPU"
+    monkeypatch.setattr(tr, "_SYSTEM_BY_LANGUAGE", {"de": ["sys:spd:de"]})
+    assert tr.voice_for_reply("A", "af_heart") == "sys:spd:de", "the system's own voice speaks German"
+    monkeypatch.setattr(tr, "_NO_VOICE_SAID", set())
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=tr.log.name):
+        assert tr.voice_for_reply("C", "af_heart") == "af_heart"
+        tr.voice_for_reply("C", "af_heart")
+    assert caplog.text.count("no voice on this machine speaks 'sw'") == 1, "said once a language"
+    assert tr.voice_for_reply("plain English", "af_heart") == "af_heart"
+    assert tr.voice_for_reply("plain English", "zf_xiaobei") == "af_heart", "a Mandarin voice does not read English"
+    for chosen in ("natural:aiden", "clone:alex", "sys:spd:fr"):
+        assert tr.voice_for_reply("A", chosen) == chosen, "a neural, cloned or system voice is kept as chosen"
+
+
+def test_the_systems_voices_are_read_by_language_from_speech_dispatcher_on_linux(monkeypatch):
+    import subprocess
+    import sys
+    from eli.perception import tts_router as tr
+    listing = ("                     NAME                 LANGUAGE                  VARIANT\n"
+               "                Afrikaans                       af                     none\n"
+               "                   German                       de                     none\n"
+               "              Portuguese                    pt-BR                     none\n")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(tr.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=listing))
+    monkeypatch.setattr(tr, "_SYSTEM_BY_LANGUAGE", None)
+    assert tr._system_voices_by_language() == {"af": ["sys:spd:af"], "de": ["sys:spd:de"], "pt": ["sys:spd:pt"]}
+    monkeypatch.setattr(tr, "_SYSTEM_BY_LANGUAGE", None)
+
+
+def test_a_speech_dispatcher_voice_is_spoken_by_spd_say_in_its_language_not_in_elis_process(monkeypatch):
+    import subprocess
+    from eli.perception import tts_router as tr
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    assert tr._speak_pyttsx3("Guten Morgen.", "sys:spd:de") is True
+    assert ran == [["spd-say", "-w", "-l", "de", "--", "Guten Morgen."]]
+
+
+def test_kokoro_speaks_mandarin_through_misakis_own_chinese_g2p():
+    pytest.importorskip("jieba")
+    pytest.importorskip("pypinyin")
+    assert "zf_xiaobei" in tts_kokoro.speaks("zh") and tts_kokoro.speaks("ja") == []
+    eng = tts_kokoro._Engine.__new__(tts_kokoro._Engine)
+    eng._g2p = {}
+    ps = eng.phonemes("好的，我已经设置了十分钟的计时器。", "z")
+    assert ps and "↓" in ps or "→" in ps or "↗" in ps, ps                 # tone marks: Mandarin phonemes
+    assert tts_kokoro.describe("zm_yunjian") == "Yunjian (Mandarin male)"
+
+
+def test_a_voice_is_tested_in_its_own_language_so_the_voice_chosen_is_the_one_heard(monkeypatch):
+    """An English test phrase in a Mandarin voice would be handed on to an English voice (voice_for_reply)."""
+    from eli.gui.main_window._mixins.settings_model import SettingsModelMixin
+    from eli.perception import tts_router as tr
+    assert set(tts_kokoro.ACCENT_LANGUAGE.values()) <= set(SettingsModelMixin._VOICE_TEST_PHRASES)
+    assert tr.voice_language("zf_xiaobei") == "zh" and tr.voice_language("bm_george") == "en"
+    assert tr.voice_language("char:calm") == "en"
+    heard = []
+    monkeypatch.setattr(tr, "speak", lambda text, voice_name=None: heard.append(tr.voice_for_reply(text, voice_name)))
+    _no_qwen(monkeypatch)
+    for vid in ("zf_xiaobei", "am_michael"):
+        SettingsModelMixin.test_voice(SettingsModelMixin.__new__(SettingsModelMixin), vid)
+    assert heard == ["zf_xiaobei", "am_michael"]

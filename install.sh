@@ -996,6 +996,11 @@ if ! _pip install ${_PIP_LINKS[@]+${_PIP_LINKS[@]+"${_PIP_LINKS[@]}"}} -r "$REQ"
             || warn "Some packages could not be installed (named above). ELI runs without them; what uses them is unavailable."
     fi
 fi
+# PyAutoGUI declares MouseInfo, PyMsgBox and python3-xlib, which are under the GPL and which ELI runs
+# without (packaging/gpl_sources.py, LEFT_OUT): take them out again, as every release build does, and
+# put back python-xlib's Xlib, which python3-xlib overwrote.
+"$PYTHON_VENV" "$SCRIPT_DIR/packaging/gpl_sources.py" --leave-out \
+    || warn "PyAutoGUI's GPL dependencies are still installed (named above); ELI works the same with them."
 
 # Make launchers executable
 chmod +x "$SCRIPT_DIR/eli.sh" 2>/dev/null || true
@@ -1163,6 +1168,14 @@ if "$PYTHON_VENV" -m eli.runtime.voice_assets; then
 else
     warn "Voice models deferred — fetch later with: .venv/bin/python -m eli.runtime.voice_assets"
     VOICE_STATUS="deferred (fetch later)"
+fi
+# The more human GPU voice (Qwen3-TTS): its own runtime, made only where an NVIDIA GPU has room for it
+# beside the language model (eli/perception/qwen3_runtime.py); a CPU-only machine skips it in a second.
+info "Checking whether this GPU has room for the more human voice (Qwen3-TTS)..."
+if "$PYTHON_VENV" -m eli.perception.qwen3_runtime --if-room; then
+    ok "GPU voice: ready, or not needed on this machine (see the line above)."
+else
+    warn "GPU voice deferred — ELI sets it up by itself later; Kokoro speaks meanwhile."
 fi
 
 echo

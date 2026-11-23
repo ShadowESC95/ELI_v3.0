@@ -1,23 +1,40 @@
-"""The source of every GPL package a release bundle carries, at the version it carries, and where the
-source of every LGPL one is.
+"""What a release must not carry under the GPL, how every build leaves out the GPL packages a package
+ELI uses declares, and where the source of every LGPL package a release carries is.
 
-GPL-3.0 lets a program be passed on as a binary when its Corresponding Source goes with it, or is
-offered beside it. THIRD_PARTY_NOTICES.md names the GPL packages the frozen builds carry, if any;
-when the environment holds none, SOURCES.md says so and the run succeeds.
-The release workflow runs this in the Linux build's environment, which holds every package the
-Windows and macOS builds carry plus a few for Linux alone, and attaches what it fetched to the release:
+ELI v3 is sold under its own licence (LICENSE) and passes on no package under the GPL, which lets a
+program be passed on as a binary only with its Corresponding Source and under the GPL's own terms.
+PyAutoGUI (BSD-3-Clause), which drives the keyboard and mouse where no native tool does, declares three
+that are: MouseInfo, PyMsgBox and, on Linux, python3-xlib. ELI runs the same without them (LEFT_OUT says
+why), but pip installs whatever a package declares, so each build that bundles packages takes them out:
 
-    python packaging/gpl_sources.py OUT_DIR    # the GPL sources into OUT_DIR, listed in SOURCES.md,
-                                               # and LGPL_SOURCES.md beside them
-    python packaging/gpl_sources.py --list     # name them (no network)
+    python packaging/gpl_sources.py --leave-out           # uninstall them from this environment, and
+                                                          # reinstall what shared files with them
+    python packaging/gpl_sources.py --check-wheels DIR    # fail when a wheel or sdist in DIR is under the GPL
+    python packaging/gpl_sources.py --kept-dependencies WHEEL PLATFORM PYTHON...
+                                                          # what WHEEL needs on that platform, less them
+    python packaging/gpl_sources.py --list                # the GPL and LGPL packages a release built
+                                                          # here would carry (no network)
 
-GPL packages: every installed distribution whose licence metadata names the GPL or AGPL and offers no
-LGPL choice. The source is that version's sdist from PyPI, checked against PyPI's digest; without one,
-the project's repository at the version's tag. A package that carries compiled code whose build files
-the sdist leaves out also gets the repository at the tag (piper-tts 1.4's sdist, when the builds still
-carried it, had neither its CMakeLists.txt nor the C source of its espeak bridge). When a package's
-build fetches more source (CMake ExternalProject or FetchContent), that is fetched too, at the commit
-the build names.
+The frozen builds run --leave-out after their last install, and ELI.spec stops a build whose environment
+still holds a package under the GPL (gpl_distributions) or whose stand-in for a left-out one is not
+intact. The build's own tools are not counted: what requirements-build.txt brings and ELI does not
+(PyInstaller, whose bootloader every frozen app starts through, is under the GPL with an exception that
+lets the bootloader go with any program; pyinstaller-hooks-contrib only runs during the build). The
+wheelhouses pass --check-wheels. A user's own `pip install` from PyPI still fetches PyAutoGUI's
+dependencies onto that user's machine; ELI passes none of them on.
+
+The release workflow runs this in the Linux build's environment, which holds every package the Windows
+and macOS builds carry plus a few for Linux alone, and attaches what it wrote to the release:
+
+    python packaging/gpl_sources.py OUT_DIR    # SOURCES.md (the GPL sources, or that there are none)
+                                               # and LGPL_SOURCES.md beside it
+
+GPL packages: every installed distribution a release would carry whose licence metadata names the GPL
+or AGPL and offers no LGPL choice. SOURCES.md says plainly when there is none. For each there is, the
+source is that version's sdist from PyPI, checked against PyPI's digest; without one, the project's
+repository at the version's tag. A package that carries compiled code whose build files the sdist
+leaves out also gets the repository at the tag. When a package's build fetches more source (CMake
+ExternalProject or FetchContent), that is fetched too, at the commit the build names.
 
 LGPL packages (Qt for Python and the Qt libraries inside its wheels, zeroconf, chardet, python-xlib and
 whatever else the environment holds): every installed distribution whose licence metadata names the
@@ -30,13 +47,17 @@ or its GitHub repository at the version's tag; for Qt, its source at the version
 
 Anything that cannot be fetched or found stops the run: a release must not go out without it.
 
-Standard library only: it runs before anything else is known to be installed.
+The standard library, and the `packaging` library that pip carries wherever it runs: this runs before
+anything else is known to be installed.
 """
 from __future__ import annotations
 
+import base64
+import email.parser
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -45,7 +66,9 @@ import urllib.request
 import zipfile
 from importlib import metadata
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parent.parent
 
 PYPI_JSON = "https://pypi.org/pypi/{name}/{version}/json"
 LGPL_LISTING = "LGPL_SOURCES.md"
@@ -75,10 +98,293 @@ _GPL = re.compile(r"(?<![A-Za-z])A?GPL|GNU (?:AFFERO )?GENERAL PUBLIC LICEN[CS]E
 _LGPL = re.compile(r"(?<![A-Za-z])LGPL|GNU (?:LESSER|LIBRARY) (?:GENERAL )?PUBLIC LICEN[CS]E", re.I)
 
 
-def licence_facts(dist: metadata.Distribution) -> List[str]:
+class LeftOut(NamedTuple):
+    """A GPL distribution that a package ELI uses declares, which no release carries."""
+    of: str                       # the package that declares it
+    modules: Tuple[str, ...]      # its import packages, which ELI.spec leaves out of the frozen apps
+    needs: Tuple[str, ...]        # what of that package needs it; ELI calls none of these
+    stand_in: str                 # what provides the same import package instead, or ""
+
+
+# PyAutoGUI 0.9.54 imports mouseinfo and pymsgbox inside try/except ImportError and in their place puts
+# a function that raises only when it is called: pyautogui.mouseInfo() and its alert, confirm, prompt
+# and password boxes are all that need them, and ELI calls none of those. Its X11 backend drives the
+# Xlib package, which python-xlib (LGPL, in pyproject.toml's dependencies on Linux) provides;
+# python3-xlib is an old copy of the same package under the GPL. tests/claims/test_license_reachable.py
+# holds each of these to the code.
+LEFT_OUT: Dict[str, LeftOut] = {
+    "mouseinfo": LeftOut("pyautogui", ("mouseinfo",), ("mouseInfo",), ""),
+    "pymsgbox": LeftOut("pyautogui", ("pymsgbox",), ("alert", "confirm", "prompt", "password"), ""),
+    "python3-xlib": LeftOut("pyautogui", (), (), "python-xlib"),
+}
+
+
+def _key(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", str(name)).lower()
+
+
+def _requirement(text: str):
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:   # pip carries its own copy wherever it runs
+        from pip._vendor.packaging.requirements import Requirement
+    return Requirement(text)
+
+
+def installed_distributions(path: Optional[List[str]] = None) -> Dict[str, metadata.Distribution]:
+    """{normalised name: distribution} for what is installed (on `path`, else sys.path); the first of
+    a name wins, as an import would."""
+    found: Dict[str, metadata.Distribution] = {}
+    for dist in (metadata.distributions(path=path) if path is not None else metadata.distributions()):
+        name = str(dist.metadata.get("Name") or "").strip()
+        if name:
+            found.setdefault(_key(name), dist)
+    return found
+
+
+def requirement_lines(path: Path) -> List[str]:
+    """The requirements in a requirements file, comments and options left out."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = re.sub(r"(^|\s)#.*$", "", line).strip()
+        if line and not line.startswith("-"):
+            out.append(line)
+    return out
+
+
+def _project(root: Path) -> dict:
+    try:
+        import tomllib
+    except ImportError:   # Python 3.10
+        import tomli as tomllib
+    return tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+
+def release_requirements(extras: Optional[Iterable[str]] = None, root: Path = ROOT) -> List[str]:
+    """pyproject.toml's dependencies and those of `extras` (every extra when None), an extra that names
+    the project itself (full = eli-v3[llm,image]) read as the extras it names."""
+    project = _project(root)
+    optional = project.get("optional-dependencies") or {}
+    own = _key(project["name"])
+    out = list(project.get("dependencies") or [])
+    todo, seen = list(optional if extras is None else extras), set()
+    while todo:
+        extra = todo.pop()
+        if extra in seen:
+            continue
+        seen.add(extra)
+        for text in optional.get(extra, []):
+            req = _requirement(text)
+            if _key(req.name) == own:
+                todo += sorted(req.extras)
+            else:
+                out.append(text)
+    return out
+
+
+def brought_by(requirements: Iterable[str], installed: Dict[str, metadata.Distribution],
+               skip: Iterable[str] = ()) -> Dict[str, metadata.Distribution]:
+    """The installed distributions `requirements` bring on this system, through each one's own
+    dependencies (and the extras asked of it), less `skip` and what it alone brings. A requirement
+    that is not installed is not followed: its licence cannot be read."""
+    skip = {_key(s) for s in skip}
+    found: Dict[str, metadata.Distribution] = {}
+    done = set()
+    todo = [(text, "") for text in requirements]
+    while todo:
+        text, extra = todo.pop()
+        try:
+            req = _requirement(text)
+            if req.marker is not None and not req.marker.evaluate({"extra": extra}):
+                continue
+        except Exception as exc:   # a malformed line in some package's metadata: named, not followed
+            print(f"[gpl] requirement not read: {text!r}: {exc}", file=sys.stderr)
+            continue
+        key = _key(req.name)
+        if key in skip or key not in installed:
+            continue
+        dist = found[key] = installed[key]
+        for wanted in {""} | set(req.extras):
+            if (key, wanted) not in done:
+                done.add((key, wanted))
+                todo += [(line, wanted) for line in dist.requires or []]
+    return found
+
+
+def build_only(installed: Optional[Dict[str, metadata.Distribution]] = None, root: Path = ROOT) -> set:
+    """What only the build itself runs: what requirements-build.txt brings and ELI's own requirements
+    (every extra) do not."""
+    installed = installed_distributions() if installed is None else installed
+    tools = brought_by(requirement_lines(root / "requirements-build.txt"), installed)
+    return set(tools) - set(brought_by(release_requirements(None, root), installed))
+
+
+def bundled_distributions(extras: Optional[Iterable[str]] = None, root: Path = ROOT,
+                          installed: Optional[Dict[str, metadata.Distribution]] = None) -> Dict[str, metadata.Distribution]:
+    """What a release built from this environment carries: what ELI's requirements (and `extras`)
+    bring, less LEFT_OUT, which every build takes out."""
+    installed = installed_distributions() if installed is None else installed
+    return brought_by(release_requirements(extras, root), installed, skip=LEFT_OUT)
+
+
+def left_out_modules() -> List[str]:
+    return sorted({m for entry in LEFT_OUT.values() for m in entry.modules})
+
+
+def _path_of(dist: metadata.Distribution, file) -> str:
+    return os.path.normcase(os.path.abspath(str(dist.locate_file(file))))
+
+
+def _record(dist: metadata.Distribution) -> List[Tuple[str, str]]:
+    """(path, sha256) of each file the distribution's RECORD lists, missing ones too: from Python 3.12,
+    Distribution.files leaves out what is not on disk, which is just what has to be found here."""
+    import csv
+    rows = []
+    for row in csv.reader((dist.read_text("RECORD") or "").splitlines()):
+        if row and row[0]:
+            rows.append((row[0], row[1].split("=", 1)[1] if len(row) > 1 and row[1].startswith("sha256=") else ""))
+    return rows
+
+
+def intact(dist: metadata.Distribution) -> bool:
+    """Whether every file the distribution's RECORD lists with a digest is on disk as recorded."""
+    for file, recorded in _record(dist):
+        if not recorded:
+            continue
+        path = Path(_path_of(dist, file))
+        if not path.is_file():
+            return False
+        digest = base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest()).rstrip(b"=").decode()
+        if digest != recorded:
+            return False
+    return True
+
+
+def stand_in_problems(path: Optional[List[str]] = None) -> List[str]:
+    """What is wrong with the stand-ins of what LEFT_OUT leaves out: one that is not installed where the
+    package that needs it is installed and declares the left-out one on this system, or one whose files
+    are not its own (a left-out copy of the same package overwrote them)."""
+    installed = installed_distributions(path)
+    problems = []
+    for name, entry in sorted(LEFT_OUT.items()):
+        if not entry.stand_in or _key(entry.of) not in installed:
+            continue
+        declared = [line for line in installed[_key(entry.of)].requires or []
+                    if _key(_requirement(line).name) == name]
+        wanted = any(_requirement(line).marker is None or _requirement(line).marker.evaluate({"extra": ""})
+                     for line in declared)
+        stand_in = installed.get(_key(entry.stand_in))
+        if stand_in is None:
+            if wanted:
+                problems.append(f"{entry.stand_in} is not installed: {entry.of} needs it in place of {name}")
+        elif not intact(stand_in):
+            problems.append(f"{entry.stand_in} {stand_in.version}'s files are not its own "
+                            f"(run `python packaging/gpl_sources.py --leave-out`)")
+    return problems
+
+
+def leave_out(path: Optional[List[str]] = None, run: Callable = subprocess.run) -> int:
+    """Uninstall what LEFT_OUT names from this environment, then reinstall, without its dependencies, each
+    distribution that shared a file with them (python-xlib and python3-xlib are the same Xlib package),
+    and check that each of those is intact again."""
+    installed = installed_distributions(path)
+    present = {key: dist for key, dist in installed.items() if key in LEFT_OUT}
+    if not present:
+        print(f"[gpl] none of {', '.join(sorted(LEFT_OUT))} is installed: nothing to leave out")
+        return 0
+    gone = {_path_of(dist, f) for dist in present.values() for f, _ in _record(dist)}
+    names = sorted(str(dist.metadata["Name"]) for dist in present.values())
+    print(f"[gpl] leaving out {', '.join(names)} (GPL; ELI runs without them, see LEFT_OUT)", flush=True)
+    pip = [sys.executable, "-m", "pip"]
+    try:
+        run(pip + ["uninstall", "-y", *names], check=True)
+        after = installed_distributions(path)
+        still = sorted(key for key in after if key in LEFT_OUT)
+        if still:
+            print(f"::error::still installed after pip uninstall: {', '.join(still)}", file=sys.stderr)
+            return 1
+        shared = {key: (str(dist.metadata["Name"]), str(dist.version)) for key, dist in after.items()
+                  if any(_path_of(dist, f) in gone for f, _ in _record(dist))}
+        for _, (name, version) in sorted(shared.items()):
+            print(f"[gpl] {name} {version} shared files with them: reinstalling it", flush=True)
+            run(pip + ["install", "--no-deps", "--force-reinstall", f"{name}=={version}"], check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"::error::{' '.join(map(str, exc.cmd))} failed ({exc.returncode})", file=sys.stderr)
+        return 1
+    final = installed_distributions(path)
+    broken = sorted(name for key, (name, _) in shared.items() if key not in final or not intact(final[key]))
+    if broken:
+        print(f"::error::not intact after reinstalling: {', '.join(broken)}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def archive_metadata(path: Path):
+    """The metadata inside a wheel (its .dist-info/METADATA) or an sdist (its PKG-INFO), or None."""
+    name = path.name.lower()
+    text = None
+    if name.endswith(".whl") or name.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            wanted = r"^[^/]+\.dist-info/METADATA$" if name.endswith(".whl") else r"^[^/]+/PKG-INFO$"
+            member = next((n for n in z.namelist() if re.match(wanted, n)), None)
+            text = z.read(member).decode("utf-8", "replace") if member else None
+    elif name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(path) as t:
+            member = next((m for m in t.getmembers() if m.isfile() and re.match(r"^[^/]+/PKG-INFO$", m.name)), None)
+            text = t.extractfile(member).read().decode("utf-8", "replace") if member else None
+    return email.parser.Parser().parsestr(text) if text else None
+
+
+def gpl_archives(directory: Path) -> List[str]:
+    """Each wheel or sdist in `directory` whose metadata puts it under the GPL, with what it says."""
+    found = []
+    for path in sorted(p for p in Path(directory).iterdir() if p.is_file()):
+        meta = archive_metadata(path)
+        if meta is not None and is_gpl(licence_facts(meta)):
+            found.append(f"{path.name} ({'; '.join(licence_facts(meta))})")
+    return found
+
+
+# The environment markers of a pip platform tag, by its start.
+_PLATFORMS = (("win", "win32", "Windows", "nt"), ("macosx", "darwin", "Darwin", "posix"),
+              ("manylinux", "linux", "Linux", "posix"), ("musllinux", "linux", "Linux", "posix"),
+              ("linux", "linux", "Linux", "posix"))
+
+
+def kept_dependencies(wheel: Path, platform: str, pythons: Iterable[str]) -> List[str]:
+    """What `wheel` declares it needs on `platform` (a pip platform tag) under any of `pythons`, less
+    LEFT_OUT: what a wheelhouse carries beside a package installed without its declared dependencies."""
+    meta = archive_metadata(Path(wheel))
+    if meta is None:
+        raise ValueError(f"{wheel}: no metadata inside")
+    system = next((s for s in _PLATFORMS if platform.startswith(s[0])), None)
+    if system is None:
+        raise ValueError(f"unknown platform tag {platform}")
+    machine = platform.rsplit("_", 1)[-1]
+    machine = machine.upper() if system[2] == "Windows" else machine     # what Python reports there
+    out: List[str] = []
+    for line in meta.get_all("Requires-Dist") or []:
+        req = _requirement(line)
+        if _key(req.name) in LEFT_OUT:
+            continue
+        for python in pythons:
+            env = {"sys_platform": system[1], "platform_system": system[2], "os_name": system[3],
+                   "python_version": python, "python_full_version": f"{python}.0", "extra": "",
+                   "platform_machine": machine, "implementation_name": "cpython",
+                   "platform_python_implementation": "CPython"}
+            if req.marker is None or req.marker.evaluate(env):
+                req.marker = None
+                if str(req) not in out:
+                    out.append(str(req))
+                break
+    return out
+
+
+def licence_facts(dist) -> List[str]:
     """What a distribution says about its licence: the SPDX expression, the first line of its
-    License field (some carry the whole text there) and its licence classifiers."""
-    meta = dist.metadata
+    License field (some carry the whole text there) and its licence classifiers. `dist` is an installed
+    distribution or the metadata read out of a wheel or sdist (archive_metadata)."""
+    meta = getattr(dist, "metadata", dist)
     facts = [str(meta.get("License-Expression") or "")]
     facts += [line for line in str(meta.get("License") or "").splitlines() if line.strip()][:1]
     facts += [c for c in (meta.get_all("Classifier") or []) if c.startswith("License ::")]
@@ -93,11 +399,15 @@ def is_gpl(facts: List[str]) -> bool:
 
 
 def gpl_distributions() -> List[Dict[str, str]]:
+    """Every installed distribution under the GPL that a release built here would carry: all of them
+    but the build's own tools (build_only)."""
+    installed = installed_distributions()
+    tools = build_only(installed)
     found: Dict[str, Dict[str, str]] = {}
-    for dist in metadata.distributions():
+    for key, dist in installed.items():
         name = str(dist.metadata.get("Name") or "").strip()
         facts = licence_facts(dist)
-        if name and is_gpl(facts):
+        if key not in tools and is_gpl(facts):
             found[name.lower()] = {"name": name, "version": str(dist.version),
                                    "licence": "; ".join(facts), "home": _home_page(dist),
                                    "compiled": "yes" if _compiled(dist) else ""}
@@ -293,15 +603,18 @@ def _tagged_archive(home: str, version: str) -> Tuple[bytes, str]:
 
 def fetch_all(out_dir: Path) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
-    lines = ["# Source of the GPL components in this release's builds", "",
-             "Each package under the GPL that the builds carry, at the version they carry, and the",
-             "source file here with where it came from. See THIRD_PARTY_NOTICES.md for the licences.", ""]
+    carried = gpl_distributions()
+    lines = ["# Source of the GPL components in this release's builds", ""]
+    if carried:
+        lines += ["Each package under the GPL that the builds carry, at the version they carry, and the",
+                  "source file here with where it came from. See THIRD_PARTY_NOTICES.md for the licences.", ""]
+    else:
+        lines += ["This release's builds carry no package under the GPL, so there is no GPL source here.",
+                  "The frozen apps start through PyInstaller's bootloader, which is under the GPL with an",
+                  "exception that lets it go with any program. LGPL_SOURCES.md, beside this file, says where",
+                  "the source of each LGPL package the builds carry is. See THIRD_PARTY_NOTICES.md.", ""]
     failed = []
-    packages = gpl_distributions()
-    if not packages:
-        lines.append("No package under the GPL is in this release's builds, so there is no GPL source to attach.")
-        print("no GPL package in this environment: nothing to attach", file=sys.stderr)
-    for pkg in packages:
+    for pkg in carried:
         name, version = pkg["name"], pkg["version"]
         try:
             sdist = pypi_sdist(name, version)
@@ -346,9 +659,27 @@ def fetch_all(out_dir: Path) -> int:
 
 
 def main(argv: List[str]) -> int:
+    if argv == ["--leave-out"]:
+        return leave_out()
+    if argv[:1] == ["--check-wheels"] and len(argv) == 2:
+        found = gpl_archives(Path(argv[1]))
+        for line in found:
+            print(f"::error::{argv[1]} holds a package under the GPL, which ELI v3 does not pass on: {line}",
+                  file=sys.stderr)
+        if not found:
+            print(f"[gpl] {argv[1]}: no package under the GPL")
+        return 1 if found else 0
+    if argv[:1] == ["--kept-dependencies"] and len(argv) >= 4:
+        print("\n".join(kept_dependencies(Path(argv[1]), argv[2], argv[3:])))
+        return 0
     if argv[:1] == ["--list"]:
-        for pkg in gpl_distributions():
+        carried = gpl_distributions()
+        for pkg in carried:
             print(f"{pkg['name']}=={pkg['version']}  ({pkg['licence']})")
+        if not carried:
+            print("no package under the GPL")
+        for problem in stand_in_problems():
+            print(f"stand-in: {problem}")
         for pkg in lgpl_distributions():
             qt = "  carries Qt libraries" if pkg["qt_libraries"] else ""
             print(f"{pkg['name']}=={pkg['version']}  ({pkg['licence']}, source not attached: {LGPL_LISTING}){qt}")

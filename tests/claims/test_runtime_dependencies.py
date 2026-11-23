@@ -47,7 +47,6 @@ DISTRIBUTION = {
     "faiss": "faiss-cpu",
     "llama_cpp": "llama-cpp-python",
     "pycrfsuite": "python-crfsuite",
-    "qwen_tts": "qwen-tts",
     "win32com": "pywin32",
     "chatterbox": "chatterbox-tts",
     "yara": "yara-python",
@@ -61,14 +60,16 @@ NOT_DECLARED = {
     "gi": "PyGObject comes with the Linux desktop (python3-gi); pip cannot build it without the system's "
           "own build files, and a packaged ELI asks the system's Python for it",
     "flash_attn": "an optional speed-up for Qwen3-TTS, built for the user's own CUDA (PyPI has no wheels); "
-                  "eli/perception/tts_qwen3.py uses it only when it is installed, sdpa otherwise",
+                  "the worker in Qwen3-TTS's runtime uses it only when it is there, sdpa otherwise",
+    "qwen_tts": "imported only by eli/perception/qwen3_worker.py, inside the runtime ELI makes for Qwen3-TTS "
+                "(eli/perception/qwen3_runtime.py, its own requirements in qwen3_runtime.txt), never in ELI's",
 }
 
 # Built for, or chosen by, the machine's GPU. The installers fetch each by a step of their own: the
 # engine is built for CUDA, Metal, ROCm, Vulkan or the CPU, and PyTorch comes from the index for the GPU
 # found; the rest run on PyTorch. Only these may wait in an optional extra.
 GPU_BOUND = frozenset({"llama-cpp-python", "torch", "torchaudio", "diffusers", "transformers", "peft",
-                       "datasets", "bitsandbytes", "chatterbox-tts", "qwen-tts"})
+                       "datasets", "bitsandbytes", "chatterbox-tts"})
 
 # What each requirements file is installed on (install.sh, install.ps1 and their fallbacks): the lock on
 # Linux and Windows, the ranges when the lock cannot be met there, requirements-macos.txt on a Mac.

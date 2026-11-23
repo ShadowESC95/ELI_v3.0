@@ -4318,9 +4318,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             except Exception:
                 log.debug("[CREATE_VOICE] set-active failed", exc_info=True)
             extra = ("" if res.get("synth_ready") else
-                     " It'll sound like the sample on a machine whose GPU runs the cloning engine "
-                     "(the voice-gpu extra: `pip install -e \".[voice-gpu]\"` from the ELI project "
-                     "root); until then I'll use my normal voice.")
+                     " It'll sound like the sample on a machine whose NVIDIA GPU has room for the cloning "
+                     "engine (Qwen3-TTS, which ELI sets up there by itself); until then I'll use my normal voice.")
             msg = f"Created the voice '{name}' from your recording and set it active.{extra}"
             return {"ok": True, "action": a, "voice": vid, "content": msg, "response": msg}
         except Exception as e:

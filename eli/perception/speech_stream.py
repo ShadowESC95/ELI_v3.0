@@ -349,7 +349,7 @@ class SpeechStream:
                  hold_lock: bool = True, clock: Callable[[], float] = time.monotonic):
         from eli.perception import tts_router
         self._voice = voice                # None: the active voice, read for each piece (a change is heard at once)
-        self._render = render or (lambda text: tts_router.render_samples(text, self._voice))
+        self._render = render or (lambda text: tts_router.render_samples(text, self._voice_now()))
         self._out = output
         self._on_audio = on_audio
         self._hold_lock = hold_lock
@@ -368,6 +368,15 @@ class SpeechStream:
         self._opened = False
         self._hold = False                 # paused by the user, before or after the output opened
         self.started = False
+
+    def _voice_now(self) -> str:
+        """The voice for the next piece: the one given, else the active one, or the one that speaks
+        the reply's language when the active one does not (tts_router.voice_for_reply, read from all
+        of the reply written so far, so its pieces keep one voice)."""
+        from eli.perception import tts_router
+        if self._voice:
+            return self._voice
+        return tts_router.voice_for_reply(self._clauses._text(), tts_router.get_active_voice())
 
     # ── text in ─────────────────────────────────────────────────────────────
     def feed(self, text: str) -> None:
@@ -510,7 +519,7 @@ class SpeechStream:
                 q.drained.wait()
             if self._unrenderable.strip():
                 from eli.perception import tts_router
-                tts_router._run_tts(self._unrenderable.strip(), voice_name=self._voice)
+                tts_router._run_tts(self._unrenderable.strip(), voice_name=self._voice_now())
             self._set_speaking(False)
             out = self._out
             if out is not None and hasattr(out, "close"):

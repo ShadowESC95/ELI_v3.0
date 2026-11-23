@@ -84,9 +84,9 @@ def test_no_pynvml_dependency():
 
 
 def test_the_voice_count_claim_has_a_code_anchor():
-    """README and the guides say 28 voices, American and British English: the engine's own list."""
+    """README and the guides say 36 voices, American and British English and Mandarin: the engine's own list."""
     from eli.perception.tts_kokoro import VOICES
-    assert len(VOICES) == 28 and {m["accent"] for m in VOICES.values()} == {"a", "b"}
+    assert len(VOICES) == 36 and {m["accent"] for m in VOICES.values()} == {"a", "b", "z"}
 
 
 def test_wake_word_training_hook_exists():

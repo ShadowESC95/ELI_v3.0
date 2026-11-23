@@ -61,7 +61,7 @@ OS tools such as `mpv`, `ffmpeg`, `tesseract`, `yt-dlp` (pip), clipboard/screens
 - Optional extras (XTTS “natural” voice, large vision models, CUDA *toolkit* via `--install-cuda`) are opt-in.
 - Frozen **AppImage** GPU packs are separate from portable `.venv` Vulkan builds.
 - Phones/tablets are **clients** of the PC/laptop web server — not native tablet apps.
-- The voice speaks American and British English (Kokoro). On a machine with an NVIDIA GPU, `pip install -e ".[voice-gpu]"` adds Qwen3-TTS (ten languages, voice cloning), used where the GPU has room for it beside the model.
+- The voice speaks American and British English and Mandarin (Kokoro). On a machine whose NVIDIA GPU has room for it beside the model, the installer also sets up Qwen3-TTS (ten languages, voice cloning; a runtime of its own, a few GB, once); elsewhere replies in other languages use your system's own voices.
 
 So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware. It does **not** magically install every optional OS package or every optional model on every board.
 

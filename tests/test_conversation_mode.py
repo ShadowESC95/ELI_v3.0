@@ -472,3 +472,16 @@ def test_the_window_turns_conversation_mode_on_and_off_and_shows_its_state(tmp_p
     assert seen["off"] == {"state": "off", "button": False, "label_hidden": True, "mic": False}
     assert seen["typed_start"] == "listening"
     assert seen["listening"][:4] == ["start", "conversing True", "conversing False", "stop"]
+
+
+def test_a_blend_is_of_voices_of_one_language_and_each_piece_is_in_the_replys_language(monkeypatch):
+    from eli.perception import tts_kokoro, tts_router
+    mandarin = next(v for v, m in tts_kokoro.VOICES.items() if m["accent"] == "z")
+    assert tts_kokoro.voice_id("af_heart,bf_emma") == "af_heart+bf_emma"
+    assert tts_kokoro.voice_id(f"af_heart+{mandarin}") == "", "two languages' phonemes cannot be one voice"
+    asked = []
+    monkeypatch.setattr(tts_router, "get_active_voice", lambda: "af_heart")
+    monkeypatch.setattr(tts_router, "voice_for_reply", lambda text, active: asked.append(text) or mandarin)
+    stream = SpeechStream(render=None, output=FakeOutput(), hold_lock=False)
+    stream._clauses.feed("你好，今天怎么样？")
+    assert stream._voice_now() == mandarin and asked == ["你好，今天怎么样？"]

@@ -8,17 +8,20 @@ Each comes in a 1.7B and a 0.6B size. ELI takes the larger one a card has room f
 language model's own plan (eli/perception/gpu_room), and none when no card has: a CPU-only machine
 never loads it and keeps Kokoro (eli/perception/tts_kokoro.py).
 
-It needs the GPU extra (`pip install "eli-v3[voice-gpu]"`: qwen-tts and PyTorch); the weights
-(2.5 to 4.5 GB) are fetched the first time it speaks, at a pinned revision, and each weight file is
-checked against its SHA-256 before it is used. Nothing here raises to the caller: None means the
-caller speaks with Kokoro instead, and says so (tts_router._note_neural_fallback).
+It runs in a runtime of its own (eli/perception/qwen3_runtime.py: qwen-tts needs older transformers and
+accelerate than ELI's), made on such a machine by the installers, the first-run setup or ELI itself, and
+speaks through a worker process there (eli/perception/qwen3_worker.py). The weights (2.5 to 4.5 GB) are
+fetched by ELI the first time it speaks, at a pinned revision, and each weight file is checked against its
+SHA-256. Nothing here raises to the caller: None means the caller speaks with Kokoro instead, and says so
+(tts_router._note_neural_fallback).
 """
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-import io
+import json
 import os
+import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +30,6 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-EXTRA = "voice-gpu"
 # Every model at one revision, its files' total size, and each weight file's SHA-256 and size.
 MODELS: Dict[str, List[Dict[str, Any]]] = {
     "custom": [
@@ -67,17 +69,21 @@ SPEAKERS: Dict[str, Dict[str, str]] = {
 LEGACY_NATURAL = {"sophia": "serena", "aria": "vivian", "james": "aiden", "daniel": "ryan"}
 _FOOTPRINTS = "qwen3_tts_gpu"     # what each model was measured holding on a card (gpu_room)
 
+
 _CHOICE: Dict[str, Optional[Tuple[Dict[str, Any], str]]] = {}
 _MODELS_LOADED: Dict[str, Any] = {}
 _LOCK = threading.Lock()
 _LAST_ERROR = ""
+_FIRST_DONE: set = set()
 
 
 def installed() -> bool:
-    """True when the GPU extra's packages are installed (no import, no GPU probe)."""
+    """True when the Qwen3-TTS runtime is made and checked on this machine (qwen3_runtime.ready)."""
     try:
-        return importlib.util.find_spec("qwen_tts") is not None and importlib.util.find_spec("torch") is not None
-    except (ImportError, ValueError):
+        from eli.perception import qwen3_runtime
+        return qwen3_runtime.ready() is not None
+    except Exception:
+        log.debug("[TTS] Qwen3-TTS runtime state unknown", exc_info=True)
         return False
 
 
@@ -99,42 +105,36 @@ def _need_mb(card: Dict[str, Any], entry: Dict[str, Any]) -> float:
     return measured_footprint_mb(_FOOTPRINTS, card, entry["repo"]) or entry["bytes"] / 1_048_576
 
 
+def room_for(kind: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """(model entry, torch device) for `kind` ('custom' or 'base'): the largest model one NVIDIA card has
+    room for beside the language model, on the card with the most room; None when no card has, or it is
+    switched off (ELI_QWEN3_TTS=0). ELI_QWEN3_TTS_DEVICE names the device outright."""
+    if _disabled():
+        return None
+    forced = os.environ.get("ELI_QWEN3_TTS_DEVICE", "").strip().lower()
+    if forced:
+        return (MODELS[kind][0], forced)
+    from eli.perception.gpu_room import nvidia_cards, room_mb
+    cards = nvidia_cards()
+    for entry in MODELS[kind]:
+        fits = [(room_mb(card, i), i) for i, card in enumerate(cards)]
+        fits = [(r, i) for r, i in fits if r is not None and r >= _need_mb(cards[i], entry)]
+        if fits:
+            return (entry, f"cuda:{max(fits)[1]}")
+    return None
+
+
 def choose(kind: str) -> Optional[Tuple[Dict[str, Any], str]]:
-    """(model entry, torch device) for `kind` ('custom' or 'base'): the largest model one NVIDIA card
-    has room for beside the language model, on that card; None when the extra is missing, it is
-    switched off (ELI_QWEN3_TTS=0), PyTorch sees no CUDA, or no card has room. Decided once per run:
-    the model's own memory, once loaded, would otherwise turn the answer round on the next call."""
-    if kind in _CHOICE:
+    """room_for(kind) on a machine whose Qwen3-TTS runtime is ready, else None. A yes is kept for the run:
+    the model's own memory, once loaded, would otherwise turn the answer round on the next call. A no is
+    asked again, since the runtime may be made while ELI runs."""
+    if _CHOICE.get(kind):
         return _CHOICE[kind]
-    pick: Optional[Tuple[Dict[str, Any], str]] = None
-    if installed() and not _disabled():
-        forced = os.environ.get("ELI_QWEN3_TTS_DEVICE", "").strip().lower()
-        from eli.perception.gpu_room import nvidia_cards, room_mb
-        cards = nvidia_cards()
-        for entry in MODELS[kind]:
-            if forced:
-                pick = (entry, forced)
-                break
-            fits = [(room_mb(card, i), i) for i, card in enumerate(cards)]
-            fits = [(r, i) for r, i in fits if r is not None and r >= _need_mb(cards[i], entry)]
-            if fits:
-                pick = (entry, f"cuda:{max(fits)[1]}")
-                break
-        if pick is not None and pick[1].startswith("cuda") and not _cuda_works():
-            pick = None
-    _CHOICE[kind] = pick
-    log.info("[TTS] Qwen3-TTS %s: %s", kind,
-             f"{pick[0]['repo']} on {pick[1]}" if pick else "not used (no GPU with room for it, or the extra is not installed)")
+    pick = room_for(kind) if installed() else None
+    if pick:
+        _CHOICE[kind] = pick
+        log.info("[TTS] Qwen3-TTS %s: %s on %s", kind, pick[0]["repo"], pick[1])
     return pick
-
-
-def _cuda_works() -> bool:
-    try:
-        import torch
-        return bool(torch.cuda.is_available())
-    except Exception:
-        log.debug("[TTS] PyTorch CUDA probe failed", exc_info=True)
-        return False
 
 
 def usable(kind: str = "custom") -> bool:
@@ -179,106 +179,130 @@ def _local_snapshot(entry: Dict[str, Any]) -> Path:
     return folder
 
 
+class _Worker:
+    """The worker process in the Qwen3-TTS runtime: one JSON line out and one back at a time."""
+
+    def __init__(self):
+        from eli.perception import qwen3_runtime
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
+        env["HF_HUB_OFFLINE"] = "1"                 # ELI fetched the weights already
+        log_path = qwen3_runtime.runtime_dir() / "worker.log"         # its own messages, for the diagnostics
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log = open(log_path, "a", encoding="utf-8")
+        self.proc = subprocess.Popen([str(qwen3_runtime.python_path()), str(qwen3_runtime.WORKER)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log,
+                                     text=True, env=env)
+        self.lock = threading.Lock()
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def ask(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            if not self.alive():
+                return {"ok": False, "error": f"the Qwen3-TTS worker has stopped (exit {self.proc.returncode})"}
+            self.proc.stdin.write(json.dumps(req) + "\n")
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+        try:
+            return json.loads(line)
+        except ValueError:
+            return {"ok": False, "error": "the Qwen3-TTS worker gave no answer"}
+
+
+_WORKER: Optional[_Worker] = None
+
+
+def _worker() -> _Worker:
+    global _WORKER
+    if _WORKER is None or not _WORKER.alive():
+        _WORKER = _Worker()
+        _MODELS_LOADED.clear()                      # a new process has none loaded
+    return _WORKER
+
+
 def _model(kind: str):
+    """The worker with `kind`'s model loaded on its card; None when this machine does not run it."""
     choice = choose(kind)
     if choice is None:
         return None
     entry, device = choice
     with _LOCK:
-        if kind in _MODELS_LOADED:
-            return _MODELS_LOADED[kind]
-        import torch
-        from qwen_tts import Qwen3TTSModel
-        folder = _local_snapshot(entry)
-        attn = "flash_attention_2" if importlib.util.find_spec("flash_attn") else "sdpa"
-        dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
-        log.info("[TTS] loading %s on %s", entry["repo"], device)
-        model = Qwen3TTSModel.from_pretrained(str(folder), device_map=device, dtype=dtype,
-                                              attn_implementation=attn)
-        _MODELS_LOADED[kind] = model
-        return model
+        worker = _worker()
+        if kind not in _MODELS_LOADED:
+            folder = _local_snapshot(entry)
+            log.info("[TTS] loading %s on %s", entry["repo"], device)
+            answer = worker.ask({"op": "load", "kind": kind, "path": str(folder), "device": device})
+            if not answer.get("ok"):
+                raise RuntimeError(answer.get("error") or "the model did not load")
+            _MODELS_LOADED[kind] = True
+        return worker
 
 
-def _record_footprint(kind: str) -> None:
+def _record_footprint(kind: str, reserved_mb: Optional[float]) -> None:
     """After a model's first synthesis: what it holds on its card, weights and working buffers."""
     choice = _CHOICE.get(kind)
-    if not choice or not choice[1].startswith("cuda:"):
+    if not choice or not choice[1].startswith("cuda:") or not reserved_mb:
         return
     try:
-        import torch
         index = int(choice[1].split(":", 1)[1])
         from eli.perception.gpu_room import nvidia_cards, record_footprint
         cards = nvidia_cards()
         if index < len(cards):
-            record_footprint(_FOOTPRINTS, cards[index], choice[0]["repo"],
-                             torch.cuda.max_memory_reserved(index) / 1_048_576)
+            record_footprint(_FOOTPRINTS, cards[index], choice[0]["repo"], float(reserved_mb))
     except Exception:
         log.debug("[TTS] Qwen3-TTS footprint not recorded", exc_info=True)
-
-
-def _language(model) -> str:
-    try:
-        langs = {str(x).lower() for x in (model.model.get_supported_languages() or [])}
-    except Exception:
-        langs = set()
-    return "auto" if "auto" in langs else "english"
-
-
-def _wav(wavs, rate: int) -> Optional[bytes]:
-    import numpy as np
-    import soundfile as sf
-    if not wavs:
-        return None
-    audio = np.asarray(wavs[0], dtype=np.float32).reshape(-1)
-    if not audio.size:
-        return None
-    buf = io.BytesIO()
-    sf.write(buf, audio, int(rate), format="WAV", subtype="PCM_16")
-    return buf.getvalue()
 
 
 def last_error() -> str:
     return _LAST_ERROR
 
 
-def _run(kind: str, call) -> Optional[bytes]:
+def _run(kind: str, req: Dict[str, Any]) -> Optional[bytes]:
     global _LAST_ERROR
+    out = ""
     try:
-        model = _model(kind)
-        if model is None:
+        worker = _model(kind)
+        if worker is None:
             return None
-        first = kind not in _FIRST_DONE
-        wavs, rate = call(model)
-        if first:
+        fd, out = tempfile.mkstemp(prefix="eli_qwen3_", suffix=".wav")
+        os.close(fd)
+        answer = worker.ask({**req, "out": out})
+        if not answer.get("ok"):
+            raise RuntimeError(answer.get("error") or "no audio")
+        if kind not in _FIRST_DONE:
             _FIRST_DONE.add(kind)
-            _record_footprint(kind)
+            _record_footprint(kind, answer.get("reserved_mb"))
         _LAST_ERROR = ""
-        return _wav(wavs, rate)
+        data = Path(out).read_bytes()
+        return data if len(data) > 44 else None             # a WAV header alone holds no speech
     except Exception as exc:
         _LAST_ERROR = f"{type(exc).__name__}: {exc}"
         log.warning("[TTS] Qwen3-TTS could not speak: %s", _LAST_ERROR, exc_info=True)
         return None
+    finally:
+        if out:
+            try:
+                os.unlink(out)
+            except OSError:
+                log.debug("[TTS] temporary Qwen3 wav not removed", exc_info=True)
 
 
-_FIRST_DONE: set = set()
-
-
-def synthesize_natural_wav(text: str, voice: str, *, instruct: str = "") -> Optional[bytes]:
-    """`text` in a built-in speaker's voice (natural:<speaker>), steered by `instruct`; WAV bytes or None."""
+def synthesize_natural_wav(text: str, voice: str, *, instruct: str = "", language: str = "") -> Optional[bytes]:
+    """`text` in a built-in speaker's voice (natural:<speaker>), steered by `instruct`, in `language`
+    (Qwen's name for it; the model's own detection when empty); WAV bytes or None."""
     key = speaker_key(voice) or "serena"
-    speaker = SPEAKERS[key]["speaker"]
-    return _run("custom", lambda m: m.generate_custom_voice(
-        text=str(text), speaker=speaker, language=_language(m), instruct=instruct or None))
+    return _run("custom", {"op": "custom", "text": str(text), "speaker": SPEAKERS[key]["speaker"],
+                           "language": language, "instruct": instruct})
 
 
-def synthesize_clone_wav(text: str, ref_wav: str, *, ref_text: str = "") -> Optional[bytes]:
+def synthesize_clone_wav(text: str, ref_wav: str, *, ref_text: str = "", language: str = "") -> Optional[bytes]:
     """`text` in the voice of the recording at `ref_wav`; with its transcript the clone is closer
     (Qwen's in-context mode), without one only the speaker's character is taken. WAV bytes or None."""
     if not ref_wav or not Path(ref_wav).is_file():
         return None
-    return _run("base", lambda m: m.generate_voice_clone(
-        text=str(text), language=_language(m), ref_audio=str(ref_wav),
-        ref_text=ref_text or None, x_vector_only_mode=not ref_text))
+    return _run("base", {"op": "clone", "text": str(text), "language": language, "ref_wav": str(ref_wav),
+                         "ref_text": ref_text})
 
 
 def list_natural_voices() -> List[str]:
@@ -287,7 +311,8 @@ def list_natural_voices() -> List[str]:
 
 
 def _reset_for_tests() -> None:
-    global _LAST_ERROR
+    global _LAST_ERROR, _WORKER
+    _WORKER = None
     _CHOICE.clear()
     _MODELS_LOADED.clear()
     _FIRST_DONE.clear()

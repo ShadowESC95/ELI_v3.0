@@ -17,8 +17,10 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `wakeword.py` | ~470 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~490 | **prosody + labelled-emotion** (tone/question detection) |
 | `tts_router.py` | ~1230 | voice router: Kokoro / Qwen3-TTS / pyttsx3 + `char:`/`clone:`/`natural:` voice resolution, sentence-ahead rendering, playback; `neural_fallback_state()` makes a neural fallback observable |
-| `tts_kokoro.py` | ~440 | **Kokoro-82M** on the CPU (onnxruntime): misaki phonemes without espeak-ng, the unknown-word guess, the 28 English voices |
-| `tts_qwen3.py` | ~290 | **Qwen3-TTS** natural voices and cloning, on a GPU with room for it (`voice-gpu` extra) |
+| `tts_kokoro.py` | ~440 | **Kokoro-82M** on the CPU (onnxruntime): misaki phonemes without espeak-ng, the unknown-word guess, 36 voices (English and Mandarin) |
+| `tts_qwen3.py` | ~300 | **Qwen3-TTS** natural voices and cloning, on a GPU with room for it, through its worker |
+| `qwen3_runtime.py`, `qwen3_worker.py`, `qwen3_runtime.txt` | ~250, ~130 | the isolated runtime Qwen3-TTS runs in (a pinned uv, its own Python and pins) and its worker |
+| `reply_language.py` | ~95 | the language a reply is written in (its script; else langdetect where fewer than half its words are English) |
 | `gpu_room.py` | ~90 | room on a GPU for a support model beside the language model (Whisper, Qwen3-TTS) |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
 | `tts_xtts.py` | ~410 | the **cloned-voice registry** (`add_clone()` keeps a reference clip) and the legacy Coqui XTTS-v2 backend (non-commercial model, never bundled); when no clone engine can speak, the default voice speaks — **loudly**, not silently, which was a live fault |
@@ -349,8 +351,8 @@ in `expression_state` (priority: thinking > speaking > tone):
 
 The active voice decides the engine, and no fallback is silent:
 - **Kokoro-82M** (`tts_kokoro.py`, Apache-2.0 weights) speaks every plain voice id, on the CPU
-  through onnxruntime, on every machine. 28 voices, American (`af_*`, `am_*`) and British
-  (`bf_*`, `bm_*`) English; the default is `af_heart`, the one its authors grade A. A voice saved
+  through onnxruntime, on every machine. 36 voices: American (`af_*`, `am_*`) and British
+  (`bf_*`, `bm_*`) English, and Mandarin (`zf_*`, `zm_*`, through misaki's own Chinese G2P: jieba, pypinyin); the default is `af_heart`, the one its authors grade A. A voice saved
   for the earlier engine (a Piper id such as `en_GB-alan-medium`) maps to its nearest Kokoro voice
   (`tts_kokoro.voice_for_legacy`), and spoken names of those voices ("the alan voice") still resolve.
 - **Qwen3-TTS** (`tts_qwen3.py`, Apache-2.0) speaks the `natural:<speaker>` voices (CustomVoice: nine
@@ -358,15 +360,38 @@ The active voice decides the engine, and no fallback is silent:
   voices (Base: from the user's recording), on a GPU with room for it beside the language model
   (`gpu_room.room_mb`, the same rule Whisper uses: the card's free memory less the reserve and the
   language model's plan; the model's measured footprint once known, its weights until then; unknown
-  means no). The 1.7B model where it fits, else the 0.6B, else none. It needs the `voice-gpu` extra
-  (qwen-tts, PyTorch); its weights (2.5-4.5 GB) are fetched at a pinned revision on first use and each
-  weight file is checked against its SHA-256. The voice engine setting (`tts_engine`) is `auto` (Qwen3
+  means no). The 1.7B model where it fits, else the 0.6B, else none. It runs in a runtime of its own (`qwen3_runtime.py`): on ELI's transformers 5.8.1 qwen-tts 0.1.1 does not
+  import, and with five fixes (a decorator, `pad_token_id`, the default RoPE, the rotary buffers a meta-device
+  load leaves empty, the decoding positions) it still never reaches its end token, so ELI fetches a pinned uv
+  (checked against its SHA-256) and makes `runtime/qwen3_tts` under its data folder: a Python of its own,
+  PyTorch for the card's CUDA (`--torch-backend auto`), the pins in `qwen3_runtime.txt` (transformers
+  4.57.3, accelerate 1.12.0, ...) and qwen-tts without its demo's gradio; `qwen3_worker.py` runs there and
+  answers one JSON line at a time. The same on every install route, the packaged apps included (they carry
+  no pip). It is made where the GPU has room: by `install.sh`/`install.ps1` (`python -m
+  eli.perception.qwen3_runtime --if-room`), by the first-run setup, and by ELI itself in the background the
+  first time the engine is automatic or natural there, while the network is allowed; Kokoro speaks
+  meanwhile. Its weights (2.5-4.5 GB) are fetched by ELI at a pinned revision on first use and each weight
+  file is checked against its SHA-256. On the CPU
+  (measured here, 0.6B) it renders at five to seven times real time, so it is never used there. The voice
+  engine setting (`tts_engine`) is `auto` (Qwen3
   where the GPU has room, Kokoro elsewhere), `kokoro` or `natural`, chosen at the start-up picker or the
-  first-run wizard. Where it cannot speak, Chatterbox (MIT) and XTTS-v2 (legacy, non-commercial model,
+  first-run wizard; the earlier `piper` setting and the `en_US-amy-medium` every install had saved read as
+  `auto` and no voice chosen, so existing users get Qwen3-TTS where their GPU allows, and a voice a user
+  picked stays theirs. Where it cannot speak, Chatterbox (MIT) and XTTS-v2 (legacy, non-commercial model,
   never bundled) are tried for clones, then the Kokoro default voice speaks and
   `neural_fallback_state()` says the chosen voice is not what is heard.
 - **pyttsx3** speaks a `sys:` voice (the operating system's own), only when one is chosen; these are
   hidden from the list unless `ELI_TTS_ALLOW_ROBOTIC=1` or nothing else can speak.
+- **A reply in another language** (`voice_for_reply`, `reply_language.py`): its script names it, or, in the
+  Latin script, langdetect does when fewer than half its words are English words (misaki's dictionaries).
+  Measured on 318 English phrases and 30 foreign replies: langdetect alone took 64 English phrases for
+  another language at any probability; with the dictionary share, one, and it found 24 of the 30. The reply
+  is then spoken by Qwen3-TTS where it runs (ten languages), else a Kokoro Mandarin voice for Chinese
+  (on any CPU, RTF about 0.4 as for English), else the operating system's own voice for that language
+  (speech-dispatcher's `spd-say`, a program of its own, on Linux; SAPI and macOS voices through pyttsx3),
+  else the chosen voice reads it and the log says once that no voice here speaks it. Not covered on a
+  CPU-only machine without system voices: every language but English and Mandarin. Kokoro's Japanese needs
+  pyopenjtalk (no ready-made build) and its Spanish, French, Hindi, Italian and Portuguese need espeak-ng.
 
 *Text to phonemes, without espeak-ng.* misaki (Kokoro's own G2P, Apache-2.0) reads the text with
 spaCy's small English tagger and its gold/silver dictionaries. Its usual fallback for a word they lack is
@@ -381,7 +406,7 @@ espeak-ng.
 
 *Files.* `eli/runtime/voice_assets.py` pins every file Kokoro uses to a revision and a SHA-256
 (`kokoro_manifest()`): the fp32 ONNX export and its tokenizer (onnx-community/Kokoro-82M-v1.0-ONNX),
-the 28 voices, spaCy's en_core_web_sm 3.8.0 (unpacked from its wheel) and gruut's `g2p/model.crf`. A
+the 36 voices, spaCy's en_core_web_sm 3.8.0 (unpacked from its wheel) and gruut's `g2p/model.crf`. A
 source install fetches them into `models/tts/kokoro` the first time ELI speaks (or in the installer's
 voice step); the release builds carry them (`python -m eli.runtime.voice_assets --kokoro-to tts_kokoro`
 in the release workflow, bundled by `ELI.spec`, read in place from the bundle). A download that does not
@@ -440,7 +465,9 @@ the listener's armed window). While on:
   (`canonical_mode("fast")`); the engine and the pipeline are unchanged.
 - **Speech as it is written** (`SpeechStream`). The turn worker feeds the reply's tokens as they
   stream; `Clauses` cuts them into pieces (markup and everything from the first code block on left
-  out, as `_spoken_part` does). The first clause is rendered at once; nothing plays until what is
+  out, as `_spoken_part` does), each spoken in the voice for the reply's language
+  (`voice_for_reply`, read from all of the reply written so far, so its pieces keep one voice); a
+  Kokoro blend is of voices of one language. The first clause is rendered at once; nothing plays until what is
   rendered lasts as long as the next piece takes to be written and rendered at the paces measured
   so far, then everything plays through one PortAudio stream (`DeviceOutput`, the same route as
   `_play_wav_blocking`; the system player piece by piece where none is listed) with a fade at each

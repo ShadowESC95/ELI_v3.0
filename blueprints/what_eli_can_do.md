@@ -156,7 +156,7 @@ and learns a **per-user voice profile**. Dictation, transcription, and a spoken
 voice (Kokoro TTS; Qwen3-TTS on a GPU) that never voices garbled fragments.
 
 ### 🔊 Voices — accents, characters & your own *(new, 2.1.23)*
-ELI's voice is Kokoro: 28 voices, American and British English, female and male, all Apache-2.0
+ELI's voice is Kokoro: 36 voices, American and British English and Mandarin, female and male, all Apache-2.0
 and all fetched (checksum-verified) with the voice. On a GPU with room for it, Qwen3-TTS adds a
 more human voice in ten languages and voice cloning.
 Do it by voice or text — *"what voices do you have"*, *"use a British voice"*,

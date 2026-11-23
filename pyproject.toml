@@ -40,7 +40,11 @@ dependencies = [
     "requests>=2.28",
     "Pillow>=10.0",
     "mss>=9.0",
+    # Keyboard and mouse where no native tool does. PyAutoGUI declares MouseInfo, PyMsgBox and python3-xlib,
+    # which are under the GPL: no release carries them (packaging/gpl_sources.py, LEFT_OUT), and its X11
+    # backend drives python-xlib's Xlib (LGPL) instead.
     "PyAutoGUI>=0.9.54",
+    "python-xlib>=0.33; sys_platform == 'linux'",
     "pyttsx3>=2.9",
     "sounddevice>=0.4",
     "soundfile>=0.12",
@@ -82,6 +86,14 @@ dependencies = [
     "spacy>=3.8,<3.9",
     "num2words>=0.5",
     "python-crfsuite>=0.9; platform_machine != 'ARM64'",
+    # Speaking the reply's language (eli/perception/reply_language.py): langdetect names a Latin-script
+    # reply's language; misaki's Chinese G2P (jieba, pypinyin, cn2an, ordered-set) gives Kokoro's Mandarin
+    # voices their phonemes without espeak-ng. All MIT or Apache-2.0, pure Python.
+    "langdetect>=1.0.9",
+    "jieba>=0.42",
+    "pypinyin>=0.50",
+    "cn2an>=0.5",
+    "ordered-set>=4.1",
     # Voice input. PyAudio has ready-made builds for Windows only; on Linux and macOS it is compiled
     # against PortAudio's headers (portaudio19-dev, portaudio-devel, `brew install portaudio`), which
     # install.sh adds first.
@@ -170,16 +182,9 @@ test = [
 full = [
     "eli-v3[llm,image]",
 ]
-# The GPU voice: Qwen3-TTS (Apache-2.0 code and weights), the natural voices and voice cloning,
-# chosen by itself on a machine whose GPU has room for it beside the model (eli/perception/tts_qwen3.py).
-# PyTorch comes from the index for this GPU (the installers' own step); the weights (2.5-4.5 GB) are
-# fetched on first use. CPU-only machines never need it, and the release bundles do not carry it.
-# qwen-tts 0.1.1 pins transformers==4.57.3 and accelerate==1.12.0, older than the lock's, so it is
-# not part of `full` and installing it moves those two back.
-voice-gpu = [
-    "qwen-tts>=0.1.1",
-    "torch>=2.0",
-]
+# The GPU voice, Qwen3-TTS (Apache-2.0), is not an extra: qwen-tts needs transformers 4.57.3 and
+# accelerate 1.12.0, older than this environment's, so ELI makes it a runtime of its own on a machine whose
+# GPU has room for it (eli/perception/qwen3_runtime.py, eli/perception/qwen3_runtime.txt).
 # Neural voice cloning — Chatterbox (Resemble AI, MIT-licensed code + weights).
 # Commercial-clean replacement for XTTS (Coqui's model licence is non-commercial):
 # zero-shot cloning from a short reference clip + native emotion/exaggeration control.
