@@ -21,9 +21,10 @@ It is not a chatbot bolted onto a cloud API. It is ~233,500 lines of Python in `
 form a complete **cognitive operating system for one person and one machine** — and, as of
 2026-06-28, a self-hosted **web app** that brings the same local brain (chat, a live
 dashboard, ELI's own smart-home, multi-user accounts, a tamper-evident audit trail, shared
-research, and browser voice) to any device on your network. It is **source-available**
-(PolyForm Internal Use 1.0.0): read, run, and modify it for yourself — redistribution and
-resale are reserved to the author.
+research, and browser voice) to any device on your network. It is **proprietary commercial
+software**, licensed under the ELI End User Licence Agreement (`COMMERCIAL_EULA.md`): a purchased
+licence or a trial lets you install and use it on the machines it covers and modify it for your own
+use there; copying, redistribution and resale are reserved to the author.
 
 ---
 

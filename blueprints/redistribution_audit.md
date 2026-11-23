@@ -49,7 +49,7 @@ all gitignored — present locally for running, never committed.
 **1.4 Config template — PASS.** `config/settings.example.json` ships as a clean template; the
 real `settings.json` (with your paths/name) is gitignored.
 
-**1.5 Licence & install surface — PASS.** `LICENSE` (PolyForm Internal Use — proprietary),
+**1.5 Licence & install surface — PASS.** `LICENSE` (proprietary; the ELI End User Licence Agreement, `COMMERCIAL_EULA.md`),
 `NOTICE`, `README`, `SECURITY`, `CONTRIBUTING`, `install.sh`, and platform requirements
 (`requirements.txt` + `-full/-macos/-windows/-android/-learning` + `requirements.lock.txt`)
 are all present.

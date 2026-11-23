@@ -702,6 +702,8 @@ GUI has no terminal for that prompt to read from.
 which is always the correct branch here (a local, personal voice, never redistributed by ELI). No
 action needed on an up-to-date checkout; using this feature at all implies agreeing to the
 non-commercial CPML (a commercial deployment needs a separate paid licence directly from Coqui).
+**Since then:** ELI v3, sold under its own licence, carries no XTTS-v2 engine and agrees to the CPML
+for nobody; Qwen3-TTS (Apache-2.0) speaks cloned voices.
 
 ## Natural voice / cloning: `ModuleNotFoundError: No module named 'torchaudio'` (or `torchcodec`)
 **Symptom:** `xtts_available()` / a clone attempt fails with a missing `torchaudio` or `torchcodec`

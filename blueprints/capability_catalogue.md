@@ -726,7 +726,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `desktop_capabilities.py` | 182 | Cross-OS desktop control capability probe — one place for per-platform truth. |
 | `mic_resolver.py` | 625 | ELI microphone resolver — pick a capture device that actually delivers audio, |
 | `screen_analysis.py` | 194 | Local screen analysis — depth modes, memory recall, research context. |
-| `tts_xtts.py` | 396 | Voice cloning backend (Coqui XTTS-v2). |
+| `tts_xtts.py` | 149 | The cloned-voice registry (Qwen3-TTS speaks the clones). |
 | `ui_ground.py` | 322 | Optional UI grounding backends — 100% local by default. |
 | `ui_tree.py` | 403 | Accessibility-tree UI targeting (Linux / AT-SPI). |
 | `voice_fx.py` | 252 | Character-voice effects layer. |
@@ -737,7 +737,6 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `analyze_image.py` | 147 | Image analysis helper. |
 | `analyze_pdfs.py` | 131 | PDF text extraction and analysis helper. |
 | `speaker_id.py` | 384 | Speaker identification for shared machines. |
-| `tts_chatterbox.py` | 136 | Voice-cloning backend (Chatterbox). |
 | `voice_intent.py` | 122 | Partial STT, barge-in and TTS cancel hooks. |
 
 ## `planning/`
