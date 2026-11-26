@@ -39,9 +39,19 @@ class LicensePayload:
     # Official bundles an ELI v3 key includes, each with the major version line it covers
     # ({"legal": 1}): a bundled sale. A bundle bought on its own has its own key instead.
     includes: dict[str, int] = field(default_factory=dict)
+    # The one machine the key works on (a trial key from the store), or "" for any.
+    machine: str = ""
+    # Who signed it: "" for ELI's own key, else a certified issuer (the store); never signed in.
+    issuer_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """The signed contents: what was signed, nothing added (an empty machine is left out,
+        and the issuer is the certificate inside the key, not a field of its own)."""
+        data = asdict(self)
+        data.pop("issuer_id", None)
+        if not data.get("machine"):
+            data.pop("machine", None)
+        return data
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LicensePayload:
@@ -56,6 +66,7 @@ class LicensePayload:
             product=str(raw.get("product") or PLATFORM).lower(),
             major_version=int(raw.get("major_version") or LEGACY_MAJOR),
             includes={str(k).lower(): int(v) for k, v in dict(raw.get("includes") or {}).items()},
+            machine=str(raw.get("machine") or "").lower(),
         )
 
 

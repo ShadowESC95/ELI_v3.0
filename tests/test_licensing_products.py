@@ -318,8 +318,10 @@ def test_a_key_set_in_the_environment_can_include_a_bundle(keys, monkeypatch):
 def test_only_a_v3_key_includes_and_only_official_bundles(keys):
     with pytest.raises(ValueError, match="only an ELI v3 key"):
         _key(keys, "legal", includes={"vr": 1})
-    with pytest.raises(ValueError, match="not an official bundle"):
-        _key(keys, "eli", includes={"nonesuch": 1})
+    with pytest.raises(ValueError, match="is not a bundle"):
+        _key(keys, "eli", includes={"Not a bundle!": 1})
+    # A bundle released after this build is allowed: the key still opens everything else.
+    assert parse_license_key(_key(keys, "eli", includes={"nonesuch": 1})).includes == {"nonesuch": 1}
     forged = _hand_signed(keys, {
         "version": 2, "license_id": "x", "tier": "pro", "seats": 1, "product": "legal",
         "major_version": 1, "issued_at": "2026-10-14T00:00:00+00:00", "includes": {"vr": 1},

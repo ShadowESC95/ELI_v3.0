@@ -16,8 +16,7 @@ import sys
 import webbrowser
 from typing import Optional
 
-PURCHASE_EMAIL = "jaybridgeman0095@gmail.com"
-PURCHASE_URL = "https://ko-fi.com/shadowesc95"
+from eli.licensing.launch_gate import PURCHASE_URL  # the licence store; support is on its pages
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +149,7 @@ def enter_licence_key(*, label: str = "") -> Optional[str]:
             "it includes; a package's own key opens that package. Once entered here it is there for "
             "ELI VR, ELI Legal and the rest on this computer.</p>"
             f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
-            f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+            '</p>'
         ),
         buy_label="Buy a licence",
         cancel_label="Cancel",
@@ -177,7 +176,7 @@ def prompt_for_license_key(*, reason: str = "") -> Optional[str]:
             "<p>Paste the key from your purchase email (it starts with "
             "<b>ELIV3-</b>).</p>"
             f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
-            f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+            '</p>'
         ),
         buy_label="Buy a license",
     )
@@ -194,7 +193,7 @@ def prompt_for_product_key(*, label: str, reason: str = "") -> Optional[str]:
             f"<p>Paste the key from your {label} purchase email (it starts with "
             "<b>ELIV3-</b>). Your ELI v3 key does not open it.</p>"
             f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
-            f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+            '</p>'
         ),
         buy_label="Buy a license",
         cancel_label="Cancel",
@@ -213,7 +212,7 @@ def prompt_purchase_or_key(*, reason: str = "") -> Optional[str]:
             "full platform to carry on — your conversations, memories and settings "
             "are kept and will be there when you activate.</p>"
             f'<p><b>Purchase:</b> <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
-            f'<b>Support:</b> <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+            '</p>'
             "<p>Already bought one? Paste the key below.</p>"
         ),
         buy_label="Buy now",
@@ -245,7 +244,7 @@ def prompt_terminal(reason: str = "") -> Optional[str]:
     print("\nELI v3 — license activation required")
     if reason:
         print(f"  {reason}")
-    print(f"  Purchase: {PURCHASE_URL} · {PURCHASE_EMAIL}")
+    print(f"  Purchase: {PURCHASE_URL}")
     try:
         key = input("  Paste license key (ELIV3-…): ").strip()
     except (EOFError, KeyboardInterrupt):

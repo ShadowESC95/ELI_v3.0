@@ -18,8 +18,11 @@ import logging
 import os
 import sys
 
-PURCHASE_EMAIL = "jaybridgeman0095@gmail.com"
-PURCHASE_URL = "https://ko-fi.com/shadowesc95"
+# The licence store (eli-licensing): what is on sale for ELI v3, with a claim so ELI collects the
+# key itself; support is on the store's pages.
+STORE_URL = "https://licences.geteli.tech"
+PURCHASE_URL = f"{STORE_URL}/?product=eli"
+PURCHASE_EMAIL = ""
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +51,7 @@ def _notify(message: str) -> None:
 def _announce_trial(days: int, reference: str, *, allow_gui_prompt: bool = True) -> None:
     _notify(
         f"ELI v3 — {days}-day trial started (ref {reference}).\n"
-        f"  Purchase a full license any time: {PURCHASE_URL} · {PURCHASE_EMAIL}"
+        f"  Purchase a full license any time: {PURCHASE_URL}"
     )
     if not allow_gui_prompt or not gui_prompt_available():
         return
@@ -96,7 +99,7 @@ def _requirement_error(message: str, *, expired: bool) -> "Exception":
         f"  Reason: {message}\n"
         "  Activate:  eli --activate-key YOUR-KEY\n"
         "  Status:    eli --license-status\n"
-        f"  Purchase:  {PURCHASE_URL} · {PURCHASE_EMAIL}\n"
+        f"  Purchase:  {PURCHASE_URL}\n"
         "  Terms:     COMMERCIAL_EULA.md"
     )
 
@@ -105,9 +108,20 @@ def ensure_license_or_exit(*, allow_gui_prompt: bool = True) -> None:
     from eli.licensing.activation import activate_license_key, validate_activation
     from eli.licensing.trial import ensure_trial_activation, revoke_trial, trial_duration_days
 
+    from eli.licensing.integrity import refusal
+
+    altered = refusal()  # checked here as well as in validate_activation: taking one out is not enough
+    if altered:
+        raise _requirement_error(altered, expired=False)
+
     status = validate_activation()
     if status.active or not status.required:
         return
+
+    if status.trial == "clock_behind":
+        raise _requirement_error(
+            "the computer's clock is behind the last time ELI ran: set the date and time right "
+            "and start ELI again (the trial is not lost)", expired=False)
 
     # ── Trial expired: revoke first, so a clock change cannot resurrect it ──
     if status.trial == "expired":

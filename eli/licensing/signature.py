@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from eli.licensing.products import OFFICIAL_BUNDLES, PLATFORM, is_product, product_label
+from eli.licensing.products import PLATFORM, is_product, product_label
 from eli.licensing.types import (
     SUPPORTED_LICENSE_VERSIONS,
     VALID_TIERS,
@@ -126,10 +126,29 @@ def parse_license_key(key: str) -> LicensePayload:
             "no product signing public key installed "
             f"(expected {public_key_path()})"
         )
-    if not _verify_payload_bytes(body, sig, public):
-        raise ValueError("license key signature is invalid")
-    raw = json.loads(body.decode("utf-8"))
+    issuer_id = ""
+    if _verify_payload_bytes(body, sig, public):
+        raw = json.loads(body.decode("utf-8"))
+        if isinstance(raw, dict) and raw.get("issuer"):
+            raise ValueError("a key signed by ELI's own key carries no issuer certificate")
+    else:
+        # A key from the store: signed by an issuer key that ELI's own key certified, with the
+        # certificate inside it. Read exactly as every ELI product reads it (eli-sdk).
+        try:
+            raw = json.loads(body.decode("utf-8"))
+        except ValueError:
+            raw = None
+        if not (isinstance(raw, dict) and raw.get("issuer")):
+            raise ValueError("license key signature is invalid")
+        from eli.licensing._sdk.errors import InvalidKey
+        from eli.licensing._sdk.keys import read_key
+
+        try:
+            issuer_id = read_key(normalized, public).issuer_id
+        except InvalidKey as exc:
+            raise ValueError(f"license key signature is invalid ({exc})") from None
     payload = LicensePayload.from_dict(raw)
+    payload.issuer_id = issuer_id
     if payload.version not in SUPPORTED_LICENSE_VERSIONS:
         raise ValueError(f"unsupported license version: {payload.version}")
     if payload.tier not in VALID_TIERS:
@@ -148,14 +167,19 @@ def parse_license_key(key: str) -> LicensePayload:
 
 
 def _check_includes(payload: LicensePayload) -> None:
-    """Only an ELI v3 key includes bundles, and only official ones, each for a real version line."""
+    """Only an ELI v3 key includes bundles, each named by a valid id for a real version line. A
+    bundle released after this build is allowed: it grants nothing here, and the key still opens
+    ELI v3 and every bundle this build knows (refusing it would lock out everyone holding an ELI
+    v3 key the day a new bundle went on sale)."""
     if not payload.includes:
         return
     if payload.product != PLATFORM:
         raise ValueError("only an ELI v3 key can include bundles")
+    from eli.licensing._sdk.products import valid_id
+
     for product, line in payload.includes.items():
-        if product not in OFFICIAL_BUNDLES:
-            raise ValueError(f"included product {product!r} is not an official bundle")
+        if product == PLATFORM or not valid_id(product):
+            raise ValueError(f"included product {product!r} is not a bundle")
         if int(line) < 1:
             raise ValueError(f"included {product!r} needs a version line of 1 or more")
 

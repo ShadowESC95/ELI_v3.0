@@ -27,3 +27,6 @@ prune .pytest_cache
 prune ops/backups
 prune artifacts
 prune models
+# the signed release manifest (scripts/licensing/sign_release_manifest.py)
+include eli/RELEASE.manifest
+recursive-include eli/licensing/_sdk *.pub *.list py.typed

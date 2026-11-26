@@ -234,3 +234,5 @@ models/_download.log
 eli_ci_*.log
 # made from LICENSE by scripts/make_installer_license.py
 packaging/windows/LICENSE.txt
+# signed at release time into each package (scripts/licensing/sign_release_manifest.py)
+eli/RELEASE.manifest

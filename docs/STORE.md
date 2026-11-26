@@ -17,12 +17,20 @@ fulfil a bundle order with `--product <id>`.
 | Author issue keys | `scripts/licensing/issue_license_key.py` |
 | Order fulfillment | `scripts/licensing/fulfill_order.py` |
 
-## Phase 1 — Manual (now)
+## Now: eli-licensing
+
+The store is built: the private repository **ShadowESC95/eli-licensing** makes keys for every ELI
+product, tier, bundle and version line; keeps a register of customers (customer numbers),
+licences (licence numbers) and orders, encrypted; emails keys; and fulfils Stripe sales from
+your own computer with no server (`eli-licensing stripe-pull`), or from an optional server that
+also shows the key on the buyer's screen. Its `docs/SETUP.md` sets it up; `docs/COMPLIANCE.md`
+lists the laws that apply to selling. The phases below are the earlier, manual way.
+
+## Phase 1 — Manual (earlier)
 
 Best fit until automated checkout exists:
 
-1. **Buyer** pays via **[Ko-fi](https://ko-fi.com/shadowesc95)** (tip + note with tier + email) or
-   email invoice for Pro/Enterprise.
+1. **Buyer** pays (now: Stripe, through eli-licensing) or is invoiced for Pro/Enterprise.
 2. **You** run fulfillment (private signing key **never** in git):
 
 ```bash

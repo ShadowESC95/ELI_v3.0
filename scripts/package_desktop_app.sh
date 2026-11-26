@@ -91,6 +91,8 @@ if [ "$WITH_ASSETS" -eq 1 ]; then
 else
   (cd "$ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_kokoro/**') | tar -xf - -C "$STAGING"
 fi
+# The signed list of the files that decide whether ELI may run (an altered copy will not start)
+python3 "$ROOT/scripts/licensing/sign_release_manifest.py" --root "$STAGING" ${ELI_REQUIRE_RELEASE_MANIFEST:+--require}
 
 mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/blueprints"
 # License docs live under models/ but models/** is excluded from the lean archive — copy explicitly

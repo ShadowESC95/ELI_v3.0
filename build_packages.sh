@@ -159,6 +159,8 @@ _stage_windows_common() {
     rm -rf "$STAGING"
     mkdir -p "$STAGING/dist"
     (cd "$PROJECT_ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_kokoro/**') | tar -xf - -C "$STAGING"
+    # The signed list of the files that decide whether ELI may run (an altered copy will not start)
+    python3 "$PROJECT_ROOT/scripts/licensing/sign_release_manifest.py" --root "$STAGING" ${ELI_REQUIRE_RELEASE_MANIFEST:+--require}
     cp "$PROJECT_ROOT/install.bat" "$PROJECT_ROOT/install.ps1" "$PROJECT_ROOT/eli.bat" "$STAGING/"
     cp "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/requirements.txt"
     cp "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/"

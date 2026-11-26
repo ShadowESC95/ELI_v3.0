@@ -71,16 +71,30 @@ def _marked_retail() -> bool:
         return False
 
 
-def _sold_build() -> bool:
-    """A packaged (frozen) build, or one marked retail: a build someone pays for."""
+def developer_checkout() -> bool:
+    """A git working copy of ELI v3's source, as its developer works in.
+
+    Never an installed or released copy: a frozen build is not one, and nor is any copy that
+    carries its signed release manifest (eli/RELEASE.manifest: the wheel, the .deb, the
+    portable folders and tarballs), whatever else is beside it. Everything else is a copy
+    someone may have paid for, and needs a licence or the trial.
+    """
     try:
         from eli.core.paths import is_frozen
         if is_frozen():
-            return True
+            return False
     except Exception:
         log.debug("could not tell whether this build is packaged; treating it as one", exc_info=True)
-        return True
-    return _marked_retail()
+        return False
+    from eli.licensing.integrity import MANIFEST, package_dir
+
+    root = package_dir().parent
+    return (root / ".git").exists() and not (package_dir() / MANIFEST).is_file()
+
+
+def _sold_build() -> bool:
+    """A build someone pays for: anything but the developer's own checkout, or one marked retail."""
+    return not developer_checkout() or _marked_retail()
 
 
 def developer_override(name: str) -> str:
@@ -97,20 +111,13 @@ def developer_override(name: str) -> str:
 
 
 def activation_required() -> bool:
+    """Every copy runs with a licence or the trial: frozen or not, installed from a .deb, a wheel
+    or a portable folder. Only the developer's own checkout may skip it, and only when told to
+    (ELI_LICENSE_BYPASS=1, which nothing else reads). An installed copy used to need nothing,
+    because only frozen builds were checked."""
     if developer_override("ELI_LICENSE_BYPASS").lower() in _ON:
         return False
-    if _env_on("ELI_REQUIRE_LICENSE") or _marked_retail():
-        return True
-    try:
-        from eli.core.paths import is_frozen, _is_dev_mode
-
-        if is_frozen():
-            return True
-        if _is_dev_mode():
-            return False
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return False
+    return True
 
 
 def _machine_is_bound(state: ActivationState, fp: str) -> bool:
@@ -164,6 +171,9 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
     payload = parse_license_key(normalized)
     if _payload_expired(payload.expires_at):
         raise ValueError("license key has expired")
+    problem = _key_problem(payload, normalized)
+    if problem:
+        raise ValueError(problem)
     product = payload.product
     if product == PLATFORM:
         problem = _platform_major_problem(payload.major_version)
@@ -242,6 +252,25 @@ def deactivate_license(*, machine_only: bool = False, product: str = PLATFORM) -
     return clear_activation_state(product)
 
 
+def _key_problem(payload, key: str) -> str:
+    """Why a key that verifies may still not be used here, or "": it names another machine (a
+    trial key from the store is for one machine), or ELI has withdrawn it (refunded, disputed,
+    leaked, or from an issuer that has been withdrawn)."""
+    if payload.machine and payload.machine != machine_fingerprint():
+        return "this key is for another machine"
+    try:
+        from eli.licensing._sdk.keys import KeyStore, read_key
+        from eli.licensing.signature import load_public_key_pem
+        from eli.licensing.storage import shared_keys_dir
+
+        public = load_public_key_pem()
+        withdrawn = KeyStore(shared_keys_dir()).revocations(public).why(read_key(key, public))
+    except Exception:
+        log.debug("revocation lists unreadable; the key stands on its signature", exc_info=True)
+        return ""
+    return withdrawn
+
+
 def _verify_stored_key(state: ActivationState) -> str:
     """Re-check the signed key kept in an activation; "" when it holds, else why not.
 
@@ -254,6 +283,9 @@ def _verify_stored_key(state: ActivationState) -> str:
         return f"the stored license key no longer verifies ({exc})"
     if payload.license_id != state.license_id:
         return "the stored license key does not belong to this activation"
+    problem = _key_problem(payload, state.license_key)
+    if problem:
+        return problem
     state.tier = payload.tier
     state.seats = payload.seats
     state.expires_at = payload.expires_at
@@ -325,11 +357,17 @@ def _adopt_shared_key(product: str) -> Optional[ActivationState]:
 
 def validate_activation() -> ActivationStatus:
     required = activation_required()
+    if required:
+        from eli.licensing.integrity import refusal
+
+        altered = refusal()
+        if altered:
+            return _inactive(True, altered)
     env_key = os.environ.get("ELI_LICENSE_KEY", "").strip()
     if env_key:
         try:
             payload = require_product(parse_license_key(env_key), PLATFORM)
-            problem = _platform_major_problem(payload.major_version)
+            problem = _key_problem(payload, env_key) or _platform_major_problem(payload.major_version)
             if problem:
                 raise ValueError(problem)
             if _payload_expired(payload.expires_at):
@@ -413,7 +451,9 @@ def validate_activation() -> ActivationStatus:
                 seats=state.seats,
                 machines_bound=len(state.machines),
                 expires_at=(rec.expires_at if rec is not None else state.expires_at),
-                message="trial revoked" if ts == "revoked" else "trial expired",
+                message={"revoked": "trial revoked",
+                         "clock_behind": "the computer's clock is behind the last time ELI ran"
+                         }.get(ts, "trial expired"),
                 state=state,
                 trial=ts,
             )
@@ -530,6 +570,12 @@ def _own_product_status(product: str, *, version: str = "") -> ActivationStatus:
     """A bundle licensed by its own key (see product_status)."""
     label = product_label(product)
     required = activation_required()
+    if required:
+        from eli.licensing.integrity import refusal
+
+        altered = refusal()
+        if altered:
+            return _inactive(True, altered)
     if not required:
         return ActivationStatus(
             active=True,

@@ -615,6 +615,9 @@ jobs:
         run: bash packaging/linux/build-appimage-pyinstaller.sh
 
       - name: Classic portable tarball (source + voices + offline GUI wheelhouse)
+        env:
+          ELI_RELEASE_SIGNING_KEY: ${{ secrets.ELI_RELEASE_SIGNING_KEY }}
+          ELI_REQUIRE_RELEASE_MANIFEST: "1"
         run: |
           pip install build
           ELI_PORTABLE_WHEELHOUSE=1 SKIP_TESTS=1 bash scripts/package_desktop_app.sh --with-assets
@@ -693,10 +696,18 @@ jobs:
           python -m eli.core.init_data
           python tools/bootstrap_claims_artifacts.py
 
+      - name: Sign the release manifest (an altered installed copy refuses to start)
+        env:
+          ELI_RELEASE_SIGNING_KEY: ${{ secrets.ELI_RELEASE_SIGNING_KEY }}
+        run: python scripts/licensing/sign_release_manifest.py --require
+
       - name: Build Python wheel + sdist
         run: python -m build --wheel --sdist --outdir dist/
 
       - name: Build Debian package
+        env:
+          ELI_RELEASE_SIGNING_KEY: ${{ secrets.ELI_RELEASE_SIGNING_KEY }}
+          ELI_REQUIRE_RELEASE_MANIFEST: "1"
         run: |
           bash packaging/debian/build-deb.sh "${{ needs.guard.outputs.version }}"
           ls -lh dist/*.deb      # this build writes the .deb straight into dist/
@@ -705,6 +716,8 @@ jobs:
         env:
           SKIP_TESTS: "1"
           SKIP_COMPILE: "1"
+          ELI_RELEASE_SIGNING_KEY: ${{ secrets.ELI_RELEASE_SIGNING_KEY }}
+          ELI_REQUIRE_RELEASE_MANIFEST: "1"
         run: |
           bash build_packages.sh wheelhouse windows-lean windows wheelhouse-arm64 windows-arm64-lean
           if [ -d dist/wheelhouse ]; then

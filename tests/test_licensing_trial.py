@@ -196,7 +196,8 @@ def test_trial_granted_once_with_unique_identity(retail_env):
     assert T.grant_trial() is None
 
 
-def test_two_installs_get_different_trial_identities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_two_machines_get_different_trial_identities_and_one_machine_one_trial(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     seen = set()
     for n in range(2):
         lic = tmp_path / f"lic{n}"
@@ -206,12 +207,19 @@ def test_two_installs_get_different_trial_identities(tmp_path: Path, monkeypatch
         monkeypatch.setenv("ELI_LICENSE_DIR", str(lic))
         monkeypatch.setenv("ELI_DATA_DIR", str(data))
         monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
+        monkeypatch.setenv("ELI_MACHINE_ID", f"machine-{n}")  # another machine
         _clear_caches()
         state = T.grant_trial()
         assert state is not None
         seen.add((state.license_id, state.customer_ref))
-    _clear_caches()
     assert len(seen) == 2
+    # The same machine with its folders pointed somewhere new is not a new install: the trial's
+    # records in their fixed places still say it was used (they used to be reset this way).
+    monkeypatch.setenv("ELI_LICENSE_DIR", str(tmp_path / "lic-new"))
+    monkeypatch.setenv("ELI_DATA_DIR", str(tmp_path / "data-new"))
+    _clear_caches()
+    assert T.grant_trial() is None
+    _clear_caches()
 
 
 # ── Anti-reset behaviour ────────────────────────────────────────────────────
@@ -535,6 +543,12 @@ def test_gui_prompt_does_not_require_a_tty(monkeypatch: pytest.MonkeyPatch):
 
 _SERVE = """
 import importlib.util, sys, types
+from pathlib import Path
+# The trial's fixed records and the data showing earlier use, in the test's own folder: in this
+# separate process the suite's fixtures do not apply, and they would be this account's.
+import eli.licensing.trial as trial
+trial._fixed_marker_dirs = lambda: [Path(sys.argv[2]) / "fixed"]
+trial._default_data_dirs = lambda: [Path(sys.argv[2]) / "data"]
 spec = importlib.util.spec_from_file_location("eli_entry", sys.argv[1])
 entry = importlib.util.module_from_spec(spec); spec.loader.exec_module(entry)
 sys.frozen = True
@@ -560,7 +574,8 @@ def test_the_frozen_server_is_behind_the_licence_gate(retail_env, trial, expect)
     if trial == "revoked":
         env["ELI_TRIAL_DISABLED"] = "1"
     entry = Path("packaging/pyinstaller/eli_entry.py").resolve()
-    out = subprocess.run([sys.executable, "-c", _SERVE, str(entry)], env=env, stdin=subprocess.DEVNULL,
+    out = subprocess.run([sys.executable, "-c", _SERVE, str(entry), str(retail_env["tmp"])], env=env,
+                         stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=120)
     result = [line for line in out.stdout.splitlines() if line.startswith("RESULT")]
     assert result, out.stderr[-1500:]

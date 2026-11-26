@@ -149,6 +149,24 @@ def _assert_db_isolated() -> None:
 _assert_db_isolated()
 
 @pytest.fixture(autouse=True)
+def _licence_state_stays_in_the_test(monkeypatch, tmp_path):
+    """The trial's records in their fixed places (found from the account, whatever HOME says) and
+    the data that shows earlier use are the test's own folders, never this account's. A source
+    checkout now needs a licence unless told otherwise, as every installed copy does: tests run
+    unlicensed unless they are about licensing (those clear ELI_LICENSE_BYPASS themselves)."""
+    from eli.licensing import trial as _trial
+
+    monkeypatch.setattr(_trial, "_fixed_marker_dirs", lambda: [tmp_path / "licence-fixed"])
+    monkeypatch.setattr(_trial, "_default_data_dirs", lambda: [tmp_path / "licence-data"])
+    monkeypatch.setenv("ELI_LICENSE_BYPASS", "1")
+    from eli.licensing import integrity as _integrity
+
+    _integrity.problems.cache_clear()
+    yield
+    _integrity.problems.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _tests_never_launch_apps(monkeypatch, request):
     """A test that reached the real launcher started Spotify on the developer's machine and played
     a song, and an OPEN_APP test started Firefox; with no display they still spawn the process.
