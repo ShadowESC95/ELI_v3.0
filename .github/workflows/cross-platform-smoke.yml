@@ -54,7 +54,10 @@ jobs:
         # install on every OS. faiss-cpu (a core dependency) ships wheels for a new Python only after some
         # weeks, so the ceiling is the newest version it ships a wheel for, not the newest that exists
         # ("3.x" resolved to 3.15 on Windows, which had no faiss-cpu wheel). Bump when faiss-cpu does.
-        python: ["3.10", "3.12", "3.13"]
+        # 3.12 for now: misaki (the voice's phoneme reader, >=0.9.4,<0.10) is published for Python
+        # below 3.13 only, so ELI cannot be installed on 3.13 and every 3.13 job failed at pip
+        # (installer-smoke was pinned to 3.12 for the same reason). Add 3.13 when misaki supports it.
+        python: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
     # Windows runners default to PowerShell, which cannot parse the `python - <<'PY'`
     # heredoc the dashboard step is built on — it failed with a .ps1 ParserError on both
