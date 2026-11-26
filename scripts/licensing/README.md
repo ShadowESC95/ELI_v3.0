@@ -1,5 +1,14 @@
 # ELI v3 — licensing scripts (author / sales only)
 
+> Keys for every ELI product are now made with **eli-licensing** (private repository
+> `ShadowESC95/eli-licensing`), which also keeps the register of customers and licences, emails
+> keys and fulfils Stripe sales. These scripts still make a key quickly by hand.
+>
+> - `sync_sdk.py` copies eli-sdk into `eli/licensing/_sdk` (keys from the store, revocation,
+>   release manifests); `tests/test_licensing_sdk.py` checks the copy.
+> - `sign_release_manifest.py` signs `eli/RELEASE.manifest` into each source package at release
+>   (secret `ELI_RELEASE_SIGNING_KEY`); without it an installed source copy will not start.
+
 Every key names one **product**: `eli` (ELI v3 itself) or an official bundle (`legal`, `vr`,
 `healthcare`, `finance`). Bundles are sold separately, so each needs its own key. The products are
 listed in [`eli/licensing/products.py`](../../eli/licensing/products.py); add a new bundle there

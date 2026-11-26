@@ -238,6 +238,10 @@ exclude = ["tests*", "ops*", "build*"]
     "plugins/registry/*.json",
     "cognition/persona*.txt",
     "licensing/keys/*.pub",
+    "licensing/_sdk/*.pub",
+    "licensing/_sdk/*.list",
+    "licensing/_sdk/py.typed",
+    "RELEASE.manifest",
     "licensing/keys/*.md",
     "perception/wake_features/*.onnx",
 ]

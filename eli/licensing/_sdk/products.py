@@ -31,6 +31,17 @@ OFFICIAL_BUNDLES: dict[str, str] = {
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 
+def register_product(product: str, label: str) -> None:
+    """Make a new official bundle known to this process: the licence tool, from its catalogue,
+    before the SDK lists it; a new bundle's own program, for its own product id. Keys for it are
+    then made and read like any other. Products released before it ignore it where an ELI v3 key
+    includes it (check_includes), and never mistake its own key for theirs."""
+    product = str(product or "").lower()
+    if product == PLATFORM or not valid_id(product):
+        raise ValueError(f"{product!r} is not a usable product id")
+    OFFICIAL_BUNDLES.setdefault(product, str(label or product))
+
+
 def is_product(product: str) -> bool:
     return product == PLATFORM or product in OFFICIAL_BUNDLES
 

@@ -1,0 +1,20 @@
+{
+  "version": "1.2.0",
+  "files": {
+    "_encoding.py": "3c30382ec2e48819d65a9925db932e21f5245f0b5e150da5bc0c26986589b388",
+    "errors.py": "e788763be812d8628eb56c3b89ae1c7d66fc2f9a598063973cbe79b76ec2e0cf",
+    "keys.py": "0fe3a8b2e418f5f4fec795893e42c3be6c63a1d6c4e62beca2fe5827bd37fd00",
+    "issuing.py": "68cc440f47615bd632830b09a99c2d97cccec9e3b0e06045dfc7f088b149777c",
+    "revocations.py": "caec55938f3802180e5601f4efe3bd6f02056c1ddd0d09f822cc413ba97502d5",
+    "machine.py": "f7a6142269f978d1296fb67c2edf6032cb8b9c1ba7858cdba050554288c384ea",
+    "trial.py": "386fee35032f4781853a07f1d48cc4edf7b194fa78f874385ced9732ab834f8a",
+    "store.py": "45a884860b8a8187cd2af4285a27588a788b6ae1fdb7bca0eb4ca9f59542cfe4",
+    "integrity.py": "8d347b7ab7cf3e9c7fdfabc11f1cff4160bbbbcd736c6742151c78cd396678ef",
+    "products.py": "69ca3b272d8b4f2b218134c7b26c159a4a1cb99b31543fca7819aa0aa5ab5518",
+    "versions.py": "f485131c0c5f30bde7e5aadb93d47d85b573594728cbf298c74b6c070508e666",
+    "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "eli.pub": "5b604e7b931606416b4f23ee8f70e93ec51c9b35d75331e6504cae50c855a28e",
+    "release.pub": "ace6f8d1f6bc8dd0e67a5f07e37aa68cd7db77632fc8c19176ee154fc66e8eed",
+    "revoked.list": "6f4ad1932f31290edcaa8f99d8d53c0283fef97e6e3957d4cddef8e682690d75"
+  }
+}

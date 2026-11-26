@@ -21,11 +21,11 @@ from ._encoding import b64url_decode
 from .errors import InvalidKey
 from .products import (
     LEGACY_MAJOR,
-    OFFICIAL_BUNDLES,
     PLATFORM,
     is_product,
     major_line,
     product_label,
+    valid_id,
 )
 from .versions import Version
 
@@ -314,13 +314,16 @@ def _license(raw: dict[str, Any], key_print: str, *, issuer_id: str = "") -> Lic
 
 
 def check_includes(product: str, includes: Mapping[str, int]) -> None:
+    """Only an ELI v3 key includes bundles, each named by a valid id with a real version line.
+    A bundle this SDK does not know yet (released later) is allowed: it grants nothing here,
+    and the key still opens everything else it covers."""
     if not includes:
         return
     if product != PLATFORM:
         raise InvalidKey("only an ELI v3 key can include bundles")
     for name, line in includes.items():
-        if name not in OFFICIAL_BUNDLES:
-            raise InvalidKey(f"included product {name!r} is not an official bundle")
+        if name == PLATFORM or not valid_id(name):
+            raise InvalidKey(f"included product {name!r} is not a bundle")
         if int(line) < 1:
             raise InvalidKey(f"included {name!r} needs a version line of 1 or more")
 
