@@ -67,17 +67,19 @@ def _when(text: object) -> datetime | None:
 
 def default_locations() -> list[Path]:
     """The folders a trial's record is mirrored to, found from the account itself."""
+    # Folders of the ELI key store's own, never a generic "eli" folder: those belong to no one ELI
+    # product (ELI v2 keeps its data in ~/.local/share/eli).
     home = account_home()
     if os.name == "nt":
         roaming = windows_folder("roaming") or home / "AppData" / "Roaming"
         local = windows_folder("local") or home / "AppData" / "Local"
-        return [roaming / "ELI Keys", local / "ELI" / "State", home / ".eli"]
+        return [roaming / "ELI Keys", local / "ELI Keys" / "State", home / ".eli-keys"]
     if sys.platform == "darwin":
         lib = home / "Library"
-        return [lib / "Application Support" / "ELI Keys", lib / "Preferences" / "ELI",
-                home / ".eli"]
-    return [home / ".config" / "eli-keys", home / ".local" / "share" / "eli",
-            home / ".local" / "state" / "eli"]
+        return [lib / "Application Support" / "ELI Keys", lib / "Preferences" / "ELI Keys",
+                home / ".eli-keys"]
+    return [home / ".config" / "eli-keys", home / ".local" / "share" / "eli-keys",
+            home / ".local" / "state" / "eli-keys"]
 
 
 @dataclass(frozen=True)

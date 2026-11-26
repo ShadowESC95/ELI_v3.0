@@ -114,7 +114,7 @@ def _mac_platform_uuid() -> str:
 
 def _kept_install_id() -> str:
     """Last resort: an id made once and kept in this account's own folder."""
-    path = account_home() / ".eli-machine-id"
+    path = account_home() / ".eli-keys-machine-id"
     existing = _first_line(path)
     if existing:
         return existing
