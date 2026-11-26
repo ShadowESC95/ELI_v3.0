@@ -126,10 +126,29 @@ def parse_license_key(key: str) -> LicensePayload:
             "no product signing public key installed "
             f"(expected {public_key_path()})"
         )
-    if not _verify_payload_bytes(body, sig, public):
-        raise ValueError("license key signature is invalid")
-    raw = json.loads(body.decode("utf-8"))
+    issuer_id = ""
+    if _verify_payload_bytes(body, sig, public):
+        raw = json.loads(body.decode("utf-8"))
+        if isinstance(raw, dict) and raw.get("issuer"):
+            raise ValueError("a key signed by ELI's own key carries no issuer certificate")
+    else:
+        # A key from the store: signed by an issuer key that ELI's own key certified, with the
+        # certificate inside it. Read exactly as every ELI product reads it (eli-sdk).
+        try:
+            raw = json.loads(body.decode("utf-8"))
+        except ValueError:
+            raw = None
+        if not (isinstance(raw, dict) and raw.get("issuer")):
+            raise ValueError("license key signature is invalid")
+        from eli.licensing._sdk.errors import InvalidKey
+        from eli.licensing._sdk.keys import read_key
+
+        try:
+            issuer_id = read_key(normalized, public).issuer_id
+        except InvalidKey as exc:
+            raise ValueError(f"license key signature is invalid ({exc})") from None
     payload = LicensePayload.from_dict(raw)
+    payload.issuer_id = issuer_id
     if payload.version not in SUPPORTED_LICENSE_VERSIONS:
         raise ValueError(f"unsupported license version: {payload.version}")
     if payload.tier not in VALID_TIERS:
