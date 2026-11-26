@@ -41,6 +41,11 @@ concurrency:
 jobs:
   smoke:
     name: ${{ matrix.os }} · py${{ matrix.python }}
+    # The code under test is this git checkout, the developer's copy, which needs a licence like
+    # every copy unless told otherwise (eli/licensing/activation.py). Some steps run the test
+    # files with --noconftest, so the suite's own setting does not reach them.
+    env:
+      ELI_LICENSE_BYPASS: "1"
     strategy:
       fail-fast: false
       matrix:
