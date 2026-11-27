@@ -1,8 +1,8 @@
 # Bundles
 
 A bundle is a separate ELI application, specialised for one field, that runs on ELI v3's core in a
-window of its own. ELI Legal was the first and ELI VR is the second; others (Healthcare, Finance)
-are meant to follow the same contract. The code is in `eli/bundles/`.
+window of its own. ELI Legal was the first, ELI VR the second and ELI Creation Station the third; others (Healthcare,
+Finance) are meant to follow the same contract. The code is in `eli/bundles/`.
 
 ## Opening one
 
@@ -80,6 +80,7 @@ model that window has already loaded. The code is `eli/bundles/core_server.py`.
 |---|---|---|---|
 | ELI Legal | `legal` | Governed case preparation, in a window of its own | `eli_legal.bundle` |
 | ELI VR | `vr` | ELI's rooms as places to stand in, in a headset or on a monitor | `eli_vr.bundle`, and `needs: ["server"]` |
+| ELI Creation Station | `creation` | Platform content, images, video, games and code, with ELI beside the creator | `eli_creation.bundle` |
 
 Each also has an edition pack under `eli/editions/`.
 
