@@ -3,7 +3,7 @@
 > **Updated for 3.0.128.** Character presets (ffmpeg) vs XTTS zero-shot cloning;
 > see also `blueprints/perception.md` for mic auto-detect (v2.3.44+).
 >
-> **Since 3.0.174 (the Kokoro voice):** the presets are a Kokoro base voice plus the effect chain,
+> **Since 3.0.175 (the Kokoro voice):** the presets are a Kokoro base voice plus the effect chain,
 > and a cloned voice (`clone:<name>`) is spoken first by **Qwen3-TTS** (Apache-2.0, Base model, from
 > the reference clip and, when given, its transcript) on a GPU with room for it beside the language
 > model (`eli/perception/tts_qwen3.py`, in the runtime ELI makes for it, `qwen3_runtime.py`). When
