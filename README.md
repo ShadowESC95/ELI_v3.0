@@ -657,14 +657,13 @@ Pro, Enterprise, hosting rights, or bulk: **[jaybridgeman0095@gmail.com](mailto:
 1. Purchase → receive a **license key** (receipt / email).
 2. First run → **enter the key** (or `eli --activate-key …` from the CLI). A bundle's key is
    entered the same way; each product has its own key.
-3. The key is verified **on your machine** against a signature built into ELI. A key bought from the
-   store is **activated once online**: ELI sends the key and this computer's activation code (a
-   one-way code made from the operating system's install id) to ELI's licence server, which counts
-   the computer against the licence's seats. After that no connection is needed. No account, and
-   activation never uploads your chats, memories or documents.
-4. Moving to a new computer: `eli --deactivate-license` on the old one gives its seat back. A
-   computer that cannot go online: `eli --activation-code` shows its code; activate it from any
-   other device at https://licences.geteli.tech/activate.
+3. The key is verified **on your machine** against a signature built into ELI. ELI never goes
+   online for its licence: no server, no account. A licence covers a number of computers, each with
+   its own key: send the seller your licence number and the computer's activation code
+   (`eli --activation-code`, a one-way code made from the operating system's install id), and enter
+   the key you get back.
+4. Moving to a new computer: `eli --deactivate-license` on the old one removes its key; tell the
+   seller, who frees its seat.
 
 Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §5 · how it works:
 **[docs/COMMERCIAL_LICENSING.md](docs/COMMERCIAL_LICENSING.md)**.
