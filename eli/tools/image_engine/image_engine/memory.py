@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +18,18 @@ class ImageMemory:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """A connection for one ``with`` block: committed (or rolled back) and closed at its end.
+        A sqlite3 connection's own ``with`` only commits, leaving the file open until garbage
+        collection, which on Windows keeps it locked against removal."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init(self) -> None:
         with self.connect() as conn:

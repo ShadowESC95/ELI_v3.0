@@ -1,6 +1,6 @@
 ELI v3 release artifacts (organised copy)
 
-Use these folders by target platform (<version> is the release, such as 3.0.174):
+Use these folders by target platform (<version> is the release, such as 3.0.175):
 
 Windows/
   ELI_v3-<version>-windows-portable.zip

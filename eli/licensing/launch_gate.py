@@ -20,8 +20,10 @@ import sys
 
 # The licence store (eli-licensing): what is on sale for ELI v3, with a claim so ELI collects the
 # key itself; support is on the store's pages.
-STORE_URL = "https://licences.geteli.tech"
-PURCHASE_URL = f"{STORE_URL}/?product=eli"
+# Where to buy: the website, opened in the browser when the person asks. ELI itself never goes
+# online for its licence (a key per computer, checked here).
+STORE_URL = "https://geteli.tech"
+PURCHASE_URL = STORE_URL
 PURCHASE_EMAIL = ""
 
 log = logging.getLogger(__name__)

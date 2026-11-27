@@ -16,7 +16,7 @@ import sys
 import webbrowser
 from typing import Optional
 
-from eli.licensing.launch_gate import PURCHASE_URL  # the licence store; support is on its pages
+from eli.licensing.launch_gate import PURCHASE_URL  # the website: buying and support
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +165,18 @@ def enter_licence_key(*, label: str = "") -> Optional[str]:
     return f"{product_label(state.product)} licence activated ({state.tier})."
 
 
+def _this_computer() -> str:
+    """This computer's activation code, and what to do with it (nothing is sent anywhere)."""
+    try:
+        from eli.licensing.activation import activation_code
+
+        code = activation_code()
+    except Exception:
+        return ""
+    return ("<p>Each computer has its own key. To get this computer's, send the seller your licence number "
+            f"and this computer's activation code:<br><code>{code}</code></p>")
+
+
 def prompt_for_license_key(*, reason: str = "") -> Optional[str]:
     """Ask for a key on a build that requires activation."""
     detail = f"<p>{reason}</p>" if reason else ""
@@ -173,8 +185,8 @@ def prompt_for_license_key(*, reason: str = "") -> Optional[str]:
         heading="ELI v3 requires a paid license key on this build.",
         body=(
             f"{detail}"
-            "<p>Paste the key from your purchase email (it starts with "
-            "<b>ELIV3-</b>).</p>"
+            "<p>Paste this computer's key (it starts with <b>ELIV3-</b>).</p>"
+            f"{_this_computer()}"
             f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
             '</p>'
         ),
@@ -190,8 +202,9 @@ def prompt_for_product_key(*, label: str, reason: str = "") -> Optional[str]:
         heading=f"{label} is a separate product with its own license key.",
         body=(
             f"{detail}"
-            f"<p>Paste the key from your {label} purchase email (it starts with "
-            "<b>ELIV3-</b>). Your ELI v3 key does not open it.</p>"
+            f"<p>Paste this computer's {label} key (it starts with <b>ELIV3-</b>). Your ELI v3 key "
+            "does not open it, unless it was sold with it included.</p>"
+            f"{_this_computer()}"
             f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
             '</p>'
         ),
@@ -213,7 +226,8 @@ def prompt_purchase_or_key(*, reason: str = "") -> Optional[str]:
             "are kept and will be there when you activate.</p>"
             f'<p><b>Purchase:</b> <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
             '</p>'
-            "<p>Already bought one? Paste the key below.</p>"
+            "<p>Already bought one? Paste this computer's key below.</p>"
+            f"{_this_computer()}"
         ),
         buy_label="Buy now",
     )
@@ -245,6 +259,12 @@ def prompt_terminal(reason: str = "") -> Optional[str]:
     if reason:
         print(f"  {reason}")
     print(f"  Purchase: {PURCHASE_URL}")
+    try:
+        from eli.licensing.activation import activation_code
+
+        print(f"  This computer's activation code (send it to the seller for its key): {activation_code()}")
+    except Exception:
+        pass
     try:
         key = input("  Paste license key (ELIV3-…): ").strip()
     except (EOFError, KeyboardInterrupt):

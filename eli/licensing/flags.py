@@ -116,18 +116,16 @@ def handle_license_flags(args: list[str]) -> int | None:
             print(str(exc), file=sys.stderr)
             return 2
         if done:
-            print("License deactivated on this computer; its seat is free for another computer.")
+            print("License removed from this computer. Tell the seller, so its seat can be used on another computer.")
             return 0
         print("No license activation found.")
         return 1
 
     if "--activation-code" in args:
-        from eli.licensing._sdk.store import activate_page, manage_page
         from eli.licensing.activation import activation_code
 
         print(f"This computer's activation code:\n  {activation_code()}")
-        print(f"No internet here? Activate it from any other device at {activate_page()}")
-        print(f"Your computers, and releasing one you no longer have: {manage_page()}")
+        print("Send it to the seller with your licence number; they send back this computer's key.")
         return 0
 
     if "--start-trial" in args:
