@@ -1,5 +1,5 @@
-"""eli-sdk 1.2.1, the parts ELI v3 uses: licence keys, issuer certificates, revocation lists,
-machine identity and release manifests.
+"""eli-sdk 1.3.0, the parts ELI v3 uses: licence keys, issuer certificates, revocation lists,
+machine identity, activation with the licence store, and release manifests.
 
 A copy of https://github.com/ShadowESC95/eli-sdk (src/eli_sdk), kept here so every ELI v3 build
 reads keys exactly as ELI Legal and the store do, without fetching a private package. Change it
@@ -8,4 +8,4 @@ that the copy is that release, file for file.
 """
 from __future__ import annotations
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"

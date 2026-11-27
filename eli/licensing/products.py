@@ -27,6 +27,7 @@ OFFICIAL_BUNDLES: dict[str, str] = {
     "vr": "ELI VR",
     "healthcare": "ELI Healthcare",
     "finance": "ELI Finance",
+    "creation": "ELI Creation Station",
 }
 
 _LEADING_INT = re.compile(r"\s*v?(\d+)")

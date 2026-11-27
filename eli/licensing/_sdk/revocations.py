@@ -1,5 +1,6 @@
 """Licences that must no longer be honoured: refunded, disputed, leaked, or made by an issuer
-that has been withdrawn.
+that has been withdrawn; and single computers' activations released from a licence (the
+computer was lost, or the seat moved), which withdraw that computer's key and nothing else.
 
 A key works offline, so withdrawing one takes effect when a product learns of it: from the
 list shipped inside each SDK release, and from lists the product saves when it is online (a
@@ -38,6 +39,7 @@ class RevocationList:
     licences: frozenset[str]
     issuers: frozenset[str] = frozenset()
     token: str = ""
+    activations: frozenset[str] = frozenset()
 
 
 def read_revocations(token: str, public_key: Any = None) -> RevocationList:
@@ -70,6 +72,7 @@ def read_revocations(token: str, public_key: Any = None) -> RevocationList:
             licences=frozenset(str(x) for x in raw.get("licences") or []),
             issuers=frozenset(str(x) for x in raw.get("issuers") or []),
             token=str(token).strip(),
+            activations=frozenset(str(x) for x in raw.get("activations") or []),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise InvalidKey(f"the revocation list is incomplete ({exc})") from None
@@ -105,15 +108,21 @@ class Revocations:
     def why(self, lic: License) -> str:
         """Why this licence is withdrawn, or "" if it is not."""
         own = self.lists.get("")
+        released = (f"this computer's {lic.label} activation has been released; "
+                    "enter the licence key again to activate it here")
         if own is not None:
             if lic.license_id in own.licences:
                 return f"the {lic.label} licence has been withdrawn"
             if lic.issuer_id and lic.issuer_id in own.issuers:
                 return f"the {lic.label} licence came from an issuer that has been withdrawn"
+            if lic.activation and lic.activation in own.activations:
+                return released
         if lic.issuer_id:
             theirs = self.lists.get(lic.issuer_id)
             if theirs is not None and lic.license_id in theirs.licences:
                 return f"the {lic.label} licence has been withdrawn"
+            if theirs is not None and lic.activation and lic.activation in theirs.activations:
+                return released
         return ""
 
     def tokens(self) -> list[str]:

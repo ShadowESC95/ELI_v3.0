@@ -13,7 +13,12 @@ from eli.licensing.products import PLATFORM
 # version-1 bundle key would open ELI v3 for anyone who bought only the bundle.
 LICENSE_VERSION = 1
 PRODUCT_LICENSE_VERSION = 2
-SUPPORTED_LICENSE_VERSIONS = frozenset({LICENSE_VERSION, PRODUCT_LICENSE_VERSION})
+# A key bought to be activated, for any product: it opens nothing until ELI's licence store binds
+# it to one computer (counting the computers against its seats) and returns that computer's own
+# key (version 1 or 2, naming the machine and the activation). Builds from before it refuse it.
+ACTIVATION_LICENSE_VERSION = 3
+SUPPORTED_LICENSE_VERSIONS = frozenset({LICENSE_VERSION, PRODUCT_LICENSE_VERSION,
+                                        ACTIVATION_LICENSE_VERSION})
 VALID_TIERS = frozenset({"trial", "personal", "pro", "enterprise"})
 # Keys and activations from before products existed were all ELI v3. This stays 3
 # when ELI moves on to v4: it describes those old keys, not the current build.
@@ -41,6 +46,8 @@ class LicensePayload:
     includes: dict[str, int] = field(default_factory=dict)
     # The one machine the key works on (a trial key from the store), or "" for any.
     machine: str = ""
+    # The store's id for this computer's activation of the licence, or "".
+    activation: str = ""
     # Who signed it: "" for ELI's own key, else a certified issuer (the store); never signed in.
     issuer_id: str = ""
 
@@ -51,7 +58,13 @@ class LicensePayload:
         data.pop("issuer_id", None)
         if not data.get("machine"):
             data.pop("machine", None)
+        if not data.get("activation"):
+            data.pop("activation", None)
         return data
+
+    @property
+    def needs_activation(self) -> bool:
+        return self.version == ACTIVATION_LICENSE_VERSION
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LicensePayload:
@@ -67,6 +80,7 @@ class LicensePayload:
             major_version=int(raw.get("major_version") or LEGACY_MAJOR),
             includes={str(k).lower(): int(v) for k, v in dict(raw.get("includes") or {}).items()},
             machine=str(raw.get("machine") or "").lower(),
+            activation=str(raw.get("activation") or ""),
         )
 
 

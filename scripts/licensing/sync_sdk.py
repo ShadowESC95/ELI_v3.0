@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 FILES = ("_encoding.py", "errors.py", "keys.py", "issuing.py", "revocations.py", "machine.py",
-         "trial.py", "store.py", "integrity.py", "products.py", "versions.py", "py.typed",
-         "eli.pub", "release.pub", "revoked.list")
+         "trial.py", "store.py", "activation.py", "integrity.py", "products.py", "versions.py",
+         "py.typed", "eli.pub", "release.pub", "revoked.list")
 HERE = Path(__file__).resolve().parents[2] / "eli" / "licensing" / "_sdk"
 
 

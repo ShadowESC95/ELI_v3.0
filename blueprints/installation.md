@@ -1,6 +1,6 @@
 # Installation — one-click setup, cross-platform (2026-09-11)
 
-> **Updated for 3.0.173 (November 2026).** One hardware-aware GUI wizard for every supported OS.
+> **Updated for 3.0.174 (November 2026).** One hardware-aware GUI wizard for every supported OS.
 > Primary install: GitHub Releases (`ELI-Setup-*.exe`, Linux AppImage, macOS dmg, portable → `./ELI_Setup.sh`).
 > Core wizard stages hard-fail until nomic + voice + chat model are present. Windows desktop = ELI only
 > (GUI singleton). **Home** tab ≠ Home Assistant. See `first time Installation/INSTALLATION_GUIDE.md`.
@@ -72,10 +72,10 @@ whichever Python the distro ships is irrelevant) and, since
 packages. Download and run it **directly**:
 
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.173
-wget "$U/ELI_v3-3.0.173-x86_64.AppImage"
-chmod +x ELI_v3-3.0.173-x86_64.AppImage
-./ELI_v3-3.0.173-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.174
+wget "$U/ELI_v3-3.0.174-x86_64.AppImage"
+chmod +x ELI_v3-3.0.174-x86_64.AppImage
+./ELI_v3-3.0.174-x86_64.AppImage
 ```
 
 Two fixes worth knowing, both resolved in current builds and verified on a clean Arch VM:
@@ -108,8 +108,8 @@ This works when you run the **`.AppImage` directly** *or* via `--appimage-extrac
 set the `APPIMAGE` path the launcher needs. Force it any time with:
 
 ```bash
-./ELI_v3-3.0.173-x86_64.AppImage --integrate      # add/refresh menu entries
-./ELI_v3-3.0.173-x86_64.AppImage --uninstall       # remove them
+./ELI_v3-3.0.174-x86_64.AppImage --integrate      # add/refresh menu entries
+./ELI_v3-3.0.174-x86_64.AppImage --uninstall       # remove them
 ```
 
 Running the **manually extracted `./squashfs-root/AppRun`** does *not* create menu icons — there's

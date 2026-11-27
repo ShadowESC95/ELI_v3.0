@@ -9,10 +9,14 @@
   machine one trial per product, so reinstalling, deleting files or changing the clock never
   starts another; the key it returns is signed, so it cannot be edited or forged.
 - :func:`fetch_revocations` brings the latest signed list of withdrawn licences.
+- :func:`activate` sends a key bought to be activated, with this computer's fingerprint; the
+  store counts the computers the licence is on against its seats and returns this computer's
+  own key. :func:`deactivate` gives the seat back. (eli_sdk.activation wraps both for products.)
 
 Only HTTPS is spoken (``http://localhost`` aside, for testing a store on this machine). What is
 sent is what each call needs and nothing more: the claim token, or the product and this
-machine's fingerprint (a hash, not the machine's name or address).
+machine's fingerprint (a hash, not the machine's name or address), or the licence key being
+activated with that fingerprint.
 """
 from __future__ import annotations
 
@@ -28,8 +32,27 @@ _TIMEOUT = 10.0
 _AGENT = "eli-sdk"
 
 
+def activate_page(store: str | None = None) -> str:
+    """Where a buyer activates a computer that cannot go online, from any other device."""
+    return f"{(store or STORE_URL).rstrip('/')}/activate"
+
+
+def manage_page(store: str | None = None) -> str:
+    """Where a buyer sees the computers their licence is on, and releases them."""
+    return f"{(store or STORE_URL).rstrip('/')}/activations"
+
+
 class StoreError(Exception):
-    """The store could not be reached, or refused the request (the message says why)."""
+    """The store could not be reached, or refused the request (the message says why).
+
+    ``code`` is the store's reason when it refused (``seats_full``, ``withdrawn``, ``expired``,
+    ``invalid``, ``not_activated``, ``busy``), or ``offline`` when it could not be reached;
+    ``detail`` is the rest of its answer (for ``seats_full``: ``seats`` and ``used``)."""
+
+    def __init__(self, message: str, *, code: str = "", detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.detail = dict(detail or {})
 
 
 def _base(store: str | None) -> str:
@@ -79,12 +102,15 @@ def _call(method: str, url: str, body: dict[str, Any] | None = None,
             payload = json.loads(response.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
-            detail = json.loads(exc.read().decode("utf-8")).get("error") or exc.reason
+            answer = json.loads(exc.read().decode("utf-8"))
+            answer = answer if isinstance(answer, dict) else {}
         except Exception:
-            detail = exc.reason
-        raise StoreError(f"the store refused: {detail}") from None
+            answer = {}
+        message = str(answer.get("error") or exc.reason)
+        raise StoreError(f"the store refused: {message}", code=str(answer.get("code") or ""),
+                         detail=answer) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise StoreError(f"the store could not be reached ({exc})") from None
+        raise StoreError(f"the store could not be reached ({exc})", code="offline") from None
     except ValueError:
         raise StoreError("the store's answer was not readable") from None
     if not isinstance(payload, dict):
@@ -114,3 +140,22 @@ def fetch_revocations(*, store: str | None = None, timeout: float = _TIMEOUT) ->
     """The store's current signed revocation lists (verify them with KeyStore.add_revocations)."""
     payload = _call("GET", f"{_base(store)}/v1/revocations", timeout=timeout)
     return [str(t) for t in payload.get("lists") or []]
+
+
+def activate(key: str, machine: str, *, store: str | None = None, timeout: float = _TIMEOUT) -> str:
+    """This computer's own key for a key bought to be activated. The store refuses (StoreError
+    with ``code``) when every seat is in use, or the licence has been withdrawn or has ended.
+    Asking again from a computer already counted returns its key again, using no other seat."""
+    payload = _call("POST", f"{_base(store)}/v1/activate", {"key": key, "machine": machine},
+                    timeout=timeout)
+    bound = str(payload.get("key") or "")
+    if not bound:
+        raise StoreError(str(payload.get("error") or "the store gave no key"), code="invalid")
+    return bound
+
+
+def deactivate(key: str, *, store: str | None = None, timeout: float = _TIMEOUT) -> dict[str, Any]:
+    """Give back the seat of the computer this key was activated for (``key`` is that computer's
+    own key, which only it holds). Returns the store's answer (``used``, ``seats``)."""
+    return _call("POST", f"{_base(store)}/v1/deactivate", {"key": key}, timeout=timeout)
+

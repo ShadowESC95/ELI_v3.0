@@ -158,10 +158,14 @@ def parse_license_key(key: str) -> LicensePayload:
             f"this key is for {payload.product!r}, a product this version of ELI does not "
             "know — update ELI and try again"
         )
-    if payload.version != key_format_version(payload.product):
+    if payload.version != key_format_version(payload.product) and not payload.needs_activation:
         # Only a hand-built key gets here: a version-1 key naming a bundle is exactly
         # what older builds would misread as an ELI v3 licence.
         raise ValueError("license key format does not match its product")
+    if payload.needs_activation and (payload.machine or payload.activation):
+        raise ValueError("a key to be activated names no computer")
+    if payload.activation and not payload.machine:
+        raise ValueError("an activation names the computer it is for")
     _check_includes(payload)
     return payload
 

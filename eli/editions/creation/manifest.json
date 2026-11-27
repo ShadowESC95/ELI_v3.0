@@ -1,0 +1,38 @@
+{
+  "edition": "creation",
+  "label": "ELI Creation Station",
+  "status": "scaffold",
+  "summary": "Images, videos, platform content, games and code, made on this machine with ELI beside you on the project. Takes in ELI v3's content edition (copywriting, social, brand voice, image generation).",
+  "default_persona": "creative_director",
+  "adds_capability_categories": [
+    "copywriting",
+    "social-content",
+    "brand-voice",
+    "image-generation",
+    "image-editing",
+    "video",
+    "game-design",
+    "coding",
+    "project-companion"
+  ],
+  "report_templates": [
+    "Content brief",
+    "Content calendar",
+    "Game design document"
+  ],
+  "requires_core": ">=3.0.173",
+  "suggested_tiers": [
+    "personal",
+    "pro",
+    "enterprise"
+  ],
+  "app": {
+    "files": [
+      "ELI_Creation_Station*.AppImage",
+      "ELI Creation Station.app",
+      "ELI Creation Station/eli-creation-gui.exe",
+      "ELI_Creation_Station*/eli-creation-gui"
+    ],
+    "releases": "https://github.com/ShadowESC95/ELI_Creation_Station/releases"
+  }
+}

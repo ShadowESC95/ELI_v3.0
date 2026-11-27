@@ -1,6 +1,6 @@
 # ELI Memory Subsystem
 
-> **Updated for 3.0.173.** Memory is governed by a storage policy
+> **Updated for 3.0.174.** Memory is governed by a storage policy
 > (`eli/memory/policy.py`): every row has an origin, repeats are merged, weight follows a
 > forgetting curve reinforced by use, and faded derived rows are archived. Recall applies a
 > time window before ranking, and reports what it did. Turn retrieval is shared in

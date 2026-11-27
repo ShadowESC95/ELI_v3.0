@@ -10,6 +10,11 @@ class InvalidKey(SDKError, ValueError):
     """A licence key that is malformed, unsigned by the given key, or not a valid grant."""
 
 
+class NeedsActivation(InvalidKey):
+    """A key bought to be activated: it opens nothing until the store binds it to a computer
+    (eli_sdk.activation.activate)."""
+
+
 class InvalidManifest(SDKError, ValueError):
     """A bundle description or package manifest that breaks the contract."""
 
