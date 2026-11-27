@@ -165,10 +165,42 @@ def _platform_major_problem(major_version: int) -> str:
     return ""
 
 
+_NOT_ACTIVATED = ("this key has not been activated on this computer: enter it with "
+                  "eli --activate-key YOUR-KEY (activating needs the internet once)")
+
+
+def _activate_online(key: str) -> str:
+    """A key bought to be activated, sent to ELI's licence store once with this computer's
+    fingerprint: the store counts the computers the licence is on against its seats and returns
+    this computer's own key, which is what is kept. Raises ValueError with the buyer's message
+    (every seat in use, no internet: and how to activate from another device)."""
+    from eli.licensing._sdk.activation import ActivationError
+    from eli.licensing._sdk.activation import activate as sdk_activate
+    from eli.licensing._sdk.keys import KeyStore
+    from eli.licensing.signature import load_public_key_pem
+    from eli.licensing.storage import shared_keys_dir
+
+    keys = KeyStore(shared_keys_dir())
+    try:
+        lic = sdk_activate(key, keys, public_key=load_public_key_pem(), machine=machine_fingerprint())
+    except ActivationError as exc:
+        raise ValueError(str(exc)) from None
+    bound = keys.key_text(lic.product)
+    if not bound:
+        raise ValueError("the activated key could not be kept on this computer")
+    return bound
+
+
 def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationState:
-    """Activate a key on this machine, for whichever ELI Product it names."""
+    """Activate a key on this machine, for whichever ELI Product it names. A key bought to be
+    activated is activated with ELI's licence store first (see _activate_online)."""
     normalized = normalize_license_key(key)
     payload = parse_license_key(normalized)
+    if payload.needs_activation:
+        if _payload_expired(payload.expires_at):
+            raise ValueError("license key has expired")
+        normalized = _activate_online(normalized)
+        payload = parse_license_key(normalized)
     if _payload_expired(payload.expires_at):
         raise ValueError("license key has expired")
     problem = _key_problem(payload, normalized)
@@ -238,9 +270,13 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
 
 
 def deactivate_license(*, machine_only: bool = False, product: str = PLATFORM) -> bool:
+    """Forget the licence on this computer. A key activated online gives its seat back to ELI's
+    licence store first, so the licence can be activated on another computer; when the store
+    cannot be reached, nothing is removed (ValueError says how to release it instead)."""
     state = load_activation_state(product)
     if state is None:
         return False
+    _release_seat(state)
     if machine_only:
         fp = machine_fingerprint()
         state.machines = [m for m in state.machines if m.id_hash != fp]
@@ -250,6 +286,38 @@ def deactivate_license(*, machine_only: bool = False, product: str = PLATFORM) -
     # gone from this computer for every ELI product, or the next check would take it up again
     unshare_key(product)
     return clear_activation_state(product)
+
+
+def _release_seat(state: ActivationState) -> None:
+    if not state.license_key:
+        return
+    try:
+        payload = parse_license_key(state.license_key)
+    except Exception:
+        return
+    if not payload.activation:
+        return
+    from eli.licensing._sdk import store as sdk_store
+
+    try:
+        sdk_store.deactivate(state.license_key)
+    except sdk_store.StoreError as exc:
+        if exc.code == "not_activated":  # released already (the store's page, or support)
+            return
+        label = product_label(state.product)
+        if exc.code == "offline":
+            raise ValueError(
+                f"Deactivating gives this computer's {label} seat back to the licence store, which "
+                "could not be reached. Try again when this computer is online, or release it from any "
+                f"other device at {sdk_store.manage_page()}.") from None
+        raise ValueError(f"{label} could not be deactivated: {exc}") from None
+
+
+def activation_code() -> str:
+    """This computer's activation code, for activating it from another device."""
+    from eli.licensing._sdk.activation import activation_code as grouped
+
+    return grouped(machine_fingerprint())
 
 
 def _key_problem(payload, key: str) -> str:
@@ -281,6 +349,8 @@ def _verify_stored_key(state: ActivationState) -> str:
         payload = require_product(parse_license_key(state.license_key), state.product)
     except Exception as exc:
         return f"the stored license key no longer verifies ({exc})"
+    if payload.needs_activation:
+        return _NOT_ACTIVATED
     if payload.license_id != state.license_id:
         return "the stored license key does not belong to this activation"
     problem = _key_problem(payload, state.license_key)
@@ -350,8 +420,10 @@ def _adopt_shared_key(product: str) -> Optional[ActivationState]:
     if not key:
         return None
     try:
+        if parse_license_key(key).needs_activation:
+            return None  # never activated online in passing: only when someone enters the key
         return activate_license_key(key)
-    except ValueError:
+    except (ValueError, RuntimeError):
         return None
 
 
@@ -367,7 +439,8 @@ def validate_activation() -> ActivationStatus:
     if env_key:
         try:
             payload = require_product(parse_license_key(env_key), PLATFORM)
-            problem = _key_problem(payload, env_key) or _platform_major_problem(payload.major_version)
+            problem = ((_NOT_ACTIVATED if payload.needs_activation else "")
+                       or _key_problem(payload, env_key) or _platform_major_problem(payload.major_version))
             if problem:
                 raise ValueError(problem)
             if _payload_expired(payload.expires_at):

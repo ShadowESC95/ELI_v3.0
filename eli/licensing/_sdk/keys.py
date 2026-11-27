@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ._encoding import b64url_decode
-from .errors import InvalidKey
+from .errors import InvalidKey, NeedsActivation
 from .products import (
     LEGACY_MAJOR,
     PLATFORM,
@@ -32,6 +32,11 @@ from .versions import Version
 PREFIX = "ELIV3-"
 PLATFORM_FORMAT = 1
 PRODUCT_FORMAT = 2
+# A key to be activated, for any product: what was bought, for no computer yet. It opens nothing
+# until the store binds it to one computer (eli_sdk.activation), which counts the computers it is
+# on against its seats. Readers from before it refuse it outright ("unsupported key format 3"),
+# so it cannot be passed round to copies that would not count.
+ACTIVATION_FORMAT = 3
 TIERS = frozenset({"trial", "personal", "pro", "enterprise"})
 
 _SHAPE = re.compile(r"^ELIV3-[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
@@ -112,6 +117,14 @@ class License:
     issuer_id: str = ""
     # The machine it is bound to (machine.fingerprint()), or "" for a key any machine may use.
     machine: str = ""
+    # The store's id for this computer's activation of the licence ("" for any other key): a
+    # computer released from a licence is withdrawn by it, without withdrawing the licence.
+    activation: str = ""
+
+    @property
+    def needs_activation(self) -> bool:
+        """A key bought to be activated: it opens nothing until the store binds it to a computer."""
+        return self.format == ACTIVATION_FORMAT
 
     @property
     def label(self) -> str:
@@ -141,6 +154,7 @@ class License:
             "expires_at": self.expires_at, "customer_ref": self.customer_ref,
             "format": self.format, "fingerprint": self.fingerprint,
             "issuer_id": self.issuer_id, "machine": self.machine,
+            "activation": self.activation, "needs_activation": self.needs_activation,
         }
 
 
@@ -291,18 +305,23 @@ def _license(raw: dict[str, Any], key_print: str, *, issuer_id: str = "") -> Lic
             fingerprint=key_print,
             issuer_id=issuer_id,
             machine=str(raw.get("machine") or "").lower(),
+            activation=str(raw.get("activation") or ""),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise InvalidKey(f"the key's contents are incomplete ({exc})") from None
-    if lic.format not in (PLATFORM_FORMAT, PRODUCT_FORMAT):
+    if lic.format not in (PLATFORM_FORMAT, PRODUCT_FORMAT, ACTIVATION_FORMAT):
         raise InvalidKey(f"unsupported key format {lic.format}")
     if lic.tier not in TIERS:
         raise InvalidKey(f"unknown tier {lic.tier!r}")
     if not is_product(lic.product):
         raise InvalidKey(f"this key is for {lic.product!r}, a product this SDK does not know; "
                          "a newer SDK may")
-    if lic.format != format_for(lic.product):
+    if lic.format != format_for(lic.product) and not lic.needs_activation:
         raise InvalidKey("the key's format does not match its product")
+    if lic.needs_activation and (lic.machine or lic.activation):
+        raise InvalidKey("a key to be activated names no computer")
+    if lic.activation and not lic.machine:
+        raise InvalidKey("an activation names the computer it is for")
     if lic.major_version < 1:
         raise InvalidKey("the key names no version line")
     if lic.trial and not lic.expires_at:
@@ -357,6 +376,9 @@ def entitlement(product: str, licenses: Iterable[License], *, version: str | Ver
         withdrawn = revocations.why(lic) if revocations is not None else ""
         if withdrawn:
             return withdrawn
+        if lic.needs_activation:
+            return (f"the {lic.label} key has not been activated on this computer: enter it in "
+                    f"{lic.label} (activating needs the internet once)")
         if lic.bound_elsewhere(machine):
             return f"this {lic.label} key is for another machine"
         return ""
@@ -443,10 +465,15 @@ class KeyStore:
             now: datetime | None = None) -> License:
         """Verify a key and keep it, replacing any key held for the same product.
 
-        Refused: a key that has been withdrawn, one bound to another machine, and a trial key
-        offered over a paid key that still works (it would take the paid key's place).
+        Refused: a key that has been withdrawn, one bound to another machine, a trial key
+        offered over a paid key that still works (it would take the paid key's place), and a key
+        bought to be activated (NeedsActivation: eli_sdk.activation.activate keeps the key the
+        store makes of it for this computer instead).
         """
         lic = read_key(key, public_key)
+        if lic.needs_activation:
+            raise NeedsActivation(f"this {lic.label} key must be activated first: enter it in {lic.label} "
+                                  "(activating needs the internet once)")
         if lic.machine and machine is None:
             from .machine import fingerprint as this_machine
 
@@ -468,6 +495,14 @@ class KeyStore:
         try:
             return read_key(path.read_text(encoding="utf-8"), public_key) if path.is_file() else None
         except (InvalidKey, OSError):
+            return None
+
+    def key_text(self, product: str) -> str | None:
+        """The key held for a product, as it was kept, or None."""
+        path = self._path(product)
+        try:
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else None
+        except OSError:
             return None
 
     def remove(self, product: str) -> bool:

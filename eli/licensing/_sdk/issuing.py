@@ -25,7 +25,7 @@ from typing import Any
 
 from ._encoding import b64url_encode, canonical_json
 from .errors import InvalidKey
-from .keys import PREFIX, License, format_for, read_key
+from .keys import ACTIVATION_FORMAT, PREFIX, License, format_for, read_key
 from .products import TIER_SEATS, TRIAL_DAYS, default_major, is_product, parse_includes
 
 CERT_PREFIX = "ELICERT-"
@@ -143,12 +143,17 @@ def licence_body(product: str, tier: str, *, seats: int | None = None,
                  major_version: int | None = None, includes: Mapping[str, int] | Iterable[str] | None = None,
                  expires_at: datetime | str | None = None, days: int | None = None,
                  customer_ref: str | None = None, license_id: str | None = None,
-                 machine: str | None = None, issued_at: datetime | str | None = None) -> dict[str, Any]:
+                 machine: str | None = None, issued_at: datetime | str | None = None,
+                 activate: bool = False) -> dict[str, Any]:
     """The contents of a key, with every default the products assume filled in.
 
     A trial ends after ``TRIAL_DAYS`` unless told otherwise; paid keys never end unless given
     ``days`` or ``expires_at``. ``machine`` binds the key to one machine's fingerprint.
+    ``activate`` makes a key to be activated (format 3): it opens nothing until the store binds
+    it to a computer, counting the computers it is on against ``seats``.
     """
+    if activate and machine:
+        raise InvalidKey("a key to be activated names no computer: the store binds it to one")
     product = str(product or "").lower()
     tier = str(tier or "").lower()
     issued = issued_at or _now()
@@ -163,7 +168,7 @@ def licence_body(product: str, tier: str, *, seats: int | None = None,
     ends = expires_at if expires_at is not None else (
         issued_dt + timedelta(days=int(days)) if days is not None else None)
     body: dict[str, Any] = {
-        "version": format_for(product),
+        "version": ACTIVATION_FORMAT if activate else format_for(product),
         "license_id": license_id or f"lic_{uuid.uuid4().hex}",
         "tier": tier,
         "seats": int(seats if seats is not None else TIER_SEATS.get(tier, 1)),
@@ -206,12 +211,43 @@ def issue(product: str, tier: str, private_key: Any, *, certificate: str | None 
     return key, read_key(key, public_key)
 
 
+def activated_body(lic: License, machine: str, activation: str, *,
+                   issued_at: datetime | str | None = None) -> dict[str, Any]:
+    """The key one computer is given when a key to be activated is activated there: the same
+    licence (number, product, tier, seats, version line, add-ons, end date, customer), bound to
+    that computer's fingerprint and naming the store's id for this activation."""
+    machine = str(machine or "").strip().lower()
+    if len(machine) != 64 or any(c not in "0123456789abcdef" for c in machine):
+        raise InvalidKey("a computer's fingerprint is 64 hexadecimal characters")
+    if not str(activation or "").strip():
+        raise InvalidKey("an activation needs an id")
+    when = issued_at or _now()
+    body: dict[str, Any] = {
+        "version": format_for(lic.product),
+        "license_id": lic.license_id,
+        "tier": lic.tier,
+        "seats": lic.seats,
+        "issued_at": when if isinstance(when, str) else _iso(when),
+        "expires_at": lic.expires_at,
+        "customer_ref": lic.customer_ref,
+        "product": lic.product,
+        "major_version": lic.major_version,
+        "machine": machine,
+        "activation": str(activation).strip(),
+    }
+    if lic.includes:
+        body["includes"] = dict(lic.includes)
+    return body
+
+
 # ── revocation ───────────────────────────────────────────────────────────────
 
 def sign_revocations(private_key: Any, *, serial: int, licences: Iterable[str] = (),
                      issuers: Iterable[str] = (), certificate: str | None = None,
-                     issued_at: datetime | str | None = None) -> str:
-    """A list of licences (and, from ELI's own key only, issuers) that no product may honour.
+                     issued_at: datetime | str | None = None,
+                     activations: Iterable[str] = ()) -> str:
+    """A list of licences (and, from ELI's own key only, issuers) that no product may honour,
+    and of single computers' activations released from a licence (``activations``).
 
     A later list from the same signer has a higher ``serial`` and replaces the earlier one, so
     each list is complete, not a delta. An issuer's list withdraws only keys that issuer made.
@@ -226,6 +262,9 @@ def sign_revocations(private_key: Any, *, serial: int, licences: Iterable[str] =
         "licences": sorted({str(x) for x in licences}),
         "issuers": sorted({str(x) for x in issuers}),
     }
+    released = sorted({str(x) for x in activations})
+    if released:
+        body["activations"] = released
     if certificate:
         body["issuer"] = certificate
     return _token(REVOCATION_PREFIX, body, private_key)

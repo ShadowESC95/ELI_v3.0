@@ -16,6 +16,7 @@ LICENSE_FLAGS = (
     "--license-status",
     "--deactivate-license",
     "--start-trial",
+    "--activation-code",
 )
 
 
@@ -109,11 +110,25 @@ def handle_license_flags(args: list[str]) -> int | None:
     if "--deactivate-license" in args:
         from eli.licensing.activation import deactivate_license
 
-        if deactivate_license():
-            print("License deactivated.")
+        try:
+            done = deactivate_license()
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if done:
+            print("License deactivated on this computer; its seat is free for another computer.")
             return 0
         print("No license activation found.")
         return 1
+
+    if "--activation-code" in args:
+        from eli.licensing._sdk.store import activate_page, manage_page
+        from eli.licensing.activation import activation_code
+
+        print(f"This computer's activation code:\n  {activation_code()}")
+        print(f"No internet here? Activate it from any other device at {activate_page()}")
+        print(f"Your computers, and releasing one you no longer have: {manage_page()}")
+        return 0
 
     if "--start-trial" in args:
         from eli.licensing.cli import _cmd_start_trial

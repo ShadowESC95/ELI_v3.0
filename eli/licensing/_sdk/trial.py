@@ -305,6 +305,20 @@ class LocalTrial:
                                why="the trial could not be recorded on this machine")
         return self.status()
 
+    def no_later_than(self, ends_at: str, started_at: str = "") -> TrialStatus:
+        """Bring the trial's end forward to ``ends_at`` when that is earlier (the store's record of
+        this computer's first trial: eli_sdk.activation.anchor_trial). Never moves it later."""
+        record, _altered = self._merged()
+        ends, current = _when(ends_at), _when((record or {}).get("ends_at"))
+        if record is None or ends is None or current is None or ends >= current:
+            return self.status()
+        record["ends_at"] = _iso(ends)
+        start, began = _when(started_at), _when(record.get("started_at"))
+        if start is not None and began is not None and start < began:
+            record["started_at"] = _iso(start)
+        self._write_all(record)
+        return self.touch()
+
     def touch(self) -> TrialStatus:
         """Record that the product is running now, and write back any copy that is missing, so
         deleting some copies never helps. Call it at each launch. An ended trial stays ended."""

@@ -68,7 +68,11 @@ def _cmd_activate(args: argparse.Namespace) -> int:
 
 
 def _cmd_deactivate(args: argparse.Namespace) -> int:
-    ok = deactivate_license(machine_only=args.machine_only, product=args.product)
+    try:
+        ok = deactivate_license(machine_only=args.machine_only, product=args.product)
+    except ValueError as exc:  # the seat could not be given back (no internet): nothing removed
+        print(str(exc), file=sys.stderr)
+        return 2
     if not ok:
         print("No activation state to remove.")
         return 1
